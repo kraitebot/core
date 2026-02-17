@@ -1,0 +1,121 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Kraite\Core\Support\ApiDataMappers\Binance\ApiRequests;
+
+use GuzzleHttp\Psr7\Response;
+use Kraite\Core\Models\Account;
+use Kraite\Core\Support\ValueObjects\ApiProperties;
+
+/**
+ * Maps Binance algo orders (stop-market, take-profit, trailing-stop) query.
+ *
+ * Since December 9, 2025, Binance migrated conditional orders to a new "Algo Order"
+ * service. Regular open orders endpoint no longer returns these orders - a separate
+ * endpoint (/fapi/v1/openAlgoOrders) must be used.
+ */
+trait MapsAlgoOrdersQuery
+{
+    public function prepareQueryAlgoOrdersProperties(Account $account): ApiProperties
+    {
+        $properties = new ApiProperties;
+        $properties->set('relatable', $account);
+
+        return $properties;
+    }
+
+    /**
+     * Resolves Binance algo orders response.
+     *
+     * Binance /fapi/v1/openAlgoOrders returns a raw array of orders:
+     * [
+     *     {
+     *         "algoId": 4000000047401111,
+     *         "clientAlgoId": "stToAg_OTO_554635708_2",
+     *         "algoType": "CONDITIONAL",
+     *         "orderType": "STOP_MARKET",
+     *         "symbol": "SOLUSDT",
+     *         "side": "BUY",
+     *         "positionSide": "SHORT",
+     *         "quantity": "0.18",
+     *         "algoStatus": "NEW",
+     *         "triggerPrice": "136.0000",
+     *         "workingType": "MARK_PRICE",
+     *         "reduceOnly": true,
+     *         "createTime": 1765796269439,
+     *         "updateTime": 1765796269439
+     *     }
+     * ]
+     */
+    public function resolveQueryAlgoOrdersResponse(Response $response): array
+    {
+        $data = json_decode((string) $response->getBody(), associative: true);
+
+        // Response is a raw array of orders, not wrapped in {"orders": [...]}
+        $orders = is_array($data) && ! isset($data['code']) ? $data : [];
+
+        return array_map(callback: function (array $order): array {
+            $order['_price'] = $this->computeAlgoOrderPrice($order);
+            $order['_orderType'] = $this->canonicalAlgoOrderType($order);
+        
+            // Mark as algo order for frontend distinction
+            $order['order_source'] = 'algo';
+        
+            return $order;
+        }, array: $orders);
+    }
+
+    /**
+     * Compute the effective display price for algo orders.
+     *
+     * For algo orders, triggerPrice is the primary display price.
+     * Trailing stop orders may use activatePrice.
+     */
+    private function computeAlgoOrderPrice(array $order): string
+    {
+        // Primary: triggerPrice (for CONDITIONAL orders)
+        $triggerPrice = $order['triggerPrice'] ?? '0';
+        if ((float) $triggerPrice > 0) {
+            return (string) $triggerPrice;
+        }
+
+        // Fallback: activatePrice (for trailing stop orders)
+        $activatePrice = $order['activatePrice'] ?? '0';
+        if ((float) $activatePrice > 0) {
+            return (string) $activatePrice;
+        }
+
+        return '0';
+    }
+
+    /**
+     * Returns a canonical order type from Binance algo order data.
+     *
+     * Algo orders use 'algoType' and 'orderType' fields instead of 'type'.
+     * - algoType: "CONDITIONAL" (stop-market, take-profit) or "VP" (volume participation)
+     * - orderType: "MARKET" or "LIMIT"
+     *
+     * We derive the canonical type based on combination of algoType + side behavior.
+     */
+    private function canonicalAlgoOrderType(array $order): string
+    {
+        $algoType = $order['algoType'] ?? '';
+        $orderType = $order['orderType'] ?? '';
+
+        // Volume participation algo
+        if ($algoType === 'VP') {
+            return $orderType === 'LIMIT' ? 'LIMIT' : 'MARKET';
+        }
+
+        // Conditional orders (STOP_MARKET, TAKE_PROFIT_MARKET, etc.)
+        if ($algoType === 'CONDITIONAL') {
+            // For conditional orders, we label them as STOP_MARKET since
+            // that's the most common use case. The frontend can distinguish
+            // further using triggerPrice and side if needed.
+            return 'STOP_MARKET';
+        }
+
+        return 'UNKNOWN';
+    }
+}

@@ -1,0 +1,210 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Kraite\Core\_Jobs\Models\Account;
+
+use Kraite\Core\Abstracts\BaseQueueableJob;
+use Kraite\Core\Models\Account;
+use Kraite\Core\Models\ApiSnapshot;
+use Kraite\Core\Models\Position;
+use Kraite\Core\Trading\Engine;
+
+/*
+ * AssignBestTokensToPositionSlotsJob
+ *
+ * • Creates position slots based on available capacity (exchange vs DB positions).
+ * • Assigns the optimal ExchangeSymbol to each "new" position slot for an account.
+ * • Uses the HasTokenDiscovery trait's algorithm:
+ *   - Priority 1: Fast-tracked tokens (recently profitable quick trades)
+ *   - Priority 2: Elasticity-based scoring (correlation × elasticity metrics)
+ * • Runs as a single job per account to prevent race conditions.
+ * • Force deletes any position slots that couldn't be assigned a token.
+ */
+final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
+{
+    public Account $account;
+
+    public int $totalCreated = 0;
+
+    public int $assignedCount = 0;
+
+    public int $deletedCount = 0;
+
+    public function __construct(int $accountId)
+    {
+        $this->account = Account::findOrFail($accountId);
+    }
+
+    public function relatable()
+    {
+        return $this->account;
+    }
+
+    public function compute()
+    {
+        /*
+         * Step 1: Create Position Slots
+         *
+         * Read exchange positions, compare with max slots, create empty Position records.
+         */
+        $slotData = $this->createPositionSlots();
+
+        // If no slots were created, return early
+        if ($this->totalCreated === 0) {
+            return array_merge($slotData, [
+                'assigned_tokens' => '',
+                'assigned_count' => 0,
+                'deleted_count' => 0,
+            ]);
+        }
+
+        /*
+         * Step 2: Assign Best Tokens to Position Slots
+         *
+         * Use HasTokenDiscovery trait to assign optimal tokens.
+         */
+        $assignedTokens = $this->account->assignBestTokenToNewPositions();
+
+        // Count how many positions were successfully assigned
+        $this->assignedCount = $this->account->positions()
+            ->where('status', 'new')
+            ->whereNotNull('exchange_symbol_id')
+            ->count();
+
+        // Force delete any position slots that couldn't be assigned a token
+        $unassignedPositions = $this->account->positions()
+            ->where('status', 'new')
+            ->whereNull('exchange_symbol_id')
+            ->get();
+
+        $this->deletedCount = $unassignedPositions->count();
+
+        foreach ($unassignedPositions as $position) {
+            $position->forceDelete();
+        }
+
+        return array_merge($slotData, [
+            'assigned_tokens' => mb_trim($assignedTokens),
+            'assigned_count' => $this->assignedCount,
+            'deleted_count' => $this->deletedCount,
+        ]);
+    }
+
+    /**
+     * Stop the workflow gracefully if no slots created or no tokens assigned.
+     */
+    public function complete(): void
+    {
+        if ($this->totalCreated === 0 || $this->assignedCount === 0) {
+            $this->stopJob();
+        }
+    }
+
+    /**
+     * Create position slots based on available capacity.
+     */
+    public function createPositionSlots(): array
+    {
+        // Get exchange positions from the snapshot stored by QueryAccountPositionsJob
+        $exchangePositions = ApiSnapshot::getFrom($this->account, 'account-positions') ?? [];
+
+        // Count exchange positions by direction
+        $exchangeLongs = $this->countPositionsByDirection($exchangePositions, 'LONG');
+        $exchangeShorts = $this->countPositionsByDirection($exchangePositions, 'SHORT');
+
+        // Count DB positions by direction (opened statuses only)
+        $dbLongs = $this->account->positions()->opened()->onlyLongs()->count();
+        $dbShorts = $this->account->positions()->opened()->onlyShorts()->count();
+
+        // Use MAX for conservative calculation (avoid opening more than allowed)
+        $currentLongs = max($exchangeLongs, $dbLongs);
+        $currentShorts = max($exchangeShorts, $dbShorts);
+
+        // Get max slots from account configuration
+        $maxLongs = $this->account->total_positions_long;
+        $maxShorts = $this->account->total_positions_short;
+
+        // Calculate available slots
+        $availableLongSlots = max(0, $maxLongs - $currentLongs);
+        $availableShortSlots = max(0, $maxShorts - $currentShorts);
+
+        // Check directional guards
+        $engine = Engine::withAccount($this->account);
+        $canOpenLongs = $engine->canOpenLongs();
+        $canOpenShorts = $engine->canOpenShorts();
+
+        $createdPositions = [];
+
+        // Create empty Position records for available LONG slots
+        if ($canOpenLongs && $availableLongSlots > 0) {
+            for ($i = 0; $i < $availableLongSlots; $i++) {
+                $position = Position::create([
+                    'account_id' => $this->account->id,
+                    'direction' => 'LONG',
+                    'status' => 'new',
+                ]);
+                $createdPositions[] = ['id' => $position->id, 'direction' => 'LONG'];
+            }
+        }
+
+        // Create empty Position records for available SHORT slots
+        if ($canOpenShorts && $availableShortSlots > 0) {
+            for ($i = 0; $i < $availableShortSlots; $i++) {
+                $position = Position::create([
+                    'account_id' => $this->account->id,
+                    'direction' => 'SHORT',
+                    'status' => 'new',
+                ]);
+                $createdPositions[] = ['id' => $position->id, 'direction' => 'SHORT'];
+            }
+        }
+
+        $this->totalCreated = count($createdPositions);
+
+        return [
+            'account_id' => $this->account->id,
+            'exchange_positions' => [
+                'longs' => $exchangeLongs,
+                'shorts' => $exchangeShorts,
+            ],
+            'db_positions' => [
+                'longs' => $dbLongs,
+                'shorts' => $dbShorts,
+            ],
+            'max_slots' => [
+                'longs' => $maxLongs,
+                'shorts' => $maxShorts,
+            ],
+            'available_slots' => [
+                'longs' => $availableLongSlots,
+                'shorts' => $availableShortSlots,
+            ],
+            'created_positions' => $createdPositions,
+            'total_created' => $this->totalCreated,
+        ];
+    }
+
+    /**
+     * Count positions by direction from exchange response.
+     */
+    public function countPositionsByDirection(array $positions, string $direction): int
+    {
+        return collect($positions)->filter(static function ($position) use ($direction) {
+            // Binance uses 'positionSide' with LONG/SHORT
+            if (isset($position['positionSide'])) {
+                return mb_strtoupper($position['positionSide']) === $direction;
+            }
+
+            // Bybit uses 'side' with Buy/Sell
+            if (isset($position['side'])) {
+                $side = mb_strtoupper($position['side']);
+
+                return ($direction === 'LONG' && $side === 'BUY')
+                    || ($direction === 'SHORT' && $side === 'SELL');
+            }
+
+            return false;
+        })->count();
+    }
+}
