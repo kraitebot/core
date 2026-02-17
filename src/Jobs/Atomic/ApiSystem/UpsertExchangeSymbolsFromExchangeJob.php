@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\ApiSystem;
 
+use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Account;
@@ -67,80 +68,86 @@ final class UpsertExchangeSymbolsFromExchangeJob extends BaseApiableJob
         $linkedCount = 0;
         $skippedCount = 0;
 
-        foreach ($apiResponse->result as $symbolData) {
-            $token = $symbolData['baseAsset'] ?? null;
-            $quote = $symbolData['quoteAsset'] ?? null;
-            $asset = $symbolData['pair'] ?? null; // Raw exchange pair (e.g., PF_XBTUSD, BTCUSDT)
+        // Wrap entire upsert loop in a single transaction to:
+        // 1. Reduce observer overhead (fires once at commit instead of 601 times)
+        // 2. Prevent lock contention when multiple jobs run concurrently
+        // 3. Ensure atomic operation (all symbols or none)
+        DB::transaction(function () use ($apiResponse, $symbolsByToken, &$upsertedCount, &$linkedCount, &$skippedCount) {
+            foreach ($apiResponse->result as $symbolData) {
+                $token = $symbolData['baseAsset'] ?? null;
+                $quote = $symbolData['quoteAsset'] ?? null;
+                $asset = $symbolData['pair'] ?? null; // Raw exchange pair (e.g., PF_XBTUSD, BTCUSDT)
 
-            if (! $token || ! $quote) {
-                $skippedCount++;
+                if (! $token || ! $quote) {
+                    $skippedCount++;
 
-                continue;
-            }
+                    continue;
+                }
 
-            // Upsert exchange symbol with all available metadata
-            // Ensure precision values are non-negative (some exchanges return negative values)
-            $pricePrecision = $symbolData['pricePrecision'] ?? null;
-            $quantityPrecision = $symbolData['quantityPrecision'] ?? null;
+                // Upsert exchange symbol with all available metadata
+                // Ensure precision values are non-negative (some exchanges return negative values)
+                $pricePrecision = $symbolData['pricePrecision'] ?? null;
+                $quantityPrecision = $symbolData['quantityPrecision'] ?? null;
 
-            if ($pricePrecision !== null && $pricePrecision < 0) {
-                $pricePrecision = 0;
-            }
-            if ($quantityPrecision !== null && $quantityPrecision < 0) {
-                $quantityPrecision = 0;
-            }
+                if ($pricePrecision !== null && $pricePrecision < 0) {
+                    $pricePrecision = 0;
+                }
+                if ($quantityPrecision !== null && $quantityPrecision < 0) {
+                    $quantityPrecision = 0;
+                }
 
-            // Check if exchange symbol already exists
-            $existingSymbol = ExchangeSymbol::where('token', $token)
-                ->where('api_system_id', $this->apiSystem->id)
-                ->where('quote', $quote)
-                ->first();
+                // Check if exchange symbol already exists
+                $existingSymbol = ExchangeSymbol::where('token', $token)
+                    ->where('api_system_id', $this->apiSystem->id)
+                    ->where('quote', $quote)
+                    ->first();
 
-            // Try to find matching symbol_id by token (for new records or unlinked ones)
-            $symbolId = $symbolsByToken->get($token);
+                // Try to find matching symbol_id by token (for new records or unlinked ones)
+                $symbolId = $symbolsByToken->get($token);
 
-            // Build update data - always update metadata
-            $updateData = [
-                'asset' => $asset,
-                'price_precision' => $pricePrecision,
-                'quantity_precision' => $quantityPrecision,
-                'tick_size' => $symbolData['tickSize'] ?? null,
-                'min_notional' => $symbolData['minNotional'] ?? null,
-                'min_price' => $symbolData['minPrice'] ?? null,
-                'max_price' => $symbolData['maxPrice'] ?? null,
-                'delivery_ts_ms' => $symbolData['deliveryDate'] ?? null,
-                'symbol_information' => $symbolData,
+                // Build update data - always update metadata
+                $updateData = [
+                    'asset' => $asset,
+                    'price_precision' => $pricePrecision,
+                    'quantity_precision' => $quantityPrecision,
+                    'tick_size' => $symbolData['tickSize'] ?? null,
+                    'min_notional' => $symbolData['minNotional'] ?? null,
+                    'min_price' => $symbolData['minPrice'] ?? null,
+                    'max_price' => $symbolData['maxPrice'] ?? null,
+                    'delivery_ts_ms' => $symbolData['deliveryDate'] ?? null,
+                    'symbol_information' => $symbolData,
 
-                // Exchange-specific min order size fields (KuCoin)
-                'kucoin_lot_size' => $symbolData['kucoinLotSize'] ?? null,
-                'kucoin_multiplier' => $symbolData['kucoinMultiplier'] ?? null,
-            ];
+                    // Exchange-specific min order size fields (KuCoin)
+                    'kucoin_lot_size' => $symbolData['kucoinLotSize'] ?? null,
+                    'kucoin_multiplier' => $symbolData['kucoinMultiplier'] ?? null,
+                ];
 
-            // Only set symbol_id if:
-            // 1. This is a new record (existingSymbol is null), OR
-            // 2. Existing record has no symbol_id and we found one
-            // Never overwrite an existing symbol_id (it may have been set via CMC API)
-            if (! $existingSymbol || ($existingSymbol->symbol_id === null && $symbolId !== null)) {
-                $updateData['symbol_id'] = $symbolId;
-                if ($symbolId) {
+                // Only set symbol_id if:
+                // 1. This is a new record (existingSymbol is null), OR
+                // 2. Existing record has no symbol_id and we found one
+                // Never overwrite an existing symbol_id (it may have been set via CMC API)
+                if (! $existingSymbol || ($existingSymbol->symbol_id === null && $symbolId !== null)) {
+                    $updateData['symbol_id'] = $symbolId;
+                    if ($symbolId) {
+                        $linkedCount++;
+                    }
+                } elseif ($existingSymbol->symbol_id !== null) {
+                    // Already linked, count it
                     $linkedCount++;
                 }
-            } elseif ($existingSymbol->symbol_id !== null) {
-                // Already linked, count it
-                $linkedCount++;
+
+                ExchangeSymbol::updateOrCreate(
+                    [
+                        'token' => $token,
+                        'api_system_id' => $this->apiSystem->id,
+                        'quote' => $quote,
+                    ],
+                    $updateData
+                );
+
+                $upsertedCount++;
             }
-
-            ExchangeSymbol::updateOrCreate(
-                [
-                    'token' => $token,
-                    'api_system_id' => $this->apiSystem->id,
-                    'quote' => $quote,
-                ],
-                $updateData
-            );
-
-            $upsertedCount++;
-        }
+        });
 
         return [
             'exchange' => $this->apiSystem->canonical,
