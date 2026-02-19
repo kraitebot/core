@@ -170,13 +170,10 @@ final class QuerySymbolIndicatorsJob extends BaseApiableJob
                 $indicatorEndpoint = $taapiIndicator ?? $idParts[3] ?? null;
                 $periodParam = null;
 
-                // For EMA, the period is the LAST segment of the ID
-                // Format: binancefutures_BTC/USDT_5m_ema_1_2_40 (backtrack_results_period)
+                // For EMA, the period is at index 4
+                // Format: binancefutures_BTC/USDT_5m_ema_40_2_1 (period_results_backtrack)
                 if ($indicatorEndpoint === 'ema') {
-                    $lastPart = end($idParts);
-                    if (is_numeric($lastPart)) {
-                        $periodParam = $lastPart;
-                    }
+                    $periodParam = $idParts[4] ?? null;
                 }
 
                 // Try to match indicator
