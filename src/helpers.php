@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Illuminate\Database\Eloquent\Model;
 use Kraite\Core\Models\ExchangeSymbol;
+use Kraite\Core\Support\Math;
 
 /**
  * Try running a callback multiple times with optional delays and failure callback.
@@ -57,9 +58,11 @@ function summarize_model_attributes(Model $model, array $only = []): string
     $parts = [];
 
     foreach ($attributes as $key => $value) {
-        if (!(is_scalar($value) || $value === null)) { continue; }
+        if (! (is_scalar($value) || $value === null)) {
+            continue;
+        }
 
-$parts[] = "{$key}=".var_export($value, true);
+        $parts[] = "{$key}=".var_export($value, true);
     }
 
     return implode(separator: ', ', array: $parts);
@@ -113,59 +116,74 @@ function get_market_order_amount_divider($totalLimitOrders)
 
 function remove_trailing_zeros($number): string
 {
-    // Force decimal string with up to 15 decimals — avoids sci-notation
-    $stringNumber = number_format((float) $number, 15, '.', '');
+    $scale = 40;
+    $normalized = normalize_decimal_for_formatting($number, $scale);
 
-    // Remove trailing zeros and possible ending dot
-    $stringNumber = mb_rtrim(mb_rtrim($stringNumber, '0'), '.');
-
-    // Normalize -0 to 0
-    if ($stringNumber === '-0') {
-        $stringNumber = '0';
-    }
-
-    return $stringNumber;
+    return truncate_decimal_string($normalized, $scale);
 }
 
 function api_format_quantity($quantity, ExchangeSymbol $exchangeSymbol): string
 {
-    $precision = (int) $exchangeSymbol->quantity_precision;
-    $s = number_format((float) $quantity, $precision + 8, '.', '');
-    $dot = mb_strpos($s, '.');
-    if ($dot !== false) {
-        $s = mb_substr($s, 0, length: $dot + 1 + $precision);
-    }
-    $s = mb_rtrim($s, '0');
-    $s = mb_rtrim($s, '.');
+    $precision = max(0, (int) $exchangeSymbol->quantity_precision);
+    $scale = max(24, $precision + 18);
+    $normalized = normalize_decimal_for_formatting($quantity, $scale);
 
-    return $s === '-0' ? '0' : $s;
+    return truncate_decimal_string($normalized, $precision);
 }
 
 function api_format_price($price, ExchangeSymbol $exchangeSymbol): string
 {
-    $precision = (int) $exchangeSymbol->price_precision;
+    $precision = max(0, (int) $exchangeSymbol->price_precision);
     $tickSize = (string) $exchangeSymbol->tick_size;
+    $scale = max(24, $precision + 18);
 
-    // Convert to fixed decimal string with buffer
-    $p = number_format((float) $price, $precision + 8, '.', '');
-    $t = number_format((float) $tickSize, $precision + 8, '.', '');
+    $normalizedPrice = normalize_decimal_for_formatting($price, $scale);
+    $normalizedTickSize = normalize_decimal_for_formatting($tickSize, $scale);
 
-    // Floor to nearest tick: floor(price / tick) * tick
-    // Use integer division (scale 0) instead of float cast to avoid precision loss on 8-decimal crypto
-    $ratio = bcdiv($p, $t, 0); // Integer division = floor for positive prices
-    $floored = bcmul($ratio, $t, $precision + 8);
-
-    // Truncate to price precision
-    $dot = mb_strpos($floored, '.');
-    if ($dot !== false) {
-        $floored = mb_substr($floored, 0, length: $dot + 1 + $precision);
+    if (Math::equal($normalizedTickSize, '0', $scale)) {
+        return truncate_decimal_string($normalizedPrice, $precision);
     }
 
-    // Clean trailing zeros
-    $floored = mb_rtrim($floored, '0');
-    $floored = mb_rtrim($floored, '.');
+    // Floor to nearest tick: floor(price / tick) * tick
+    // Integer scale (0) keeps positive-price floor behavior deterministic.
+    $ratio = Math::div($normalizedPrice, $normalizedTickSize, 0);
+    $floored = Math::mul($ratio, $normalizedTickSize, $scale);
 
-    return $floored === '-0' ? '0' : $floored;
+    return truncate_decimal_string($floored, $precision);
+}
+
+function normalize_decimal_for_formatting(string|int|float $value, int $scale): string
+{
+    return Math::add($value, '0', $scale);
+}
+
+function truncate_decimal_string(string $value, int $precision): string
+{
+    $sign = '';
+    if (mb_strpos($value, '-') === 0) {
+        $sign = '-';
+        $value = mb_substr($value, 1);
+    }
+
+    $parts = explode('.', $value, 2);
+    $integerPart = $parts[0] === '' ? '0' : $parts[0];
+    $fractionPart = $parts[1] ?? '';
+
+    if ($precision <= 0 || $fractionPart === '') {
+        $truncated = $integerPart;
+    } else {
+        $truncatedFraction = mb_substr($fractionPart, 0, $precision);
+        $truncated = "{$integerPart}.{$truncatedFraction}";
+    }
+
+    $truncated = mb_rtrim(mb_rtrim($truncated, '0'), '.');
+    if ($truncated === '') {
+        $truncated = '0';
+    }
+
+    $result = $sign.$truncated;
+
+    return $result === '-0' ? '0' : $result;
 }
 
 /**
@@ -187,7 +205,7 @@ function log_on(string $filename, string $message): void
 
     $timestamp = now()->format('Y-m-d H:i:s.u');
     $logFile = "{$logsPath}/{$filename}";
-    $logMessage = "[{$timestamp}] {$message}" . PHP_EOL;
+    $logMessage = "[{$timestamp}] {$message}".PHP_EOL;
 
     file_put_contents($logFile, $logMessage, flags: FILE_APPEND | LOCK_EX);
 }

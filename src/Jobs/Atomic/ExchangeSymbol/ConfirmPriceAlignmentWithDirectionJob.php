@@ -6,6 +6,7 @@ namespace Kraite\Core\Jobs\Atomic\ExchangeSymbol;
 
 use Exception;
 use Kraite\Core\Abstracts\BaseQueueableJob;
+use Kraite\Core\Jobs\Models\ExchangeSymbol\ConcludeSymbolDirectionAtTimeframeJob;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Indicator;
 use Kraite\Core\Models\IndicatorHistory;
@@ -125,7 +126,7 @@ final class ConfirmPriceAlignmentWithDirectionJob extends BaseQueueableJob
         // Find the previous step (ConcludeSymbolDirectionAtTimeframeJob) in the same block
         $previousStep = Step::query()
             ->where('block_uuid', $this->step->block_uuid)
-            ->where('class', \Kraite\Core\_Jobs\Models\ExchangeSymbol\ConcludeSymbolDirectionAtTimeframeJob::class)
+            ->where('class', ConcludeSymbolDirectionAtTimeframeJob::class)
             ->first();
 
         if (! $previousStep || ! $previousStep->response) {

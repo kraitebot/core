@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.2.3 - 2026-02-19
+
+### Fixes
+
+- [BUG FIX] Replace float-cast based order formatting helpers with BCMath-safe decimal normalization for quantity and price formatting
+- [BUG FIX] Use `Kraite\\Core\\Jobs\\Models\\ExchangeSymbol\\ConcludeSymbolDirectionAtTimeframeJob` in alignment confirmation previous-step lookup
+
 ## 1.2.2 - 2026-02-19
 
 ### Fixes
