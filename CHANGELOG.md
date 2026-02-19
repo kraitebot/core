@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.2.4 - 2026-02-19
+
+### Improvements
+
+- [IMPROVED] Remove deprecated `src/_Jobs` legacy namespace tree after migration to `Kraite\\Core\\Jobs\\...` classes
+
 ## 1.2.3 - 2026-02-19
 
 ### Fixes
