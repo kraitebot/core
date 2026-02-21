@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.2 - 2026-02-21
+
+### Features
+
+- [NEW FEATURE] Add `apiSystem()` BelongsTo relationship on ApiRequestLog model
+
+### Improvements
+
+- [IMPROVED] Add explicit return types and imports on ApiRequestLog relationships (MorphTo, BelongsTo)
+- [IMPROVED] Rename `startOrFail()` to `startOrSkip()` in TouchTaapiDataForExchangeSymbolJob to prevent false failures
+- [IMPROVED] Add missing `cleanLogsFolder()` helper to helpers.php
+
 ## 1.3.1 - 2026-02-21
 
 ### Improvements

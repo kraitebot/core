@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Kraite\Core\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Kraite\Core\Abstracts\BaseModel;
 use Kraite\Core\Database\Factories\ApiRequestLogFactory;
 
@@ -33,12 +35,17 @@ final class ApiRequestLog extends BaseModel
         'closed_at' => 'datetime',
     ];
 
-    public function relatable()
+    public function relatable(): MorphTo
     {
         return $this->morphTo();
     }
 
-    public function account()
+    public function apiSystem(): BelongsTo
+    {
+        return $this->belongsTo(ApiSystem::class);
+    }
+
+    public function account(): BelongsTo
     {
         return $this->belongsTo(Account::class);
     }

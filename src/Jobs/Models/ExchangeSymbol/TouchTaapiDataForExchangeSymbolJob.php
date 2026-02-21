@@ -104,7 +104,7 @@ final class TouchTaapiDataForExchangeSymbolJob extends BaseApiableJob
         return true;
     }
 
-    public function startOrFail()
+    public function startOrSkip()
     {
         // Skip if already verified (may have been verified by parallel job)
         $taapiVerified = $this->exchangeSymbol->api_statuses['taapi_verified'] ?? false;

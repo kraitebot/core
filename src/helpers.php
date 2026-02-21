@@ -193,6 +193,27 @@ function truncate_decimal_string(string $value, int $precision): string
  * @param  string  $filename  The filename to write to (e.g., 'binance-websocket.log')
  * @param  string  $message  The message to log
  */
+function cleanLogsFolder(): void
+{
+    $logsPath = storage_path('logs');
+
+    if (! \Illuminate\Support\Facades\File::isDirectory($logsPath)) {
+        return;
+    }
+
+    /** @var array<int, string> $directories */
+    $directories = \Illuminate\Support\Facades\File::directories($logsPath);
+    foreach ($directories as $directory) {
+        \Illuminate\Support\Facades\File::deleteDirectory($directory);
+    }
+
+    /** @var array<int, string> $logFiles */
+    $logFiles = \Illuminate\Support\Facades\File::glob($logsPath.'/*.log');
+    foreach ($logFiles as $logFile) {
+        \Illuminate\Support\Facades\File::delete($logFile);
+    }
+}
+
 function log_on(string $filename, string $message): void
 {
     return; // Disabled to prevent log spam
