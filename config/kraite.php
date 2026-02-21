@@ -27,6 +27,7 @@ return [
     'can_open_positions' => env('CAN_OPEN_POSITIONS', false),
     'notifications_enabled' => env('NOTIFICATIONS_ENABLED', true),
     'prefix_hostname_on_notifications' => env('PREFIX_HOSTNAME_ON_NOTIFICATIONS', false),
+    'can_dispatch_steps' => env('CAN_DISPATCH_STEPS', false),
 
     /*
     |--------------------------------------------------------------------------

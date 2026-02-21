@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.2.9 - 2026-02-21
+
+### Improvements
+
+- [IMPROVED] Move 18 artisan commands from ingestion app to kraitebot/core — commands now available across all Kraite apps (admin, ingestion, kraite.com)
+- [IMPROVED] Clean up CoreServiceProvider imports and formatting
+
 ## 1.2.8 - 2026-02-21
 
 ### Features
