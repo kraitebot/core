@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\Account;
 
+use Exception;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
-use StepDispatcher\Exceptions\JustEndException;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\ApiSystem;
@@ -38,12 +38,12 @@ final class VerifyMinAccountBalanceJob extends BaseApiableJob
             ->withAccount($this->account);
     }
 
-    public function relatable()
+    public function relatable(): Account
     {
         return $this->account;
     }
 
-    public function computeApiable()
+    public function computeApiable(): null
     {
         // Query balance from exchange and store in api_snapshots
         $apiResponse = $this->account->apiQueryBalance();
@@ -51,9 +51,11 @@ final class VerifyMinAccountBalanceJob extends BaseApiableJob
 
         ApiSnapshot::storeFor($this->account, 'account-balance', $balanceData);
 
-        // Verify minimum balance
+        // Extract balance values
         $availableBalance = $balanceData['available-balance'] ?? '0';
         $minAccountBalance = $this->account->tradeConfiguration->min_account_balance ?? '100';
+
+        // Verify minimum balance
         $hasMinBalance = Math::gte($availableBalance, $minAccountBalance, 8);
 
         // Store result before potential exception
@@ -69,11 +71,11 @@ final class VerifyMinAccountBalanceJob extends BaseApiableJob
 
         // Insufficient balance - throw to stop workflow gracefully
         if (! $hasMinBalance) {
-            throw new JustEndException(
+            throw new Exception(
                 "Insufficient balance: {$availableBalance} < {$minAccountBalance} (minimum required)"
             );
         }
 
-        return null; // Result already stored
+        return null;
     }
 }

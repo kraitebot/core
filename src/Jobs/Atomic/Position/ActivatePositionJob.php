@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\Position;
 
+use Exception;
 use Kraite\Core\Abstracts\BaseQueueableJob;
-use StepDispatcher\Exceptions\JustResolveException;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
@@ -23,8 +23,8 @@ use Kraite\Core\Support\Math;
  * - All orders: reference_price == price, reference_quantity == quantity
  *   (Bitget TP/SL may have quantity=0, which is valid)
  *
- * Throws JustResolveException on any mismatch, which triggers
- * the resolve-exception handler without retry cycles.
+ * Throws Exception on any mismatch, which triggers
+ * the resolve-exception handler.
  */
 final class ActivatePositionJob extends BaseQueueableJob
 {
@@ -35,7 +35,7 @@ final class ActivatePositionJob extends BaseQueueableJob
         $this->position = Position::findOrFail($positionId);
     }
 
-    public function relatable()
+    public function relatable(): Position
     {
         return $this->position;
     }
@@ -58,7 +58,7 @@ final class ActivatePositionJob extends BaseQueueableJob
         $actualCount = $orders->count();
 
         if ($actualCount !== $expectedCount) {
-            throw new JustResolveException(
+            throw new Exception(
                 "Order count mismatch: expected {$expectedCount}, got {$actualCount}"
             );
         }
@@ -99,13 +99,11 @@ final class ActivatePositionJob extends BaseQueueableJob
      * Validate MARKET orders.
      *
      * Expected: exactly 1 with status=FILLED, reference_status=FILLED
-     *
-     * @param  \Illuminate\Support\Collection<int, Order>  $orders
      */
     private function validateMarketOrders($orders): void
     {
         if ($orders->count() !== 1) {
-            throw new JustResolveException(
+            throw new Exception(
                 "Expected 1 MARKET order, got {$orders->count()}"
             );
         }
@@ -113,13 +111,13 @@ final class ActivatePositionJob extends BaseQueueableJob
         $order = $orders->first();
 
         if ($order->status !== 'FILLED') {
-            throw new JustResolveException(
+            throw new Exception(
                 "MARKET order #{$order->id} status is '{$order->status}', expected 'FILLED'"
             );
         }
 
         if ($order->reference_status !== 'FILLED') {
-            throw new JustResolveException(
+            throw new Exception(
                 "MARKET order #{$order->id} reference_status is '{$order->reference_status}', expected 'FILLED'"
             );
         }
@@ -131,26 +129,24 @@ final class ActivatePositionJob extends BaseQueueableJob
      * Validate LIMIT orders.
      *
      * Expected: exactly N with status=NEW, reference_status=NEW
-     *
-     * @param  \Illuminate\Support\Collection<int, Order>  $orders
      */
     private function validateLimitOrders($orders, int $expectedCount): void
     {
         if ($orders->count() !== $expectedCount) {
-            throw new JustResolveException(
+            throw new Exception(
                 "Expected {$expectedCount} LIMIT orders, got {$orders->count()}"
             );
         }
 
         foreach ($orders as $order) {
             if ($order->status !== 'NEW') {
-                throw new JustResolveException(
+                throw new Exception(
                     "LIMIT order #{$order->id} status is '{$order->status}', expected 'NEW'"
                 );
             }
 
             if ($order->reference_status !== 'NEW') {
-                throw new JustResolveException(
+                throw new Exception(
                     "LIMIT order #{$order->id} reference_status is '{$order->reference_status}', expected 'NEW'"
                 );
             }
@@ -163,13 +159,11 @@ final class ActivatePositionJob extends BaseQueueableJob
      * Validate TP (PROFIT-LIMIT) orders.
      *
      * Expected: exactly 1 with status=NEW, reference_status=NEW
-     *
-     * @param  \Illuminate\Support\Collection<int, Order>  $orders
      */
     private function validateTpOrders($orders): void
     {
         if ($orders->count() !== 1) {
-            throw new JustResolveException(
+            throw new Exception(
                 "Expected 1 PROFIT-LIMIT (TP) order, got {$orders->count()}"
             );
         }
@@ -177,13 +171,13 @@ final class ActivatePositionJob extends BaseQueueableJob
         $order = $orders->first();
 
         if ($order->status !== 'NEW') {
-            throw new JustResolveException(
+            throw new Exception(
                 "TP order #{$order->id} status is '{$order->status}', expected 'NEW'"
             );
         }
 
         if ($order->reference_status !== 'NEW') {
-            throw new JustResolveException(
+            throw new Exception(
                 "TP order #{$order->id} reference_status is '{$order->reference_status}', expected 'NEW'"
             );
         }
@@ -195,13 +189,11 @@ final class ActivatePositionJob extends BaseQueueableJob
      * Validate SL (STOP-MARKET) orders.
      *
      * Expected: exactly 1 with status=NEW, reference_status=NEW
-     *
-     * @param  \Illuminate\Support\Collection<int, Order>  $orders
      */
     private function validateSlOrders($orders): void
     {
         if ($orders->count() !== 1) {
-            throw new JustResolveException(
+            throw new Exception(
                 "Expected 1 STOP-MARKET (SL) order, got {$orders->count()}"
             );
         }
@@ -209,13 +201,13 @@ final class ActivatePositionJob extends BaseQueueableJob
         $order = $orders->first();
 
         if ($order->status !== 'NEW') {
-            throw new JustResolveException(
+            throw new Exception(
                 "SL order #{$order->id} status is '{$order->status}', expected 'NEW'"
             );
         }
 
         if ($order->reference_status !== 'NEW') {
-            throw new JustResolveException(
+            throw new Exception(
                 "SL order #{$order->id} reference_status is '{$order->reference_status}', expected 'NEW'"
             );
         }
@@ -233,14 +225,14 @@ final class ActivatePositionJob extends BaseQueueableJob
     {
         // Price validation (both must match exactly)
         if (! Math::equal($order->reference_price ?? '0', $order->price ?? '0', 8)) {
-            throw new JustResolveException(
+            throw new Exception(
                 "{$orderType} order #{$order->id} price drift: reference_price={$order->reference_price}, price={$order->price}"
             );
         }
 
         // Quantity validation (both must match exactly, 0 is valid for Bitget TP/SL)
         if (! Math::equal($order->reference_quantity ?? '0', $order->quantity ?? '0', 8)) {
-            throw new JustResolveException(
+            throw new Exception(
                 "{$orderType} order #{$order->id} quantity drift: reference_quantity={$order->reference_quantity}, quantity={$order->quantity}"
             );
         }

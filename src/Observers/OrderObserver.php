@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace Kraite\Core\Observers;
 
 use Illuminate\Support\Str;
-
-use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Jobs\Lifecycles\Order\PrepareOrderCorrectionJob;
 use Kraite\Core\Jobs\Lifecycles\Position\ApplyWapJob;
 use Kraite\Core\Jobs\Lifecycles\Position\ClosePositionJob;
@@ -24,15 +22,11 @@ final class OrderObserver
 
     private const array CLOSE_TRIGGER_TYPES = ['PROFIT-LIMIT', 'PROFIT-MARKET', 'STOP-MARKET'];
 
-    public function creating(Order $model): void
+    public function creating(Order $model): bool
     {
-        if (empty($model->uuid)) {
-            $model->uuid = Str::uuid()->toString();
-        }
-
-        if (empty($model->client_order_id)) {
-            $model->client_order_id = Str::uuid()->toString();
-        }
+        // Auto-generate UUIDs if missing
+        $model->uuid ??= Str::uuid()->toString();
+        $model->client_order_id ??= Str::uuid()->toString();
 
         // Flag conditional orders for exchange-specific routing
         // Each exchange has different endpoints for stop orders:
@@ -47,7 +41,7 @@ final class OrderObserver
             }
         }
 
-        $this->enforceOrderLimits($model);
+        return $this->enforceOrderLimits($model);
     }
 
     public function updating(Order $model): void
@@ -235,8 +229,7 @@ final class OrderObserver
             return;
         }
 
-        // Check for price drift using precise decimal comparison
-        // Both values must be non-null to compare
+        // Check for price drift (both values must be non-null for comparison)
         $hasPriceDrift = $model->reference_price !== null
             && $model->price !== null
             && ! Math::equal($model->price, $model->reference_price);
@@ -246,7 +239,7 @@ final class OrderObserver
             && $model->quantity !== null
             && ! Math::equal($model->quantity, $model->reference_quantity);
 
-        // No modification detected
+        // Skip if no modification detected
         if (! $hasPriceDrift && ! $hasQuantityDrift) {
             return;
         }
@@ -281,49 +274,43 @@ final class OrderObserver
 
     /**
      * Enforce maximum active order limits per type on a position.
-     * Prevents duplicate STOP-MARKET, MARKET, PROFIT, or excess LIMIT orders.
+     * Returns false to silently cancel creation when limits are exceeded.
      */
-    private function enforceOrderLimits(Order $model): void
+    private function enforceOrderLimits(Order $model): bool
     {
         $position = $model->position;
 
         if ($position === null) {
-            return;
+            return true;
         }
 
         $activeQuery = $position->orders()
             ->whereNotIn('status', self::INACTIVE_STATUSES);
 
-        match ($model->type) {
-            'STOP-MARKET' => $this->blockIfActiveExists($activeQuery, 'STOP-MARKET'),
-            'MARKET' => $this->blockIfActiveExists($activeQuery, 'MARKET'),
-            'MARKET-CANCEL' => $this->blockIfActiveExists($activeQuery, 'MARKET-CANCEL'),
-            'PROFIT-LIMIT', 'PROFIT-MARKET' => $this->blockIfActiveProfitExists($activeQuery),
-            'LIMIT' => $this->blockIfLimitExceeded($activeQuery, $position),
-            default => null,
+        return match ($model->type) {
+            'STOP-MARKET' => $this->allowIfNoActiveExists($activeQuery, 'STOP-MARKET'),
+            'MARKET' => $this->allowIfNoActiveExists($activeQuery, 'MARKET'),
+            'MARKET-CANCEL' => $this->allowIfNoActiveExists($activeQuery, 'MARKET-CANCEL'),
+            'PROFIT-LIMIT', 'PROFIT-MARKET' => $this->allowIfNoActiveProfitExists($activeQuery),
+            'LIMIT' => $this->allowIfLimitNotExceeded($activeQuery, $position),
+            default => true,
         };
     }
 
-    private function blockIfActiveExists(mixed $query, string $type): void
+    private function allowIfNoActiveExists(mixed $query, string $type): bool
     {
-        if ((clone $query)->where('type', $type)->exists()) {
-            throw new NonNotifiableException("{$type} order creation blocked: active order already exists");
-        }
+        return ! (clone $query)->where('type', $type)->exists();
     }
 
-    private function blockIfActiveProfitExists(mixed $query): void
+    private function allowIfNoActiveProfitExists(mixed $query): bool
     {
-        if ((clone $query)->whereIn('type', ['PROFIT-LIMIT', 'PROFIT-MARKET'])->exists()) {
-            throw new NonNotifiableException('PROFIT order creation blocked: active order already exists');
-        }
+        return ! (clone $query)->whereIn('type', ['PROFIT-LIMIT', 'PROFIT-MARKET'])->exists();
     }
 
-    private function blockIfLimitExceeded(mixed $query, mixed $position): void
+    private function allowIfLimitNotExceeded(mixed $query, mixed $position): bool
     {
         $activeCount = (clone $query)->where('type', 'LIMIT')->count();
 
-        if ($activeCount >= $position->total_limit_orders) {
-            throw new NonNotifiableException("LIMIT order creation blocked: {$activeCount}/{$position->total_limit_orders} active");
-        }
+        return $activeCount < $position->total_limit_orders;
     }
 }

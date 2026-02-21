@@ -17,114 +17,55 @@ final class BinanceApi
 {
     use HasPropertiesValidation;
 
-    // The REST api client.
-    private $client;
+    private BinanceApiClient $client;
 
-    // Initializes CoinMarketCap API client with credentials.
     public function __construct(ApiCredentials $credentials)
     {
         $this->client = new BinanceApiClient([
             'url' => config('kraite.api.url.binance.rest'),
-
-            // All ApiCredentials keys need to arrive encrypted.
             'api_key' => $credentials->get('binance_api_key'),
-
-            // All ApiCredentials keys need to arrive encrypted.
             'api_secret' => $credentials->get('binance_api_secret'),
         ]);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Check-Server-Time
-    public function serverTime()
+    public function serverTime(): mixed
     {
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/fapi/v1/time'
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/time');
         return $this->client->publicRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/account/rest-api/Notional-and-Leverage-Brackets
-    public function getLeverageBrackets(ApiProperties $properties)
+    public function getLeverageBrackets(ApiProperties $properties): mixed
     {
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/fapi/v1/leverageBracket',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/leverageBracket', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Exchange-Information
-    public function getExchangeInformation(ApiProperties $properties)
+    public function getExchangeInformation(ApiProperties $properties): mixed
     {
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/fapi/v1/exchangeInfo',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/exchangeInfo', $properties);
         return $this->client->publicRequest($apiRequest);
     }
 
-    /**
-     * Get candlestick/kline data for a symbol.
-     *
-     * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Kline-Candlestick-Data
-     */
-    public function getKlines(?ApiProperties $properties = null)
+    public function getKlines(?ApiProperties $properties = null): mixed
     {
         $properties ??= new ApiProperties;
-
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/fapi/v1/klines',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/klines', $properties);
         return $this->client->publicRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Current-All-Open-Orders
-    public function getCurrentOpenOrders(ApiProperties $properties)
+    public function getCurrentOpenOrders(ApiProperties $properties): mixed
     {
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/fapi/v1/openOrders',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/openOrders', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Algo-Order
-    // Returns conditional orders (STOP_MARKET, TAKE_PROFIT_MARKET, etc.) since Dec 2025 API migration.
-    public function getAlgoOpenOrders(ApiProperties $properties)
+    public function getAlgoOpenOrders(ApiProperties $properties): mixed
     {
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/fapi/v1/openAlgoOrders',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/openAlgoOrders', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    /**
-     * Place a conditional algo order (STOP_MARKET, TAKE_PROFIT_MARKET, etc.).
-     *
-     * Since December 9, 2025, Binance migrated conditional orders to the Algo Order API.
-     * Regular placeOrder() endpoint no longer accepts STOP_MARKET orders.
-     *
-     * Supports two modes:
-     * - With explicit quantity: pass options.quantity
-     * - With closePosition: pass options.closePosition='true' (auto-closes entire position)
-     *
-     * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
-     */
-    public function placeAlgoOrder(ApiProperties $properties)
+    public function placeAlgoOrder(ApiProperties $properties): mixed
     {
         $this->validate($properties, [
             'options.symbol' => 'required|string',
@@ -135,201 +76,117 @@ final class BinanceApi
             'options.triggerPrice' => 'required|string',
         ]);
 
-        $apiRequest = ApiRequest::make(
-            'POST',
-            '/fapi/v1/algoOrder',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('POST', '/fapi/v1/algoOrder', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    /**
-     * Query a specific algo order by algoId.
-     *
-     * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Query-Algo-Historical-Orders
-     */
-    public function queryAlgoOrder(ApiProperties $properties)
+    public function queryAlgoOrder(ApiProperties $properties): mixed
     {
         $this->validate($properties, [
             'options.symbol' => 'required|string',
             'options.algoId' => 'required|string',
         ]);
 
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/fapi/v1/algoOrder',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/openAlgoOrders', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    /**
-     * Cancel an algo order by algoId.
-     *
-     * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Cancel-Algo-Order
-     */
-    public function cancelAlgoOrder(ApiProperties $properties)
+    public function cancelAlgoOrder(ApiProperties $properties): mixed
     {
         $this->validate($properties, [
             'options.symbol' => 'required|string',
             'options.algoId' => 'required|string',
         ]);
 
-        $apiRequest = ApiRequest::make(
-            'DELETE',
-            '/fapi/v1/algoOrder',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('DELETE', '/fapi/v1/algoOrder', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/All-Orders
-    public function getAllOrders(ApiProperties $properties)
+    public function getAllOrders(ApiProperties $properties): mixed
     {
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/fapi/v1/allOrders',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/allOrders', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Query-Order
-    public function getOrder(ApiProperties $properties)
+    public function getOrder(ApiProperties $properties): mixed
     {
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/fapi/v1/order',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/order', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Cancel-Order
-    public function cancelOrder(ApiProperties $properties)
+    public function cancelOrder(ApiProperties $properties): mixed
     {
         $this->validate($properties, [
             'options.symbol' => 'required|string',
             'options.orderId' => 'required|string',
         ]);
 
-        $apiRequest = ApiRequest::make(
-            'DELETE',
-            '/fapi/v1/order',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('DELETE', '/fapi/v1/order', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Cancel-All-Open-Orders
-    public function cancelAllOpenOrders(ApiProperties $properties)
+    public function cancelAllOpenOrders(ApiProperties $properties): mixed
     {
         $this->validate($properties, [
             'options.symbol' => 'required|string',
         ]);
 
-        $apiRequest = ApiRequest::make(
-            'DELETE',
-            '/fapi/v1/allOpenOrders',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('DELETE', '/fapi/v1/allOpenOrders', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    public function updateMarginType(ApiProperties $properties)
+    public function updateMarginType(ApiProperties $properties): mixed
     {
         $this->validate($properties, [
             'options.symbol' => 'required|string',
             'options.margintype' => ['required', Rule::in(['ISOLATED', 'CROSSED'])],
         ]);
 
-        $apiRequest = ApiRequest::make(
-            'POST',
-            '/fapi/v1/marginType',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('POST', '/fapi/v1/marginType', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Position-Information-V3
-    public function getPositions(?ApiProperties $properties = null)
+    public function getPositions(?ApiProperties $properties = null): mixed
     {
         $properties ??= new ApiProperties;
-
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/fapi/v3/positionRisk',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/fapi/v3/positionRisk', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/account/rest-api/Futures-Account-Balance-V3
-    public function getAccountBalance()
+    public function getAccountBalance(): mixed
     {
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/fapi/v3/balance'
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/fapi/v3/balance');
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/binance-spot-api-docs/rest-api/public-api-endpoints#account-information-user_data
-    public function getSpotAccountBalance()
+    public function getSpotAccountBalance(): mixed
     {
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/api/v3/account'
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/api/v3/account');
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Change-Initial-Leverage
-    public function changeInitialLeverage(ApiProperties $properties)
+    public function changeInitialLeverage(ApiProperties $properties): mixed
     {
         $this->validate($properties, [
             'options.symbol' => 'required|string',
             'options.leverage' => 'required|integer',
         ]);
 
-        $apiRequest = ApiRequest::make(
-            'POST',
-            '/fapi/v1/leverage',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('POST', '/fapi/v1/leverage', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Mark-Price
-    public function getMarkPrice(ApiProperties $properties)
+    public function getMarkPrice(ApiProperties $properties): mixed
     {
         $this->validate($properties, [
             'options.symbol' => 'required',
         ]);
 
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/fapi/v1/premiumIndex',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/premiumIndex', $properties);
         return $this->client->publicRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api
-    public function placeOrder(ApiProperties $properties)
+    public function placeOrder(ApiProperties $properties): mixed
     {
         $this->validate($properties, [
             'options.symbol' => 'required|string',
@@ -338,34 +195,22 @@ final class BinanceApi
             'options.quantity' => 'required|string',
         ]);
 
-        $apiRequest = ApiRequest::make(
-            'POST',
-            '/fapi/v1/order',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('POST', '/fapi/v1/order', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Query-Order
-    public function orderQuery(ApiProperties $properties)
+    public function orderQuery(ApiProperties $properties): mixed
     {
         $this->validate($properties, [
             'options.symbol' => 'required|string',
             'options.orderId' => 'required|string',
         ]);
 
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/fapi/v1/order',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/order', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Modify-Order
-    public function modifyOrder(ApiProperties $properties)
+    public function modifyOrder(ApiProperties $properties): mixed
     {
         $this->validate($properties, [
             'options.symbol' => 'required',
@@ -373,70 +218,46 @@ final class BinanceApi
             'options.price' => 'required',
         ]);
 
-        $apiRequest = ApiRequest::make(
-            'PUT',
-            '/fapi/v1/order',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('PUT', '/fapi/v1/order', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Account-Trade-List
-    public function accountTrades(ApiProperties $properties)
+    public function accountTrades(ApiProperties $properties): mixed
     {
         $this->validate($properties, [
             'options.symbol' => 'required|string',
             'options.orderId' => 'string',
         ]);
 
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/fapi/v1/userTrades',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/userTrades', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/account/rest-api/Account-Information-V3
-    public function account(ApiProperties $properties)
+    public function account(ApiProperties $properties): mixed
     {
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/fapi/v3/account',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/fapi/v3/account', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/account/rest-api/Get-Income-History
-    public function income(ApiProperties $properties)
+    public function income(ApiProperties $properties): mixed
     {
         $this->validate($properties, [
             'options.symbol' => 'required|string',
             'options.incomeType' => 'required|string',
         ]);
 
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/fapi/v1/income',
-            $properties
-        );
-
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/income', $properties);
         return $this->client->signRequest($apiRequest);
     }
 
-    // https://developers.binance.com/docs/derivatives/usds-margined-futures/account/rest-api/User-Data-Stream
     public function createListenKey(): string
     {
         $apiRequest = ApiRequest::make('POST', '/fapi/v1/listenKey');
-        $response = $this->client->publicRequest($apiRequest);   // ← unsigned
+        $response = $this->client->publicRequest($apiRequest);
 
         $body = $response instanceof ResponseInterface
-          ? json_decode((string) $response->getBody(), associative: true)
-          : $response;                                         // array in tests
+            ? json_decode((string) $response->getBody(), associative: true)
+            : $response;
 
         return $body['listenKey'] ?? throw new RuntimeException('No listenKey returned');
     }
@@ -446,25 +267,22 @@ final class BinanceApi
         $apiRequest = ApiRequest::make('POST', '/fapi/v1/listenKey');
         $response = $this->client->publicRequest($apiRequest);
 
-        /** @var string $body */
         if ($response instanceof ResponseInterface) {
-            $body = (string) $response->getBody();              // raw JSON (or empty)
-        } elseif (is_array($response)) {                        // unit-test stub
-            return $response['listenKey']
-            ?? throw new RuntimeException('Stub missing listenKey.');
+            $body = (string) $response->getBody();
+        } elseif (is_array($response)) {
+            return $response['listenKey'] ?? throw new RuntimeException('Stub missing listenKey.');
         } else {
             throw new RuntimeException('Unexpected response type: '.get_debug_type($response));
         }
 
-        // empty body  ⇒ Binance kept the same key alive
+        // Empty body means Binance kept the same key alive
         if ($body === '') {
-            return $currentKey
-            ?? throw new RuntimeException('Empty listenKey body and no current key supplied.');
+            return $currentKey ?? throw new RuntimeException('Empty listenKey body and no current key supplied.');
         }
 
         $data = json_decode($body, associative: true);
 
-        // Binance error payload?
+        // Check for Binance error payload
         if (isset($data['code'], $data['msg'])) {
             throw new RuntimeException("Binance error {$data['code']}: {$data['msg']}");
         }
@@ -482,16 +300,12 @@ final class BinanceApi
             'listenKey' => $key,
         ]);
 
-        $this->client->publicRequest($apiRequest);     // response body is empty
+        $this->client->publicRequest($apiRequest);
     }
 
-    public function closeListenKey()
+    public function closeListenKey(): mixed
     {
-        $apiRequest = ApiRequest::make(
-            'DELETE',
-            '/fapi/v1/listenKey'
-        );
-
+        $apiRequest = ApiRequest::make('DELETE', '/fapi/v1/listenKey');
         return $this->client->signRequest($apiRequest);
     }
 }

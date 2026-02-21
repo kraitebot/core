@@ -36,8 +36,8 @@ trait MapsPlaceAlgoOrder
      */
     public function preparePlaceAlgoOrderProperties(Order $order): ApiProperties
     {
-        // Auto-generate client order id, if null.
-        if (is_null($order->client_order_id)) {
+        // Auto-generate client order id if missing
+        if ($order->client_order_id === null) {
             $order->updateSaving(['client_order_id' => Str::uuid()->toString()]);
         }
 
@@ -130,10 +130,30 @@ trait MapsPlaceAlgoOrder
 
     /**
      * Resolve Binance algo order query response.
+     * The openAlgoOrders endpoint returns an array of orders.
      */
     public function resolveAlgoOrderQueryResponse(Response $response): array
     {
-        $result = json_decode((string) $response->getBody(), associative: true);
+        $orders = json_decode((string) $response->getBody(), associative: true);
+
+        // openAlgoOrders returns an array — take the first (filtered by algoId)
+        $result = $orders[0] ?? [];
+
+        if (empty($result)) {
+            return [
+                'order_id' => '',
+                'symbol' => '',
+                'status' => 'CANCELLED',
+                'price' => '0',
+                '_price' => '0',
+                'quantity' => '0',
+                'type' => 'STOP_MARKET',
+                '_orderType' => 'STOP_MARKET',
+                'side' => '',
+                '_isAlgo' => true,
+                '_raw' => $orders,
+            ];
+        }
 
         $status = $this->mapAlgoStatus($result['algoStatus'] ?? 'NEW');
         $quantity = $result['executedQty'] ?? $result['quantity'] ?? '0';

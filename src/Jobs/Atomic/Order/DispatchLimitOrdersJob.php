@@ -35,7 +35,7 @@ class DispatchLimitOrdersJob extends BaseQueueableJob
         $this->position = Position::findOrFail($positionId);
     }
 
-    public function relatable()
+    public function relatable(): Position
     {
         return $this->position;
     }
@@ -75,7 +75,9 @@ class DispatchLimitOrdersJob extends BaseQueueableJob
 
         $resolver = JobProxy::with($this->position->account);
 
-        // 1. Calculate ladder → 2. Create ALL Orders in database
+        // 1. Calculate ladder → 2. Create Orders in database
+        // Observer silently rejects excess orders (returns false from creating()),
+        // so filter removes any nulls from blocked creations
         $this->limitOrders = collect(Engine::calculateLimitOrdersData(
             totalLimitOrders: $totalLimitOrders,
             direction: $direction,
@@ -84,7 +86,7 @@ class DispatchLimitOrdersJob extends BaseQueueableJob
             exchangeSymbol: $exchangeSymbol,
             limitQuantityMultipliers: $exchangeSymbol->limit_quantity_multipliers,
         ))
-            ->map(function (array $rung) use ($side, $direction) {
+            ->map(function (array $rung) use ($side, $direction): Order {
                 return Order::create([
                     'position_id' => $this->position->id,
                     'type' => 'LIMIT',
@@ -95,12 +97,14 @@ class DispatchLimitOrdersJob extends BaseQueueableJob
                     'quantity' => $rung['quantity'],
                 ]);
             })
+            ->filter()
+            ->values()
             ->all();
 
         // 3. Create Steps to place orders on exchange (sequential to allow cancellation on failure)
         $blockUuid = $this->uuid();
         collect($this->limitOrders)
-            ->each(function (Order $order, int $rungIndex) use ($resolver, $blockUuid) {
+            ->each(function (Order $order, int $rungIndex) use ($resolver, $blockUuid): void {
                 Step::create([
                     'class' => $resolver->resolve(PlaceLimitOrderJob::class),
                     'arguments' => [
