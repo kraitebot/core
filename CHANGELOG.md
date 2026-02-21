@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.2.7 - 2026-02-21
+
+### Improvements
+
+- [IMPROVED] Consolidate `waitlist_subscribers` migration into kraitebot/core — single source of truth for all database schema
+
 ## 1.2.6 - 2026-02-21
 
 ### Features
