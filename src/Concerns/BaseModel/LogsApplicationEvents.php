@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Concerns\BaseModel;
 
 use Illuminate\Database\Eloquent\Model;
+use Kraite\Core\Models\AppLog;
 use Kraite\Core\Models\ModelLog;
 use Kraite\Core\Observers\ModelLogObserver;
 
@@ -15,7 +16,8 @@ use Kraite\Core\Observers\ModelLogObserver;
  * - Automatic observer registration for ModelLogObserver
  * - Default blacklist for timestamp columns
  * - skipLogging() method for conditional filtering
- * - appLog() method for manual logging
+ * - modelLog() method for technical audit logging
+ * - appLog() method for user-facing business timeline logging
  */
 trait LogsApplicationEvents
 {
@@ -53,7 +55,7 @@ trait LogsApplicationEvents
      * @param  Model|null  $relatable  The model that triggered this event (optional)
      * @param  string|null  $message  Optional human-readable message
      */
-    public function appLog(
+    public function modelLog(
         string $eventType,
         array $metadata = [],
         ?Model $relatable = null,
@@ -72,6 +74,30 @@ trait LogsApplicationEvents
             'event_type' => $eventType,
             'metadata' => $metadata,
             'message' => $message,
+        ]);
+    }
+
+    /**
+     * Log a user-facing business event for this model.
+     * These appear in the UI timeline — keep messages human-readable.
+     */
+    public function appLog(
+        string $event,
+        string $message,
+        string $severity = 'info',
+        array $metadata = []
+    ): ?AppLog {
+        if (! AppLog::isEnabled()) {
+            return null;
+        }
+
+        return AppLog::create([
+            'loggable_type' => static::class,
+            'loggable_id' => $this->getKey(),
+            'event' => $event,
+            'message' => $message,
+            'severity' => $severity,
+            'metadata' => $metadata,
         ]);
     }
 }

@@ -78,4 +78,18 @@ final class VerifyMinAccountBalanceJob extends BaseApiableJob
 
         return null;
     }
+
+    public function complete(): void
+    {
+        $response = $this->step->response ?? [];
+        $availableBalance = $response['available_balance'] ?? 'N/A';
+
+        $this->account->appLog(
+            event: 'balance_verified',
+            message: "Account balance verified: \${$availableBalance} available",
+            metadata: [
+                'available_balance' => $availableBalance,
+            ]
+        );
+    }
 }

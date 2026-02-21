@@ -166,6 +166,16 @@ final class PlaceStopLossOrderJob extends BaseApiableJob
             'reference_quantity' => $this->stopLossOrder->quantity,
             'reference_status' => $this->stopLossOrder->status,
         ]);
+
+        $this->position->appLog(
+            event: 'stop_loss_placed',
+            message: "Stop-loss order placed at \${$this->stopLossOrder->price}",
+            metadata: [
+                'order_id' => $this->stopLossOrder->id,
+                'price' => $this->stopLossOrder->price,
+                'quantity' => $this->stopLossOrder->quantity,
+            ]
+        );
     }
 
     /**

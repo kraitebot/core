@@ -15,7 +15,7 @@ use Throwable;
  * Kraite-specific extension of BaseStepJob.
  * Adds project-specific defaults ($retries, $timeout) and hooks:
  * - shouldExitEarly() throws NonNotifiableException (not RuntimeException)
- * - onExceptionLogged() logs to relatable model via appLog()
+ * - onExceptionLogged() logs to relatable model via modelLog()
  */
 abstract class BaseQueueableJob extends BaseStepJob
 {
@@ -62,7 +62,7 @@ abstract class BaseQueueableJob extends BaseStepJob
     }
 
     /**
-     * Log exception to the relatable model via appLog().
+     * Log exception to the relatable model via modelLog().
      * This is Kraite-specific behavior — the generic BaseStepJob has a no-op.
      */
     protected function onExceptionLogged(Throwable $e): void
@@ -75,15 +75,15 @@ abstract class BaseQueueableJob extends BaseStepJob
         // Get the relatable model from the step
         $relatable = $this->step->relatable;
 
-        // Only log if relatable exists and has the appLog method
-        if (! $relatable || ! method_exists($relatable, 'appLog')) {
+        // Only log if relatable exists and has the modelLog method
+        if (! $relatable || ! method_exists($relatable, 'modelLog')) {
             return;
         }
 
         $parser = ExceptionParser::with($e);
 
         // Create ModelLog entry on the relatable model
-        $relatable->appLog(
+        $relatable->modelLog(
             eventType: 'step_failed',
             metadata: [
                 'exception_class' => get_class($e),

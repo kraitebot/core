@@ -177,6 +177,16 @@ class PlaceProfitOrderJob extends BaseApiableJob
         $this->position->updateSaving([
             'first_profit_price' => $this->profitOrder->price,
         ]);
+
+        $this->position->appLog(
+            event: 'profit_order_placed',
+            message: "Profit order placed at \${$this->profitOrder->price}",
+            metadata: [
+                'order_id' => $this->profitOrder->id,
+                'price' => $this->profitOrder->price,
+                'quantity' => $this->profitOrder->quantity,
+            ]
+        );
     }
 
     /**

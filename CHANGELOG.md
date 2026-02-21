@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.2.6 - 2026-02-21
+
+### Features
+
+- [NEW FEATURE] Add AppLog model — user-facing business activity logs with polymorphic relationships, immutable entries, and global enable/disable toggle
+- [NEW FEATURE] Add `appLog()` method to BaseModel via LogsApplicationEvents trait for human-readable timeline logging
+- [NEW FEATURE] Add `app_logs` migration with composite index on (loggable_type, loggable_id, created_at)
+- [NEW FEATURE] Log business milestones across position creation chain: balance_verified, market_order_placed, limit_orders_dispatched, profit_order_placed, stop_loss_placed, position_activated, order_rejected
+
 ## 1.2.5 - 2026-02-21
 
 ### Fixes

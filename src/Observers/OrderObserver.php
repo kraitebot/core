@@ -275,6 +275,7 @@ final class OrderObserver
     /**
      * Enforce maximum active order limits per type on a position.
      * Returns false to silently cancel creation when limits are exceeded.
+     * Logs rejected orders on the position for traceability.
      */
     private function enforceOrderLimits(Order $model): bool
     {
@@ -287,7 +288,7 @@ final class OrderObserver
         $activeQuery = $position->orders()
             ->whereNotIn('status', self::INACTIVE_STATUSES);
 
-        return match ($model->type) {
+        $allowed = match ($model->type) {
             'STOP-MARKET' => $this->allowIfNoActiveExists($activeQuery, 'STOP-MARKET'),
             'MARKET' => $this->allowIfNoActiveExists($activeQuery, 'MARKET'),
             'MARKET-CANCEL' => $this->allowIfNoActiveExists($activeQuery, 'MARKET-CANCEL'),
@@ -295,6 +296,30 @@ final class OrderObserver
             'LIMIT' => $this->allowIfLimitNotExceeded($activeQuery, $position),
             default => true,
         };
+
+        if (! $allowed) {
+            $position->modelLog('order_creation_rejected', [
+                'type' => $model->type,
+                'side' => $model->side,
+                'position_side' => $model->position_side,
+                'price' => $model->price,
+                'quantity' => $model->quantity,
+            ], message: "{$model->type} order rejected — limit exceeded for position #{$position->id}");
+
+            $position->appLog(
+                event: 'order_rejected',
+                message: "{$model->type} order rejected — limit exceeded for position #{$position->id}",
+                severity: 'warning',
+                metadata: [
+                    'type' => $model->type,
+                    'side' => $model->side,
+                    'price' => $model->price,
+                    'quantity' => $model->quantity,
+                ]
+            );
+        }
+
+        return $allowed;
     }
 
     private function allowIfNoActiveExists(mixed $query, string $type): bool

@@ -165,6 +165,16 @@ class PlaceMarketOrderJob extends BaseApiableJob
             'reference_quantity' => $this->marketOrder->quantity,
             'reference_status' => $this->marketOrder->status,
         ]);
+
+        $this->position->appLog(
+            event: 'market_order_placed',
+            message: "Market order placed — {$this->marketOrder->quantity} {$this->position->exchangeSymbol->parsed_trading_pair} at \${$this->marketOrder->price}",
+            metadata: [
+                'order_id' => $this->marketOrder->id,
+                'quantity' => $this->marketOrder->quantity,
+                'price' => $this->marketOrder->price,
+            ]
+        );
     }
 
     /**

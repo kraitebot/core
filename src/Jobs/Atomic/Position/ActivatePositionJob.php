@@ -93,6 +93,11 @@ final class ActivatePositionJob extends BaseQueueableJob
     public function complete(): void
     {
         $this->position->updateToActive();
+
+        $this->position->appLog(
+            event: 'position_activated',
+            message: 'Position activated — all orders confirmed',
+        );
     }
 
     /**

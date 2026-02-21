@@ -117,9 +117,20 @@ class DispatchLimitOrdersJob extends BaseQueueableJob
                 ]);
             });
 
+        $totalCreated = count($this->limitOrders);
+
+        $this->position->appLog(
+            event: 'limit_orders_dispatched',
+            message: "Dispatched {$totalCreated} DCA limit orders",
+            metadata: [
+                'total_orders' => $totalCreated,
+                'reference_price' => $referencePrice,
+            ]
+        );
+
         return [
             'position_id' => $this->position->id,
-            'total_limit_orders' => count($this->limitOrders),
+            'total_limit_orders' => $totalCreated,
             'reference_price' => $referencePrice,
             'market_qty' => $marketOrderQty,
             'orders' => collect($this->limitOrders)
