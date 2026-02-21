@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Dotenv\Dotenv;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
 use Kraite\Core\Commands\SafeToRestartCommand;
@@ -100,10 +101,22 @@ final class CoreServiceProvider extends ServiceProvider
 
     public function register(): void
     {
+        $this->loadSharedEnvironment();
+
         $this->mergeConfigFrom(
             __DIR__.'/../config/kraite.php',
             'kraite'
         );
+    }
+
+    protected function loadSharedEnvironment(): void
+    {
+        $path = env('KRAITE_ENV_PATH', '/home/waygou');
+        $file = env('KRAITE_ENV_FILE', '.env.kraite');
+
+        if (file_exists($path.DIRECTORY_SEPARATOR.$file)) {
+            Dotenv::createImmutable($path, $file)->safeLoad();
+        }
     }
 
     protected function registerSlowQueryListener(): void

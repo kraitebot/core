@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.2.8 - 2026-02-21
+
+### Features
+
+- [NEW FEATURE] Load shared `.env.kraite` file via CoreServiceProvider for unified environment across all Kraite apps
+
 ## 1.2.7 - 2026-02-21
 
 ### Improvements
