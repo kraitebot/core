@@ -434,9 +434,7 @@ final class KraiteSeeder extends Seeder
      * Seed additional symbol batches (legacy method maintained for backwards compatibility).
      * All symbols are now seeded via seedSymbols().
      */
-    public function seedAdditionalSymbols(): void
-    {
-    }
+    public function seedAdditionalSymbols(): void {}
 
     /**
      * Update exchange symbols settings.
@@ -459,16 +457,16 @@ final class KraiteSeeder extends Seeder
         $engine = Engine::find(1);
 
         if ($engine) {
-            $engine->binance_api_key = config('services.binance.key');
-            $engine->binance_api_secret = config('services.binance.secret');
-            $engine->kucoin_api_key = config('services.kucoin.key');
-            $engine->kucoin_api_secret = config('services.kucoin.secret');
-            $engine->kucoin_passphrase = config('services.kucoin.passphrase');
-            $engine->bitget_api_key = config('services.bitget.key');
-            $engine->bitget_api_secret = config('services.bitget.secret');
-            $engine->bitget_passphrase = config('services.bitget.passphrase');
-            $engine->coinmarketcap_api_key = config('services.coinmarketcap.key');
-            $engine->taapi_secret = config('services.taapi.secret');
+            $engine->binance_api_key = config('kraite.api.credentials.binance.api_key');
+            $engine->binance_api_secret = config('kraite.api.credentials.binance.api_secret');
+            $engine->kucoin_api_key = config('kraite.api.credentials.kucoin.api_key');
+            $engine->kucoin_api_secret = config('kraite.api.credentials.kucoin.api_secret');
+            $engine->kucoin_passphrase = config('kraite.api.credentials.kucoin.passphrase');
+            $engine->bitget_api_key = config('kraite.api.credentials.bitget.api_key');
+            $engine->bitget_api_secret = config('kraite.api.credentials.bitget.api_secret');
+            $engine->bitget_passphrase = config('kraite.api.credentials.bitget.passphrase');
+            $engine->coinmarketcap_api_key = config('kraite.api.credentials.coinmarketcap.api_key');
+            $engine->taapi_secret = config('kraite.api.credentials.taapi.secret');
             $engine->save();
         }
     }
@@ -481,8 +479,8 @@ final class KraiteSeeder extends Seeder
         $engine = Engine::find(1);
 
         if ($engine) {
-            $engine->bybit_api_key = config('services.bybit.key');
-            $engine->bybit_api_secret = config('services.bybit.secret');
+            $engine->bybit_api_key = config('kraite.api.credentials.bybit.api_key');
+            $engine->bybit_api_secret = config('kraite.api.credentials.bybit.api_secret');
             $engine->notification_channels = ['pushover', 'mail'];
             $engine->save();
         }
@@ -520,7 +518,7 @@ final class KraiteSeeder extends Seeder
                 'own_queue_name' => 'worker5',
                 'description' => 'Worker server for job processing',
                 'type' => 'worker',
-                'secret' => config('servers.worker5.secret'),
+                'secret' => config('kraite.server_secrets.worker5'),
             ],
             [
                 'hostname' => 'worker4',
@@ -530,7 +528,7 @@ final class KraiteSeeder extends Seeder
                 'own_queue_name' => 'worker4',
                 'description' => 'Worker server for job processing',
                 'type' => 'worker',
-                'secret' => config('servers.worker4.secret'),
+                'secret' => config('kraite.server_secrets.worker4'),
             ],
             [
                 'hostname' => 'worker3',
@@ -540,7 +538,7 @@ final class KraiteSeeder extends Seeder
                 'own_queue_name' => 'worker3',
                 'description' => 'Worker server for job processing',
                 'type' => 'worker',
-                'secret' => config('servers.worker3.secret'),
+                'secret' => config('kraite.server_secrets.worker3'),
             ],
             [
                 'hostname' => 'worker2',
@@ -550,7 +548,7 @@ final class KraiteSeeder extends Seeder
                 'own_queue_name' => 'worker2',
                 'description' => 'Worker server for job processing',
                 'type' => 'worker',
-                'secret' => config('servers.worker2.secret'),
+                'secret' => config('kraite.server_secrets.worker2'),
             ],
             [
                 'hostname' => 'worker1',
@@ -560,7 +558,7 @@ final class KraiteSeeder extends Seeder
                 'own_queue_name' => 'worker1',
                 'description' => 'Worker server for job processing',
                 'type' => 'worker',
-                'secret' => config('servers.worker1.secret'),
+                'secret' => config('kraite.server_secrets.worker1'),
             ],
             [
                 'hostname' => 'ingestion',
@@ -570,7 +568,7 @@ final class KraiteSeeder extends Seeder
                 'own_queue_name' => 'ingestion',
                 'description' => 'Ingestion server - cron & dispatch',
                 'type' => 'ingestion',
-                'secret' => config('servers.ingestion.secret'),
+                'secret' => config('kraite.server_secrets.ingestion'),
             ],
             [
                 'hostname' => 'redis',

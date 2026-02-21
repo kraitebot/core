@@ -4,6 +4,34 @@ declare(strict_types=1);
 
 return [
 
+    /*
+    |--------------------------------------------------------------------------
+    | Admin User
+    |--------------------------------------------------------------------------
+    */
+    'admin_user_name' => env('ADMIN_USER_NAME'),
+    'admin_user_email' => env('ADMIN_USER_EMAIL'),
+    'admin_user_password' => env('ADMIN_USER_PASSWORD', 'password'),
+    'admin_user_pushover_application_key' => env('ADMIN_USER_PUSHOVER_APPLICATION_KEY'),
+    'admin_user_pushover_user_key' => env('ADMIN_USER_PUSHOVER_USER_KEY'),
+    'admin_user_pushover_key' => env('ADMIN_USER_PUSHOVER_KEY'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Server Secrets
+    |--------------------------------------------------------------------------
+    |
+    | Health check authentication secrets for each server.
+    */
+    'server_secrets' => [
+        'worker5' => env('SERVER_SECRET_WORKER5'),
+        'worker4' => env('SERVER_SECRET_WORKER4'),
+        'worker3' => env('SERVER_SECRET_WORKER3'),
+        'worker2' => env('SERVER_SECRET_WORKER2'),
+        'worker1' => env('SERVER_SECRET_WORKER1'),
+        'ingestion' => env('SERVER_SECRET_INGESTION'),
+    ],
+
     /**
      * Small safety tolerance to lower the leverage bracket in case is
      * falls inside that percentage gap, to avoid last limit order rejections.

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.1 - 2026-02-21
+
+### Improvements
+
+- [IMPROVED] Add admin user and server secret config keys to `kraite.php` — eliminates all `env()` calls from KraiteSeeder
+- [IMPROVED] Use `config('kraite.api.credentials.*')` for engine credential seeding
+
 ## 1.3.0 - 2026-02-21
 
 ### Improvements
