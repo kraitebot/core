@@ -7,13 +7,11 @@ namespace Kraite\Core\Database\Seeders;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
-use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Str;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSystem;
+use Kraite\Core\Models\Engine;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Indicator;
-use Kraite\Core\Models\Engine;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Models\Subscription;
 use Kraite\Core\Models\Symbol;
@@ -105,9 +103,6 @@ final class KraiteSeeder extends Seeder
                 ],
             ]
         );
-
-        // OBV removed from active use - volume-based indicators are not cross-exchange proof
-        // Class file retained at RefreshData/OBVIndicator.php for future use
 
         // Supertrend - ATR-based trend indicator, cross-exchange proof (OHLC only)
         Indicator::updateOrCreate(
@@ -322,23 +317,18 @@ final class KraiteSeeder extends Seeder
     }
 
     /**
-     * Seed the Binance+Bybit user/trader.
+     * Seed the admin user from configuration.
      */
-    public function seedUser(): User
+    public function seedAdminUser(): User
     {
-        $userData = [
-            'name' => env('TRADER_BB_NAME'),
-            'email' => env('TRADER_BB_EMAIL'),
-            'password' => bcrypt(env('TRADER_BB_PASSWORD', 'password')),
-            'is_active' => true,
-            'is_admin' => true,
-            'pushover_key' => env('TRADER_BB_PUSHOVER_KEY'),
-            'notification_channels' => ['mail', 'pushover'],
-        ];
-
         return User::updateOrCreate(
-            ['email' => $userData['email']],
-            $userData
+            ['email' => config('kraite.admin_user_email')],
+            [
+                'name' => config('kraite.admin_user_name'),
+                'password' => bcrypt(config('kraite.admin_user_password', 'password')),
+                'is_active' => true,
+                'is_admin' => true,
+            ]
         );
     }
 
@@ -352,30 +342,6 @@ final class KraiteSeeder extends Seeder
             [
                 'is_default' => true,
                 'description' => 'Standard trade configuration, default for all tokens',
-            ]
-        );
-    }
-
-    /**
-     * Seed the Binance account for the Binance+Bybit trader.
-     */
-    public function seedBinanceAccount(User $trader, ApiSystem $binance): void
-    {
-        Account::updateOrCreate(
-            [
-                'user_id' => $trader->id,
-                'api_system_id' => $binance->id,
-            ],
-            [
-                'uuid' => (string) Str::uuid(),
-                'name' => 'Main Binance Account',
-                'portfolio_quote' => 'USDT',
-                'trading_quote' => 'USDT',
-                'trade_configuration_id' => 1,
-                'binance_api_key' => env('TRADER_BB_BINANCE_API_KEY'),
-                'binance_api_secret' => env('TRADER_BB_BINANCE_API_SECRET'),
-                'market_order_margin_percentage_long' => '5.00',
-                'market_order_margin_percentage_short' => '5.00',
             ]
         );
     }
@@ -457,51 +423,19 @@ final class KraiteSeeder extends Seeder
             ['id' => 1],
             [
                 'allow_opening_positions' => true,
-                'admin_pushover_application_key' => env('ADMIN_USER_PUSHOVER_APPLICATION_KEY'),
-                'admin_pushover_user_key' => env('ADMIN_USER_PUSHOVER_USER_KEY'),
-                'email' => env('ADMIN_USER_EMAIL'),
+                'admin_pushover_application_key' => config('kraite.admin_user_pushover_application_key'),
+                'admin_pushover_user_key' => config('kraite.admin_user_pushover_user_key'),
+                'email' => config('kraite.admin_user_email'),
             ]
         );
     }
 
     /**
-     * Seed additional symbol batches from various schema seeders.
-     * This method is now empty as all symbols are seeded in seedSymbols().
+     * Seed additional symbol batches (legacy method maintained for backwards compatibility).
+     * All symbols are now seeded via seedSymbols().
      */
     public function seedAdditionalSymbols(): void
     {
-        // All symbols are now seeded in seedSymbols() using getAllSymbolCmcIds()
-    }
-
-    /**
-     * Update specific positions with hardcoded profit prices.
-     */
-    public function updatePositionProfitPrices(): void
-    {
-        $positionData = [
-            1072 => 3.04389988, // TONUSDT
-            1073 => 0.00318842, // DEGENUSDT
-            1064 => 321.68888500, // AAVEUSDT
-            1063 => 0.43392483, // ARKUSDT
-            1060 => 0.30980976, // SUSDT
-            1061 => 0.20292457, // PNUTUSDT
-            989 => 566.23485550, // BCHUSDT
-            983 => 0.95447097, // ONDUSDT
-            974 => 0.26890577, // SANDUSDT
-            973 => 0.82540880, // ALGUSDT
-            782 => 124.80333000, // LTCUSDT
-            733 => 887.30647000, // BNBUSDT
-        ];
-
-        foreach ($positionData as $id => $profitPrice) {
-            $position = Position::find($id);
-
-            if ($position) {
-                $position->updateSaving([
-                    'first_profit_price' => $profitPrice,
-                ]);
-            }
-        }
     }
 
     /**
@@ -518,235 +452,24 @@ final class KraiteSeeder extends Seeder
     }
 
     /**
-     * Migrate exchange credentials from JSON to dedicated columns.
-     */
-    public function migrateAccountCredentials(): void
-    {
-        $account = Account::find(1);
-
-        if ($account && isset($account->credentials['api_key'])) {
-            $account->binance_api_key = $account->credentials['api_key'];
-            $account->binance_api_secret = $account->credentials['api_secret'];
-            $account->save();
-        }
-    }
-
-    /**
-     * Migrate Kraite credentials from environment to database.
+     * Migrate Kraite credentials from configuration to database.
      */
     public function migrateKraiteCredentials(): void
     {
         $engine = Engine::find(1);
 
         if ($engine) {
-            $engine->binance_api_key = env('BINANCE_API_KEY');
-            $engine->binance_api_secret = env('BINANCE_API_SECRET');
-            $engine->kucoin_api_key = env('KUCOIN_API_KEY');
-            $engine->kucoin_api_secret = env('KUCOIN_API_SECRET');
-            $engine->kucoin_passphrase = env('KUCOIN_PASSPHRASE');
-            $engine->bitget_api_key = env('BITGET_API_KEY');
-            $engine->bitget_api_secret = env('BITGET_API_SECRET');
-            $engine->bitget_passphrase = env('BITGET_PASSPHRASE');
-            $engine->coinmarketcap_api_key = env('COINMARKETCAP_API_KEY');
-            $engine->taapi_secret = env('TAAPI_SECRET');
+            $engine->binance_api_key = config('services.binance.key');
+            $engine->binance_api_secret = config('services.binance.secret');
+            $engine->kucoin_api_key = config('services.kucoin.key');
+            $engine->kucoin_api_secret = config('services.kucoin.secret');
+            $engine->kucoin_passphrase = config('services.kucoin.passphrase');
+            $engine->bitget_api_key = config('services.bitget.key');
+            $engine->bitget_api_secret = config('services.bitget.secret');
+            $engine->bitget_passphrase = config('services.bitget.passphrase');
+            $engine->coinmarketcap_api_key = config('services.coinmarketcap.key');
+            $engine->taapi_secret = config('services.taapi.secret');
             $engine->save();
-        }
-    }
-
-    /**
-     * Setup Bybit integration: API system and account.
-     */
-    public function setupBybitIntegration(User $trader, ApiSystem $bybitApiSystem): void
-    {
-        // Create Bybit account for Binance+Bybit trader
-        $existingBybitAccount = Account::where('user_id', $trader->id)
-            ->where('api_system_id', $bybitApiSystem->id)
-            ->first();
-
-        if (! $existingBybitAccount) {
-            Account::create([
-                'uuid' => (string) Str::uuid(),
-                'name' => 'Main Bybit Account',
-                'user_id' => $trader->id,
-                'api_system_id' => $bybitApiSystem->id,
-                'portfolio_quote' => 'USDT',
-                'trading_quote' => 'USDT',
-                'trade_configuration_id' => 1,
-                'bybit_api_key' => env('TRADER_BB_BYBIT_API_KEY'),
-                'bybit_api_secret' => env('TRADER_BB_BYBIT_API_SECRET'),
-                'market_order_margin_percentage_long' => '5.00',
-                'market_order_margin_percentage_short' => '5.00',
-            ]);
-        }
-    }
-
-    /**
-     * Setup Binance-only integration: Create Binance-only user and account.
-     */
-    public function setupBinanceOnlyIntegration(ApiSystem $binanceApiSystem): void
-    {
-        // Create Binance-only user
-        $binanceEmail = env('TRADER_B_EMAIL');
-
-        if (! $binanceEmail) {
-            return;
-        }
-
-        $binanceUser = User::updateOrCreate(
-            ['email' => $binanceEmail],
-            [
-                'name' => env('TRADER_B_NAME'),
-                'password' => bcrypt(env('TRADER_B_PASSWORD', 'password')),
-                'is_active' => true,
-                'is_admin' => false,
-                'pushover_key' => env('TRADER_B_PUSHOVER_KEY'),
-                'notification_channels' => ['mail', 'pushover'],
-            ]
-        );
-
-        // Create Binance account for this user
-        $existingBinanceAccount = Account::where('user_id', $binanceUser->id)
-            ->where('api_system_id', $binanceApiSystem->id)
-            ->first();
-
-        if (! $existingBinanceAccount) {
-            Account::create([
-                'uuid' => (string) Str::uuid(),
-                'name' => 'Binance Only Account',
-                'user_id' => $binanceUser->id,
-                'api_system_id' => $binanceApiSystem->id,
-                'portfolio_quote' => 'USDT',
-                'trading_quote' => 'USDT',
-                'trade_configuration_id' => 1,
-                'binance_api_key' => env('TRADER_B_BINANCE_API_KEY'),
-                'binance_api_secret' => env('TRADER_B_BINANCE_API_SECRET'),
-                'market_order_margin_percentage_long' => '5.00',
-                'market_order_margin_percentage_short' => '5.00',
-            ]);
-        }
-    }
-
-    /**
-     * Setup KuCoin integration: Create KuCoin user and account.
-     */
-    public function setupKucoinIntegration(ApiSystem $kucoinApiSystem): void
-    {
-        // Create KuCoin user (separate from other exchange traders)
-        $kucoinEmail = env('TRADER_KC_EMAIL');
-
-        if (! $kucoinEmail) {
-            return;
-        }
-
-        $kucoinUser = User::updateOrCreate(
-            ['email' => $kucoinEmail],
-            [
-                'name' => env('TRADER_KC_NAME'),
-                'password' => bcrypt(env('TRADER_KC_PASSWORD', 'password')),
-                'is_active' => true,
-                'is_admin' => false,
-                'pushover_key' => env('TRADER_KC_PUSHOVER_KEY'),
-                'notification_channels' => ['mail', 'pushover'],
-            ]
-        );
-
-        // Create KuCoin account for this user
-        $existingKucoinAccount = Account::where('user_id', $kucoinUser->id)
-            ->where('api_system_id', $kucoinApiSystem->id)
-            ->first();
-
-        if (! $existingKucoinAccount) {
-            Account::create([
-                'uuid' => (string) Str::uuid(),
-                'name' => 'Main KuCoin Account',
-                'user_id' => $kucoinUser->id,
-                'api_system_id' => $kucoinApiSystem->id,
-                'portfolio_quote' => 'USDT',
-                'trading_quote' => 'USDT',
-                'trade_configuration_id' => 1,
-                'kucoin_api_key' => env('TRADER_KC_API_KEY'),
-                'kucoin_api_secret' => env('TRADER_KC_API_SECRET'),
-                'kucoin_passphrase' => env('TRADER_KC_PASSPHRASE'),
-                'market_order_margin_percentage_long' => '5.00',
-                'market_order_margin_percentage_short' => '5.00',
-            ]);
-        }
-    }
-
-    /**
-     * Setup BitGet integration: Create BitGet user and account.
-     */
-    public function setupBitgetIntegration(ApiSystem $bitgetApiSystem): void
-    {
-        // Create BitGet user (separate from other exchange traders)
-        $bitgetEmail = env('TRADER_BG_EMAIL');
-
-        if (! $bitgetEmail) {
-            return;
-        }
-
-        $bitgetUser = User::updateOrCreate(
-            ['email' => $bitgetEmail],
-            [
-                'name' => env('TRADER_BG_NAME'),
-                'password' => bcrypt(env('TRADER_BG_PASSWORD', 'password')),
-                'is_active' => true,
-                'is_admin' => false,
-                'pushover_key' => env('TRADER_BG_PUSHOVER_KEY'),
-                'notification_channels' => ['mail', 'pushover'],
-            ]
-        );
-
-        // Create BitGet account for this user
-        $existingBitgetAccount = Account::where('user_id', $bitgetUser->id)
-            ->where('api_system_id', $bitgetApiSystem->id)
-            ->first();
-
-        if (! $existingBitgetAccount) {
-            Account::create([
-                'uuid' => (string) Str::uuid(),
-                'name' => 'Main BitGet Account',
-                'user_id' => $bitgetUser->id,
-                'api_system_id' => $bitgetApiSystem->id,
-                'portfolio_quote' => 'USDT',
-                'trading_quote' => 'USDT',
-                'trade_configuration_id' => 1,
-                'bitget_api_key' => env('TRADER_BG_API_KEY'),
-                'bitget_api_secret' => env('TRADER_BG_API_SECRET'),
-                'bitget_passphrase' => env('TRADER_BG_PASSPHRASE'),
-                'market_order_margin_percentage_long' => '5.00',
-                'market_order_margin_percentage_short' => '5.00',
-            ]);
-        }
-    }
-
-    /**
-     * Cleanup Bybit credentials from Binance account.
-     */
-    public function cleanupAccountCredentials(): void
-    {
-        $binanceAccount = Account::find(1);
-
-        if ($binanceAccount) {
-            $binanceAccount->update([
-                'bybit_api_key' => null,
-                'bybit_api_secret' => null,
-            ]);
-        }
-
-        // Ensure account 2 (Bybit) has credentials
-        $bybitAccount = Account::find(2);
-
-        if ($bybitAccount) {
-            $hasKey = ! empty($bybitAccount->bybit_api_key);
-            $hasSecret = ! empty($bybitAccount->bybit_api_secret);
-
-            if (! $hasKey || ! $hasSecret) {
-                $bybitAccount->update([
-                    'bybit_api_key' => env('BYBIT_API_KEY'),
-                    'bybit_api_secret' => env('BYBIT_API_SECRET'),
-                ]);
-            }
         }
     }
 
@@ -758,12 +481,9 @@ final class KraiteSeeder extends Seeder
         $engine = Engine::find(1);
 
         if ($engine) {
-            $engine->bybit_api_key = env('BYBIT_API_KEY');
-            $engine->bybit_api_secret = env('BYBIT_API_SECRET');
-            $engine->notification_channels = [
-                'pushover',
-                'mail',
-            ];
+            $engine->bybit_api_key = config('services.bybit.key');
+            $engine->bybit_api_secret = config('services.bybit.secret');
+            $engine->notification_channels = ['pushover', 'mail'];
             $engine->save();
         }
     }
@@ -787,7 +507,7 @@ final class KraiteSeeder extends Seeder
 
     /**
      * Seed the servers table with the current server.
-     * Secrets are read from env vars for health check authentication.
+     * Secrets are read from configuration for health check authentication.
      */
     public function seedServers(): void
     {
@@ -800,7 +520,7 @@ final class KraiteSeeder extends Seeder
                 'own_queue_name' => 'worker5',
                 'description' => 'Worker server for job processing',
                 'type' => 'worker',
-                'secret' => env('SERVER_SECRET_WORKER5'),
+                'secret' => config('servers.worker5.secret'),
             ],
             [
                 'hostname' => 'worker4',
@@ -810,7 +530,7 @@ final class KraiteSeeder extends Seeder
                 'own_queue_name' => 'worker4',
                 'description' => 'Worker server for job processing',
                 'type' => 'worker',
-                'secret' => env('SERVER_SECRET_WORKER4'),
+                'secret' => config('servers.worker4.secret'),
             ],
             [
                 'hostname' => 'worker3',
@@ -820,7 +540,7 @@ final class KraiteSeeder extends Seeder
                 'own_queue_name' => 'worker3',
                 'description' => 'Worker server for job processing',
                 'type' => 'worker',
-                'secret' => env('SERVER_SECRET_WORKER3'),
+                'secret' => config('servers.worker3.secret'),
             ],
             [
                 'hostname' => 'worker2',
@@ -830,7 +550,7 @@ final class KraiteSeeder extends Seeder
                 'own_queue_name' => 'worker2',
                 'description' => 'Worker server for job processing',
                 'type' => 'worker',
-                'secret' => env('SERVER_SECRET_WORKER2'),
+                'secret' => config('servers.worker2.secret'),
             ],
             [
                 'hostname' => 'worker1',
@@ -840,7 +560,7 @@ final class KraiteSeeder extends Seeder
                 'own_queue_name' => 'worker1',
                 'description' => 'Worker server for job processing',
                 'type' => 'worker',
-                'secret' => env('SERVER_SECRET_WORKER1'),
+                'secret' => config('servers.worker1.secret'),
             ],
             [
                 'hostname' => 'ingestion',
@@ -850,7 +570,7 @@ final class KraiteSeeder extends Seeder
                 'own_queue_name' => 'ingestion',
                 'description' => 'Ingestion server - cron & dispatch',
                 'type' => 'ingestion',
-                'secret' => env('SERVER_SECRET_INGESTION'),
+                'secret' => config('servers.ingestion.secret'),
             ],
             [
                 'hostname' => 'redis',
@@ -1063,94 +783,23 @@ final class KraiteSeeder extends Seeder
      */
     private function runSeeding(): void
     {
-        // SECTION 1: Create Indicators (SchemaSeeder1, SchemaSeeder9, SchemaSeeder11)
         $this->seedIndicators();
-
-        // SECTION 2: Create API Systems (SchemaSeeder1)
         $apiSystems = $this->seedApiSystems();
-
-        // SECTION 3: Create User (SchemaSeeder1)
-        $trader = $this->seedUser();
-
-        // SECTION 4: Create Default Trade Configuration (SchemaSeeder1)
+        $this->seedAdminUser();
         $this->seedTradeConfiguration();
-
-        // SECTION 5: Create Binance Account (SchemaSeeder1)
-        $this->seedBinanceAccount($trader, $apiSystems['binance']);
-
-        // SECTION 6: Create Initial Symbols (SchemaSeeder1, SchemaSeeder2)
         $this->seedSymbols();
-
-        // SECTION 9: Create StepsDispatcher (SchemaSeeder3, StepsDispatcherSeeder)
         $this->seedStepsDispatchers();
-
-        // SECTION 10: Update Trade Configuration (SchemaSeeder4) - SKIPPED: column doesn't exist in final schema
-        // $this->updateTradeConfiguration();
-
-        // SECTION 11: Create Kraite (SchemaSeeder5)
         $this->seedKraite();
-
-        // SECTION 12: Add Additional Symbol Batches (SchemaSeeder6-8, SchemaSeeder13-15, SchemaSeeder18)
         $this->seedAdditionalSymbols();
-
-        // SECTION 13: Update Existing Positions (SchemaSeeder10)
-        $this->updatePositionProfitPrices();
-
-        // SECTION 14: Update Exchange Symbols (SchemaSeeder2, SchemaSeeder12)
         $this->updateExchangeSymbols();
-
-        // SECTION 15: Migrate Account Credentials (SchemaSeeder16)
-        $this->migrateAccountCredentials();
-
-        // SECTION 16: Migrate Kraite Credentials (SchemaSeeder17)
         $this->migrateKraiteCredentials();
-
-        // SECTION 17: Setup Bybit Integration (SchemaSeeder19, SchemaSeeder20, SchemaSeeder21)
-        $this->setupBybitIntegration($trader, $apiSystems['bybit']);
-
-        // SECTION 17b: Setup KuCoin Integration (separate user and account)
-        $this->setupKucoinIntegration($apiSystems['kucoin']);
-
-        // SECTION 17d: Setup BitGet Integration (separate user and account)
-        $this->setupBitgetIntegration($apiSystems['bitget']);
-
-        // SECTION 17e: Setup Binance-only Integration (separate user and account)
-        $this->setupBinanceOnlyIntegration($apiSystems['binance']);
-
-        // SECTION 18: Cleanup Bybit Account Credentials (SchemaSeeder22)
-        $this->cleanupAccountCredentials();
-
-        // SECTION 19: Add Notification Channels (SchemaSeeder23)
         $this->addNotificationChannels();
-
-        // SECTION 20: Move Admin Pushover Key (SchemaSeeder24)
         $this->moveAdminPushoverKey();
-
-        // SECTION 21: Seed Servers
         $this->seedServers();
-
-        // SECTION 22: Seed Notifications
         $this->seedNotifications();
-
-        // SECTION 23: Seed Token Mappers (Binance to other exchanges name mappings)
         $this->seedTokenMappers($apiSystems);
-
-        // SECTION 24: Seed Core Symbol Data (symbols, exchange_symbols)
         $this->seedCoreSymbolData();
-
-        // SECTION 25: Activate only the testing account (see method for account IDs)
-        $this->deactivateNonPrimaryAccounts();
-    }
-
-    /**
-     * Deactivate all accounts except the testing account.
-     * Change the active account ID here to test different exchanges.
-     */
-    public function deactivateNonPrimaryAccounts(): void
-    {
-        // Activate all accounts
-        // 1 = Binance, 2 = Bybit, 3 = KuCoin, 4 = BitGet, 5 = Binance Only
-        Account::query()->update(['is_active' => true]);
+        $this->seedSubscriptions();
     }
 
     /**

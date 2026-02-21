@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.0 - 2026-02-21
+
+### Improvements
+
+- [IMPROVED] Split KraiteSeeder — remove business methods (traders, accounts, exchange integrations) to keep core as system-only seeder
+- [IMPROVED] Replace `env()` calls with `config()` in seeder methods
+
 ## 1.2.9 - 2026-02-21
 
 ### Improvements
