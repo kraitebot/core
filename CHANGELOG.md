@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.3 - 2026-04-05
+
+### Features
+
+- [NEW FEATURE] Exchange cooldown mechanism — `cooldown_until` column on `api_systems`, triggered by server instability (503/504)
+- [NEW FEATURE] `$serverInstabilityHttpCodes` on all exchange exception handlers with `shouldTriggerCooldown()` classification
+- [NEW FEATURE] `HasCooldown` trait on ApiSystem — `inCooldown()` / `activateCooldown()` with configurable sliding window
+- [NEW FEATURE] `StoreAccountBalanceJob` (Atomic) — queries account balance via exchange API with full exception handling
+- [NEW FEATURE] `DispatchAccountBalancesJob` (Lifecycle) — orchestrates parallel balance queries for all active accounts
+
+### Improvements
+
+- [IMPROVED] `ApiRequestLogObserver` triggers exchange cooldown on server instability detection
+- [IMPROVED] `CreatePositionsCommand` checks `inCooldown()` per exchange before dispatching
+- [IMPROVED] `StoreAccountsBalancesCommand` refactored from direct API calls to step-based workflow
+- [IMPROVED] Bybit exception handler: override `extractVendorCodeFromResponse()` for `retCode` format
+- [IMPROVED] Add `cooldown_duration_minutes` config key (default 30 minutes)
+- [IMPROVED] Simplify KraiteSeeder servers to single full-stack entry
+
 ## 1.3.2 - 2026-02-21
 
 ### Features

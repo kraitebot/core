@@ -234,6 +234,66 @@ final class KraiteSeeder extends Seeder
         );
 
         Indicator::where('canonical', 'candle')->where('type', 'history')->first()?->update(['type' => 'dashboard']);
+
+        // AI Trading Desk indicators
+        Indicator::updateOrCreate(
+            ['canonical' => 'rsi'],
+            [
+                'type' => 'conclude-indicators',
+                'is_active' => true,
+                'is_computed' => false,
+                'class' => "Kraite\Core\Indicators\RefreshData\RSIIndicator",
+                'parameters' => [
+                    'period' => 14,
+                    'results' => 2,
+                    'backtrack' => 1,
+                ],
+            ]
+        );
+
+        Indicator::updateOrCreate(
+            ['canonical' => 'bbands'],
+            [
+                'type' => 'conclude-indicators',
+                'is_active' => true,
+                'is_computed' => false,
+                'class' => "Kraite\Core\Indicators\RefreshData\BollingerBandsIndicator",
+                'parameters' => [
+                    'period' => 20,
+                    'stddev' => 2,
+                    'results' => 2,
+                    'backtrack' => 1,
+                ],
+            ]
+        );
+
+        Indicator::updateOrCreate(
+            ['canonical' => 'atr'],
+            [
+                'type' => 'conclude-indicators',
+                'is_active' => true,
+                'is_computed' => false,
+                'class' => "Kraite\Core\Indicators\RefreshData\ATRIndicator",
+                'parameters' => [
+                    'period' => 14,
+                    'results' => 1,
+                ],
+            ]
+        );
+
+        Indicator::updateOrCreate(
+            ['canonical' => 'obv'],
+            [
+                'type' => 'conclude-indicators',
+                'is_active' => true,
+                'is_computed' => false,
+                'class' => "Kraite\Core\Indicators\RefreshData\OBVIndicator",
+                'parameters' => [
+                    'results' => 2,
+                    'backtrack' => 1,
+                ],
+            ]
+        );
     }
 
     /**
@@ -511,94 +571,14 @@ final class KraiteSeeder extends Seeder
     {
         $servers = [
             [
-                'hostname' => 'worker5',
-                'ip_address' => '157.180.69.25',
+                'hostname' => 'full-stack',
+                'ip_address' => '91.107.213.11',
                 'is_apiable' => true,
                 'needs_whitelisting' => true,
-                'own_queue_name' => 'worker5',
-                'description' => 'Worker server for job processing',
-                'type' => 'worker',
-                'secret' => config('kraite.server_secrets.worker5'),
-            ],
-            [
-                'hostname' => 'worker4',
-                'ip_address' => '46.62.156.246',
-                'is_apiable' => true,
-                'needs_whitelisting' => true,
-                'own_queue_name' => 'worker4',
-                'description' => 'Worker server for job processing',
-                'type' => 'worker',
-                'secret' => config('kraite.server_secrets.worker4'),
-            ],
-            [
-                'hostname' => 'worker3',
-                'ip_address' => '46.62.255.137',
-                'is_apiable' => true,
-                'needs_whitelisting' => true,
-                'own_queue_name' => 'worker3',
-                'description' => 'Worker server for job processing',
-                'type' => 'worker',
-                'secret' => config('kraite.server_secrets.worker3'),
-            ],
-            [
-                'hostname' => 'worker2',
-                'ip_address' => '37.27.83.74',
-                'is_apiable' => true,
-                'needs_whitelisting' => true,
-                'own_queue_name' => 'worker2',
-                'description' => 'Worker server for job processing',
-                'type' => 'worker',
-                'secret' => config('kraite.server_secrets.worker2'),
-            ],
-            [
-                'hostname' => 'worker1',
-                'ip_address' => '46.62.215.85',
-                'is_apiable' => true,
-                'needs_whitelisting' => true,
-                'own_queue_name' => 'worker1',
-                'description' => 'Worker server for job processing',
-                'type' => 'worker',
-                'secret' => config('kraite.server_secrets.worker1'),
-            ],
-            [
-                'hostname' => 'ingestion',
-                'ip_address' => '46.62.203.165',
-                'is_apiable' => true,
-                'needs_whitelisting' => true,
-                'own_queue_name' => 'ingestion',
-                'description' => 'Ingestion server - cron & dispatch',
+                'own_queue_name' => 'default',
+                'description' => 'Full-stack server - all services',
                 'type' => 'ingestion',
                 'secret' => config('kraite.server_secrets.ingestion'),
-            ],
-            [
-                'hostname' => 'redis',
-                'ip_address' => '46.62.215.70',
-                'is_apiable' => false,
-                'needs_whitelisting' => false,
-                'own_queue_name' => null,
-                'description' => 'Redis cache server',
-                'type' => 'redis',
-                'secret' => null,
-            ],
-            [
-                'hostname' => 'database',
-                'ip_address' => '46.62.218.172',
-                'is_apiable' => false,
-                'needs_whitelisting' => false,
-                'own_queue_name' => null,
-                'description' => 'Database server',
-                'type' => 'database',
-                'secret' => null,
-            ],
-            [
-                'hostname' => 'frontend',
-                'ip_address' => '65.21.5.150',
-                'is_apiable' => false,
-                'needs_whitelisting' => false,
-                'own_queue_name' => null,
-                'description' => 'Frontend application server',
-                'type' => 'frontend',
-                'secret' => null,
             ],
         ];
 

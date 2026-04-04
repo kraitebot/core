@@ -80,6 +80,15 @@ final class BinanceExceptionHandler extends BaseExceptionHandler
     ];
 
     /**
+     * Server instability — exchange is having infrastructure problems.
+     * Triggers exchange-level cooldown to prevent opening new positions.
+     *
+     * 503: Service Unavailable (server overloaded)
+     * 504: Gateway Timeout (upstream server timed out)
+     */
+    public array $serverInstabilityHttpCodes = [503, 504];
+
+    /**
      * Ignorable — no-ops / idempotent.
      *
      * 400:

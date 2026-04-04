@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Kraite\Core\Abstracts\BaseModel;
+use Kraite\Core\Concerns\ApiSystem\HasCooldown;
 use Kraite\Core\Concerns\ApiSystem\HasScopes;
 use Kraite\Core\Concerns\ApiSystem\InteractsWithApis;
 
@@ -23,15 +24,18 @@ use Kraite\Core\Concerns\ApiSystem\InteractsWithApis;
  * @property bool $should_restart_websocket
  * @property string|null $websocket_class
  * @property array<int, string>|null $timeframes
+ * @property \Illuminate\Support\Carbon|null $cooldown_until
  */
 final class ApiSystem extends BaseModel
 {
+    use HasCooldown;
     use HasFactory;
     use HasScopes;
     use InteractsWithApis;
 
     protected $casts = [
         'timeframes' => 'array',
+        'cooldown_until' => 'datetime',
     ];
 
     public function steps(): MorphMany

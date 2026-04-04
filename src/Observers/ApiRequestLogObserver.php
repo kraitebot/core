@@ -6,6 +6,7 @@ namespace Kraite\Core\Observers;
 
 use DB;
 use Exception;
+use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\ApiRequestLog;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
@@ -23,6 +24,9 @@ final class ApiRequestLogObserver
     {
         // Send notification if needed
         $this->sendNotificationIfNeeded($log);
+
+        // Trigger exchange cooldown on server instability
+        $this->triggerExchangeCooldownIfNeeded($log);
 
         // Auto-deactivate exchange symbols with no TAAPI data
         $this->deactivateExchangeSymbolIfNoTaapiData($log);
@@ -102,6 +106,36 @@ final class ApiRequestLogObserver
             relatable: $apiSystem,
             cacheKeys: $cacheKeys
         );
+    }
+
+    /**
+     * Trigger exchange cooldown when server instability is detected.
+     * Only applies to exchange API systems (not data providers like TAAPI).
+     */
+    private function triggerExchangeCooldownIfNeeded(ApiRequestLog $log): void
+    {
+        // Skip if no HTTP response code yet (request still in progress)
+        if ($log->http_response_code === null) {
+            return;
+        }
+
+        $apiSystem = ApiSystem::find($log->api_system_id);
+        if (! $apiSystem || ! $apiSystem->is_exchange) {
+            return;
+        }
+
+        try {
+            $handler = BaseExceptionHandler::make($apiSystem->canonical);
+        } catch (Exception $e) {
+            return;
+        }
+
+        $httpCode = $log->http_response_code;
+        $vendorCode = $handler->extractVendorCodeFromResponse($log->response);
+
+        if ($handler->shouldTriggerCooldown($httpCode, $vendorCode)) {
+            $apiSystem->activateCooldown();
+        }
     }
 
     private function deactivateExchangeSymbolIfNoTaapiData(ApiRequestLog $log): void

@@ -59,6 +59,17 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Exchange Cooldown
+    |--------------------------------------------------------------------------
+    |
+    | When an exchange reports server instability (e.g., HTTP 503/504), a
+    | cooldown period is activated for that exchange. During cooldown, no
+    | new positions will be opened, but existing workflows continue normally.
+    */
+    'cooldown_duration_minutes' => env('EXCHANGE_COOLDOWN_DURATION_MINUTES', 30),
+
+    /*
+    |--------------------------------------------------------------------------
     | Health Check Authentication
     |--------------------------------------------------------------------------
     |

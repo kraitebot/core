@@ -20,6 +20,17 @@ final class KucoinExceptionHandler extends BaseExceptionHandler
     }
 
     /**
+     * Server instability — exchange is having infrastructure problems.
+     * Triggers exchange-level cooldown to prevent opening new positions.
+     *
+     * 500: Internal Server Error
+     * 502: Bad Gateway
+     * 503: Service Unavailable (server overloaded)
+     * 504: Gateway Timeout (upstream server timed out)
+     */
+    public array $serverInstabilityHttpCodes = [500, 502, 503, 504];
+
+    /**
      * Errors that should be ignored (no action needed).
      * KuCoin uses HTTP 200 with "code" field for some edge cases.
      */

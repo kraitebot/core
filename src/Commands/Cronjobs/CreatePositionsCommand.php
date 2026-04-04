@@ -65,6 +65,7 @@ final class CreatePositionsCommand extends BaseCommand
         foreach ($users as $user) {
             /** @var \Illuminate\Database\Eloquent\Collection<int, Account> $accounts */
             $accounts = $user->accounts()
+                ->with('apiSystem')
                 ->where('is_active', true)
                 ->where('can_trade', true)
                 ->get();
@@ -95,6 +96,13 @@ final class CreatePositionsCommand extends BaseCommand
         // Global guard with circuit breaker
         if (! $engine->canOpenPositions()) {
             $this->verboseComment('    → Global guard prevents opening, skipping');
+
+            return;
+        }
+
+        // Exchange cooldown guard — skip if the exchange is reporting instability
+        if ($account->apiSystem->inCooldown()) {
+            $this->verboseComment("    → Exchange {$account->apiSystem->canonical} in cooldown until {$account->apiSystem->cooldown_until}, skipping");
 
             return;
         }

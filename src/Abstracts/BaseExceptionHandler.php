@@ -64,6 +64,62 @@ abstract class BaseExceptionHandler
     }
 
     /**
+     * HTTP codes that indicate the exchange server itself is unstable.
+     * When detected, triggers an exchange-level cooldown that blocks new position creation.
+     *
+     * Supports same format as $retryableHttpCodes:
+     * - Flat: [503, 504] — match HTTP status codes directly
+     * - Nested: [200 => [10000, 10016]] — match HTTP code + vendor code in response body
+     *
+     * @var array<int, array<int, int>|int>
+     */
+    public array $serverInstabilityHttpCodes = [];
+
+    /**
+     * Check if an HTTP response should trigger exchange cooldown.
+     * Works with raw HTTP codes and response data (not exception objects),
+     * so it can be called from observers that don't have the original exception.
+     */
+    public function shouldTriggerCooldown(int $httpCode, ?int $vendorCode = null): bool
+    {
+        if ($this->serverInstabilityHttpCodes === []) {
+            return false;
+        }
+
+        // Check flat match: HTTP code is a direct element in the array
+        if (in_array($httpCode, $this->serverInstabilityHttpCodes, strict: true)) {
+            return true;
+        }
+
+        // Check nested match: HTTP code is a key with vendor code sub-array
+        if ($vendorCode === null) {
+            return false;
+        }
+
+        foreach ($this->serverInstabilityHttpCodes as $code => $subCodes) {
+            if ($code === $httpCode && is_array($subCodes) && in_array($vendorCode, $subCodes, strict: true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Extract vendor error code from a raw response array.
+     * Default reads the 'code' field (Binance, KuCoin, Bitget format).
+     * Override in exchange-specific handlers for different response structures.
+     */
+    public function extractVendorCodeFromResponse(?array $response): ?int
+    {
+        if ($response === null || ! isset($response['code'])) {
+            return null;
+        }
+
+        return (int) $response['code'];
+    }
+
+    /**
      * Health check to confirm handler is operational.
      * Default implementation returns true.
      * Override only if custom health checks are needed.

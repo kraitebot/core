@@ -22,6 +22,23 @@ final class BybitExceptionHandler extends BaseExceptionHandler
     }
 
     /**
+     * Server instability — exchange is having infrastructure problems.
+     * Triggers exchange-level cooldown to prevent opening new positions.
+     *
+     * HTTP 500/502/503/504: Standard server errors
+     * 200/10000: Server Timeout
+     * 200/10016: Internal server error or service restarting
+     * 200/10019: Service restarting
+     */
+    public array $serverInstabilityHttpCodes = [
+        500,
+        502,
+        503,
+        504,
+        200 => [10000, 10016, 10019],
+    ];
+
+    /**
      * Errors that should be ignored (no action needed).
      * HTTP 200 with ignorable retCodes in response body.
      */
@@ -319,6 +336,25 @@ final class BybitExceptionHandler extends BaseExceptionHandler
     public function getApiSystem(): string
     {
         return 'bybit';
+    }
+
+    /**
+     * Extract vendor error code from raw Bybit response.
+     * Bybit uses 'retCode' instead of 'code'. A retCode of 0 means success.
+     */
+    public function extractVendorCodeFromResponse(?array $response): ?int
+    {
+        if ($response === null) {
+            return null;
+        }
+
+        $retCode = $response['retCode'] ?? null;
+
+        if ($retCode === null || (int) $retCode === 0) {
+            return null;
+        }
+
+        return (int) $retCode;
     }
 
     /**
