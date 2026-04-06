@@ -259,7 +259,7 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
                 $message = "[ES:{$exchangeSymbol->id}] Symbol {$exchangeSymbol->parsed_trading_pair} direction invalidated (was {$previousDirection}, all timeframes exhausted)";
                 $title = 'Direction Invalidated ('.ucfirst($exchangeSymbol->apiSystem->canonical).')';
 
-                // Engine::notifyAdmins(
+                // Kraite::notifyAdmins(
                 //     message: $message,
                 //     title: $title,
                 //     deliveryGroup: 'indicators'
@@ -337,7 +337,7 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
             $message = "[ES:{$exchangeSymbol->id}] Symbol {$exchangeSymbol->parsed_trading_pair} direction invalidated (was {$oldDirection}, path inconsistency detected)";
             $title = 'Direction Invalidated ('.ucfirst($exchangeSymbol->apiSystem->canonical).')';
 
-            // Engine::notifyAdmins(
+            // Kraite::notifyAdmins(
             //     message: $message,
             //     title: $title,
             //     deliveryGroup: 'indicators'

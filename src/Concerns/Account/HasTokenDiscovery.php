@@ -6,7 +6,7 @@ namespace Kraite\Core\Concerns\Account;
 
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
-use Kraite\Core\Trading\Engine;
+use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
@@ -248,7 +248,7 @@ trait HasTokenDiscovery
         $correlationField = 'btc_correlation_'.$correlationType;
 
         $this->availableExchangeSymbols = $this->availableExchangeSymbols->filter(static function ($symbol) use ($correlationField) {
-            return Engine::hasMinOrderRequirements($symbol)
+            return Kraite::hasMinOrderRequirements($symbol)
                 && filled($symbol->tick_size)
                 && filled($symbol->price_precision)
                 && filled($symbol->quantity_precision)

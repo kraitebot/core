@@ -6,7 +6,7 @@ namespace Kraite\Core\Jobs\Atomic\Position;
 
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
-use Kraite\Core\Trading\Engine;
+use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
@@ -103,7 +103,7 @@ final class VerifyOrderNotionalForMarketOrderJob extends BaseApiableJob
         // 4. Calculate market order quantity using trait method (respects min notional)
         $marketOrderQuantity = $exchangeSymbol->getQuantityForAmount($notional, respectMinNotional: true);
 
-        $effectiveMinNotional = Engine::getEffectiveMinNotional($exchangeSymbol);
+        $effectiveMinNotional = Kraite::getEffectiveMinNotional($exchangeSymbol);
 
         if ($marketOrderQuantity === '0') {
             throw new RuntimeException(
@@ -115,7 +115,7 @@ final class VerifyOrderNotionalForMarketOrderJob extends BaseApiableJob
         $marketOrderNotional = $exchangeSymbol->getAmountForQuantity($marketOrderQuantity);
 
         // 6. Verify notional meets exchange-specific minimum (handles KuCoin differences)
-        if (! Engine::meetsMinNotional($exchangeSymbol, $marketOrderNotional)) {
+        if (! Kraite::meetsMinNotional($exchangeSymbol, $marketOrderNotional)) {
             throw new RuntimeException(
                 "Market order notional ({$marketOrderNotional}) below minimum ({$effectiveMinNotional})"
             );

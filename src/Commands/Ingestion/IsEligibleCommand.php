@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Commands\Ingestion;
 
-use Kraite\Core\Models\Engine;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Support\ApiDataMappers\Binance\BinanceApiDataMapper;
 use Kraite\Core\Support\ApiDataMappers\Bybit\BybitApiDataMapper;
 use Kraite\Core\Support\ApiDataMappers\Taapi\TaapiApiDataMapper;
@@ -182,7 +182,7 @@ final class IsEligibleCommand extends BaseCommand
     private function searchCoinMarketCap(string $token): array
     {
         try {
-            $engine = Engine::firstOrFail();
+            $engine = Kraite::firstOrFail();
             $credentials = ApiCredentials::make([
                 'coinmarketcap_api_key' => $engine->coinmarketcap_api_key,
             ]);
@@ -276,7 +276,7 @@ final class IsEligibleCommand extends BaseCommand
     private function isListedOnBinance(string $symbol, string $quote = 'USDT'): bool
     {
         try {
-            $engine = Engine::firstOrFail();
+            $engine = Kraite::firstOrFail();
             $credentials = ApiCredentials::make([
                 'binance_api_key' => $engine->binance_api_key,
                 'binance_api_secret' => $engine->binance_api_secret,
@@ -315,7 +315,7 @@ final class IsEligibleCommand extends BaseCommand
     private function isListedOnBybit(string $symbol, string $quote = 'USDT'): bool
     {
         try {
-            $engine = Engine::firstOrFail();
+            $engine = Kraite::firstOrFail();
             $credentials = ApiCredentials::make([
                 'bybit_api_key' => $engine->bybit_api_key,
                 'bybit_api_secret' => $engine->bybit_api_secret,
@@ -369,7 +369,7 @@ final class IsEligibleCommand extends BaseCommand
     private function checkTaapiIndicatorData(string $symbol, string $taapiExchange, string $quote): bool
     {
         try {
-            $engine = Engine::firstOrFail();
+            $engine = Kraite::firstOrFail();
             $credentials = ApiCredentials::make([
                 'taapi_secret' => $engine->taapi_secret,
             ]);

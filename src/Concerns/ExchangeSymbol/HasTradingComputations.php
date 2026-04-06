@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Concerns\ExchangeSymbol;
 
 use InvalidArgumentException;
-use Kraite\Core\Trading\Engine;
+use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Support\Math;
 
 trait HasTradingComputations
@@ -24,7 +24,7 @@ trait HasTradingComputations
         if ($respectMinNotional) {
             $notional = Math::mul($qty, $price);
 
-            if (! Engine::meetsMinNotional($this, $notional)) {
+            if (! Kraite::meetsMinNotional($this, $notional)) {
                 return '0';
             }
         }
@@ -57,6 +57,6 @@ trait HasTradingComputations
         $qty = api_format_quantity((string) $quantity, $this);
         $notional = Math::mul($qty, $price);
 
-        return ! Engine::meetsMinNotional($this, $notional);
+        return ! Kraite::meetsMinNotional($this, $notional);
     }
 }

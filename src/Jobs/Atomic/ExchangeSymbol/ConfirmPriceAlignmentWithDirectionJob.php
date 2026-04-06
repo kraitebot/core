@@ -106,7 +106,7 @@ final class ConfirmPriceAlignmentWithDirectionJob extends BaseQueueableJob
 
     public function resolveException(Throwable $e): void
     {
-        // Engine::notifyAdmins(
+        // Kraite::notifyAdmins(
         //     message: "[{$this->exchangeSymbol->id}] - ExchangeSymbol price alignment error - ".ExceptionParser::with($e)->friendlyMessage(),
         //     title: "[S:{$this->step->id} ES:{$this->exchangeSymbol->id}] ".class_basename(self::class).' - Error',
         //     deliveryGroup: 'exceptions'
@@ -142,7 +142,7 @@ final class ConfirmPriceAlignmentWithDirectionJob extends BaseQueueableJob
             $message = "[ES:{$this->exchangeSymbol->id}] Symbol {$this->exchangeSymbol->parsed_trading_pair} now has direction: {$direction} (timeframe: {$timeframe})";
             $title = "Direction Set ({$exchangeName})";
 
-            // Engine::notifyAdmins(
+            // Kraite::notifyAdmins(
             //     message: $message,
             //     title: $title,
             //     deliveryGroup: 'indicators'
@@ -152,7 +152,7 @@ final class ConfirmPriceAlignmentWithDirectionJob extends BaseQueueableJob
             $message = "[ES:{$this->exchangeSymbol->id}] Symbol {$this->exchangeSymbol->parsed_trading_pair} direction changed: {$oldDirection} → {$direction} (timeframe: {$timeframe})";
             $title = "Direction Changed ({$exchangeName})";
 
-            // Engine::notifyAdmins(
+            // Kraite::notifyAdmins(
             //     message: $message,
             //     title: $title,
             //     deliveryGroup: 'indicators'

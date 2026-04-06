@@ -7,7 +7,7 @@ namespace Kraite\Core\Commands\Debug;
 use Illuminate\Console\Command;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ExchangeSymbol;
-use Kraite\Core\Trading\Engine;
+use Kraite\Core\Trading\Kraite;
 use Throwable;
 
 final class CalculateOrdersCommand extends Command
@@ -140,7 +140,7 @@ final class CalculateOrdersCommand extends Command
                 : mb_rtrim(mb_rtrim((string) $gapPercentRaw, '0'), '.').'%';
 
             // ---- 2) Market order slice using Kraite ----
-            $market = Engine::calculateMarketOrderData(
+            $market = Kraite::calculateMarketOrderData(
                 $margin,
                 $configuredLeverage,
                 $exchangeSymbol,
@@ -175,7 +175,7 @@ final class CalculateOrdersCommand extends Command
             $this->table(['price', 'quantity'], $marketRow);
 
             // ---- 3) Profit (TP) order ----
-            $tp = Engine::calculateProfitOrder(
+            $tp = Kraite::calculateProfitOrder(
                 $direction,
                 $price,
                 (string) $tpPercent,
@@ -192,7 +192,7 @@ final class CalculateOrdersCommand extends Command
             ]]);
 
             // ---- 4) Limit ladder (+ WAP per rung) ----
-            $ladder = Engine::calculateLimitOrdersData(
+            $ladder = Kraite::calculateLimitOrdersData(
                 $N,
                 $direction,
                 $price,
@@ -209,7 +209,7 @@ final class CalculateOrdersCommand extends Command
                 $anchorPrice = $price;
             } else {
                 // Compute cumulative WAP per rung
-                $wapSeries = Engine::calculateWAPData($ladder, $direction, (string) $tpPercent);
+                $wapSeries = Kraite::calculateWAPData($ladder, $direction, (string) $tpPercent);
 
                 $rows = [];
                 foreach ($ladder as $i => $row) {
@@ -232,7 +232,7 @@ final class CalculateOrdersCommand extends Command
             if ($anchorPrice === null) { // @phpstan-ignore identical.alwaysFalse
                 $this->warn('Unable to compute stop-loss anchor price; skipping SL preview.');
             } else {
-                $sl = Engine::calculateStopLossOrder(
+                $sl = Kraite::calculateStopLossOrder(
                     $direction,
                     $anchorPrice,
                     (string) $slPercent,

@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSystem;
-use Kraite\Core\Models\Engine;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Notification;
 use Kraite\Core\Models\NotificationLog;
@@ -65,7 +65,7 @@ final class TestNotificationCommand extends BaseCommand
         $times = max(1, (int) $this->option('times'));
 
         // Get hardcoded defaults
-        $admin = Engine::admin();
+        $admin = Kraite::admin();
         $account = Account::with('user')->first();
         if (! $account || ! $account->user) {
             $this->verboseError('❌ No accounts with users found in database. Please seed accounts first.');
@@ -179,7 +179,7 @@ final class TestNotificationCommand extends BaseCommand
         }
 
         $hostname = gethostname();
-        $ipAddress = Engine::ip();
+        $ipAddress = Kraite::ip();
 
         $this->verboseWarn("📤 Sending to USER: {$user->name} (#{$user->id})");
         $this->displayConfig("Account #{$account->id}", "account_id:{$account->id},ip_address:{$ipAddress}");
@@ -215,7 +215,7 @@ final class TestNotificationCommand extends BaseCommand
         }
 
         $hostname = gethostname();
-        $ipAddress = Engine::ip();
+        $ipAddress = Kraite::ip();
 
         $this->verboseWarn("📤 Sending to ADMIN: {$admin->name} (#{$admin->id})");
         $this->displayConfig("ApiSystem (Bybit #{$apiSystem->id})", "api_system:{$apiSystem->canonical},ip_address:{$ipAddress}");
@@ -251,7 +251,7 @@ final class TestNotificationCommand extends BaseCommand
         }
 
         $hostname = gethostname();
-        $ipAddress = Engine::ip();
+        $ipAddress = Kraite::ip();
 
         $this->verboseWarn("📤 Sending to ADMIN: {$admin->name} (#{$admin->id})");
         $this->displayConfig("ApiSystem (Binance #{$apiSystem->id})", "api_system:{$apiSystem->canonical},ip_address:{$ipAddress}");
@@ -287,7 +287,7 @@ final class TestNotificationCommand extends BaseCommand
         }
 
         $hostname = gethostname();
-        $ipAddress = Engine::ip();
+        $ipAddress = Kraite::ip();
 
         $this->verboseWarn("📤 Sending to USER: {$user->name} (#{$user->id})");
         $this->displayConfig("Account #{$account->id}", "account_id:{$account->id},api_system:{$apiSystem->canonical}");

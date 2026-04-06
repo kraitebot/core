@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Commands\Cronjobs;
 
 use Illuminate\Support\Facades\DB;
-use Kraite\Core\Models\Engine;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Support\NotificationService;
 use StepDispatcher\Models\Step;
 use StepDispatcher\States\Dispatched;
@@ -175,7 +175,7 @@ final class CheckStaleDataCommand extends BaseCommand
             $this->verboseError("→ CRITICAL: {$alreadyPromotedCount} step(s) still stuck after promotion - manual intervention required!");
 
             NotificationService::send(
-                user: Engine::admin(),
+                user: Kraite::admin(),
                 canonical: 'stale_priority_steps_detected',
                 referenceData: [
                     'count' => $count,
@@ -212,7 +212,7 @@ final class CheckStaleDataCommand extends BaseCommand
         $this->verboseInfo("→ Self-healing: Promoted {$promotedCount} stale step(s) to high priority queue");
 
         NotificationService::send(
-            user: Engine::admin(),
+            user: Kraite::admin(),
             canonical: 'stale_dispatched_steps_detected',
             referenceData: [
                 'count' => $count,

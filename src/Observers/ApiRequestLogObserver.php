@@ -10,7 +10,7 @@ use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\ApiRequestLog;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
-use Kraite\Core\Models\Engine;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Support\NotificationHandlers\BaseNotificationHandler;
 use Kraite\Core\Support\NotificationService;
 
@@ -100,7 +100,7 @@ final class ApiRequestLogObserver
         };
 
         NotificationService::send(
-            user: Engine::admin(),
+            user: Kraite::admin(),
             canonical: $canonical,
             referenceData: $referenceData,
             relatable: $apiSystem,
@@ -312,7 +312,7 @@ final class ApiRequestLogObserver
             ->count();
 
         NotificationService::send(
-            user: Engine::admin(),
+            user: Kraite::admin(),
             canonical: 'exchange_symbol_no_taapi_data',
             referenceData: [
                 'exchangeSymbol' => $exchangeSymbol,

@@ -6,7 +6,7 @@ namespace Kraite\Core\Jobs\Atomic\Order;
 
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
-use Kraite\Core\Trading\Engine;
+use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
@@ -26,7 +26,7 @@ use Throwable;
  * - Side: opposite of entry (LONG → SELL, SHORT → BUY)
  *
  * Flow:
- * 1. Calculate profit price using Engine::calculateProfitOrder()
+ * 1. Calculate profit price using Kraite::calculateProfitOrder()
  * 2. Create Order record with type=PROFIT-LIMIT
  * 3. Place order on exchange via apiPlace()
  * 4. doubleCheck() verifies order was accepted
@@ -105,7 +105,7 @@ class PlaceProfitOrderJob extends BaseApiableJob
         $exchangeSymbol->updateSaving(['mark_price' => $markPrice]);
 
         // Calculate profit order data (re-anchor TP if mark price already passed it)
-        $profitData = Engine::calculateProfitOrder(
+        $profitData = Kraite::calculateProfitOrder(
             direction: $direction,
             referencePrice: $this->position->opening_price,
             profitPercent: $this->position->profit_percentage,

@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.4 - 2026-04-06
+
+### Improvements
+
+- [IMPROVED] Rename `Engine` model to `Kraite` (`Models\Kraite`, `Trading\Kraite`, `Concerns\Kraite\`)
+- [IMPROVED] Rename `martingalian` table to `kraite` via migration
+- [IMPROVED] Update all imports, static calls, FQCN references, and aliases across entire codebase (~70 files)
+
 ## 1.3.3 - 2026-04-05
 
 ### Features

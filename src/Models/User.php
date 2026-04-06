@@ -171,7 +171,7 @@ final class User extends Authenticatable
     public function routeNotificationForPushover($notification): ?PushoverReceiver
     {
         // Get application token from Engine model
-        $engine = Engine::find(1);
+        $engine = Kraite::find(1);
 
         if (! $engine || ! $engine->admin_pushover_application_key) {
             return null;

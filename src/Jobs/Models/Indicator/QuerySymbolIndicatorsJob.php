@@ -94,7 +94,7 @@ final class QuerySymbolIndicatorsJob extends BaseApiableJob
 
     public function resolveException(Throwable $e)
     {
-        // Engine::notifyAdmins(
+        // Kraite::notifyAdmins(
         //     message: '[Symbol:'.$this->exchangeSymbolId.' | Timeframe:'.$this->timeframe.'] Query error - '.$e->getMessage(),
         //     title: '['.class_basename(self::class).'] - Error',
         //     deliveryGroup: 'exceptions'

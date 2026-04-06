@@ -208,6 +208,6 @@ abstract class BaseExceptionHandler
      */
     protected function getCurrentIp(): string
     {
-        return \Kraite\Core\Models\Engine::ip();
+        return \Kraite\Core\Models\Kraite::ip();
     }
 }

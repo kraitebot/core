@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Trading\Concerns;
 
 use InvalidArgumentException;
-use Kraite\Core\Trading\Engine;
+use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Support\Math;
 use RuntimeException;
@@ -38,7 +38,7 @@ trait HasOrderCalculations
         array $multipliers,
         int $totalLimitOrders
     ): array {
-        $scale = Engine::SCALE;
+        $scale = Kraite::SCALE;
 
         $budgetStr = (string) $budget;
         if (! is_numeric($budgetStr) || Math::lte($budgetStr, '0', $scale)) {
@@ -67,7 +67,7 @@ trait HasOrderCalculations
         // The multiplier at position i is the ratio between position i and position i-1
         $effectiveMultipliers = [];
         for ($i = 0; $i <= $N; $i++) {
-            $effectiveMultipliers[$i] = (string) Engine::returnLadderedValue($multipliers, $i);
+            $effectiveMultipliers[$i] = (string) Kraite::returnLadderedValue($multipliers, $i);
         }
 
         // Compute S = sum of inverse cumulative products from the end
@@ -141,7 +141,7 @@ trait HasOrderCalculations
      */
     public static function notional($margin, $leverage): string
     {
-        return Math::mul($margin, $leverage, Engine::SCALE);
+        return Math::mul($margin, $leverage, Kraite::SCALE);
     }
 
     /**
@@ -169,7 +169,7 @@ trait HasOrderCalculations
         ExchangeSymbol $exchangeSymbol,
         $referencePrice = null
     ): array {
-        $scale = Engine::SCALE;
+        $scale = Kraite::SCALE;
 
         $margin = (string) $marketMargin;
         if (! is_numeric($margin) || Math::lte($margin, '0', $scale)) {
@@ -254,7 +254,7 @@ trait HasOrderCalculations
         $gapPercent = null,
         bool $withMeta = false
     ): array {
-        $scale = Engine::SCALE;
+        $scale = Kraite::SCALE;
 
         $direction = mb_strtoupper((string) $direction);
         if (! in_array($direction, ['LONG', 'SHORT'], true)) {
@@ -351,7 +351,7 @@ trait HasOrderCalculations
         // Quantities: chained from market qty using step ratios; last ratio repeats.
         $prev = $marketQ;
         for ($i = 0; $i < $N; $i++) {
-            $mi = Engine::returnLadderedValue($mArray, $i);
+            $mi = Kraite::returnLadderedValue($mArray, $i);
             if (! is_numeric($mi) || (float) $mi <= 0) {
                 throw new RuntimeException('limit_quantity_multipliers must contain positive numeric values');
             }
@@ -412,7 +412,7 @@ trait HasOrderCalculations
         ExchangeSymbol $exchangeSymbol,
         bool $recalculateOnLowerThanMarkPrice = false
     ): array {
-        $scale = Engine::SCALE;
+        $scale = Kraite::SCALE;
 
         $direction = mb_strtoupper(mb_trim($direction));
         if (! in_array($direction, ['LONG', 'SHORT'], true)) {
@@ -430,7 +430,7 @@ trait HasOrderCalculations
         }
 
         // Percent → decimal (>= 0)
-        $pctDecimal = Engine::pctToDecimal((string) $profitPercent, 'Profit percent');
+        $pctDecimal = Kraite::pctToDecimal((string) $profitPercent, 'Profit percent');
 
         // Initial TP calc from ref
         $profitDelta = Math::mul($ref, $pctDecimal, $scale);
@@ -552,7 +552,7 @@ trait HasOrderCalculations
         $currentQty,
         ExchangeSymbol $exchangeSymbol
     ): array {
-        $scale = Engine::SCALE;
+        $scale = Kraite::SCALE;
 
         $direction = mb_strtoupper(mb_trim($direction));
         if (! in_array($direction, ['LONG', 'SHORT'], true)) {
@@ -570,7 +570,7 @@ trait HasOrderCalculations
         }
 
         // Percent → decimal (>= 0)
-        $pctDecimal = Engine::pctToDecimal((string) $stopPercent, 'Stop percent');
+        $pctDecimal = Kraite::pctToDecimal((string) $stopPercent, 'Stop percent');
 
         // LONG: anchor * (1 - pct)  |  SHORT: anchor * (1 + pct)
         $mult = ($direction === 'SHORT')

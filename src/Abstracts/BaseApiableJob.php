@@ -33,7 +33,7 @@ abstract class BaseApiableJob extends BaseQueueableJob
         $apiSystemCanonical = $this->exceptionHandler->getApiSystem();
         $apiSystem = \Kraite\Core\Models\ApiSystem::where('canonical', $apiSystemCanonical)->firstOrFail();
         $accountId = $this->exceptionHandler->account->id;
-        $ipAddress = \Kraite\Core\Models\Engine::ip();
+        $ipAddress = \Kraite\Core\Models\Kraite::ip();
 
         // Check forbidden status based on account type:
         // - Admin accounts (transient, id = NULL): Check system-wide ban only
@@ -261,7 +261,7 @@ abstract class BaseApiableJob extends BaseQueueableJob
                 $this->assignExceptionHandler();
             }
 
-            $ipAddress = \Kraite\Core\Models\Engine::ip();
+            $ipAddress = \Kraite\Core\Models\Kraite::ip();
             $forbiddenHostname = ForbiddenHostname::query()
                 ->where('account_id', $this->exceptionHandler->account->id)
                 ->where('ip_address', $ipAddress)

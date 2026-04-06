@@ -9,7 +9,7 @@ use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 use Kraite\Core\Models\ForbiddenHostname;
-use Kraite\Core\Models\Engine;
+use Kraite\Core\Models\Kraite;
 use Psr\Http\Message\MessageInterface;
 use Psr\Http\Message\ResponseInterface;
 use Throwable;
@@ -326,7 +326,7 @@ trait ApiExceptionHelpers
         ?string $errorMessage
     ): void {
         $apiSystem = \Kraite\Core\Models\ApiSystem::where('canonical', $this->getApiSystem())->firstOrFail();
-        $ipAddress = Engine::ip();
+        $ipAddress = Kraite::ip();
 
         $record = ForbiddenHostname::updateOrCreate(
             [

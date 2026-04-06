@@ -9,7 +9,7 @@ use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
-use Kraite\Core\Trading\Engine;
+use Kraite\Core\Trading\Kraite;
 use StepDispatcher\Support\BaseCommand;
 
 /**
@@ -69,7 +69,7 @@ final class PlaceOrderCommand extends BaseCommand
         $side = self::DIRECTION === 'LONG' ? 'BUY' : 'SELL';
 
         // Calculate market order data to get opening price and quantity
-        $marketData = Engine::calculateMarketOrderData(
+        $marketData = Kraite::calculateMarketOrderData(
             marketMargin: $margin,
             leverage: self::LEVERAGE,
             exchangeSymbol: $exchangeSymbol,
@@ -101,7 +101,7 @@ final class PlaceOrderCommand extends BaseCommand
             $this->verboseInfo("  Position #{$position->id} created");
 
             // Calculate limit order data from the Engine
-            $limitOrders = Engine::calculateLimitOrdersData(
+            $limitOrders = Kraite::calculateLimitOrdersData(
                 totalLimitOrders: 1,
                 direction: self::DIRECTION,
                 referencePrice: $openingPrice,

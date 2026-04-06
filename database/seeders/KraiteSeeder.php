@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSystem;
-use Kraite\Core\Models\Engine;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Indicator;
 use Kraite\Core\Models\Position;
@@ -479,7 +479,7 @@ final class KraiteSeeder extends Seeder
      */
     public function seedKraite(): void
     {
-        Engine::updateOrCreate(
+        Kraite::updateOrCreate(
             ['id' => 1],
             [
                 'allow_opening_positions' => true,
@@ -514,7 +514,7 @@ final class KraiteSeeder extends Seeder
      */
     public function migrateKraiteCredentials(): void
     {
-        $engine = Engine::find(1);
+        $engine = Kraite::find(1);
 
         if ($engine) {
             $engine->binance_api_key = config('kraite.api.credentials.binance.api_key');
@@ -536,7 +536,7 @@ final class KraiteSeeder extends Seeder
      */
     public function addNotificationChannels(): void
     {
-        $engine = Engine::find(1);
+        $engine = Kraite::find(1);
 
         if ($engine) {
             $engine->bybit_api_key = config('kraite.api.credentials.bybit.api_key');
@@ -551,7 +551,7 @@ final class KraiteSeeder extends Seeder
      */
     public function moveAdminPushoverKey(): void
     {
-        $engine = Engine::find(1);
+        $engine = Kraite::find(1);
 
         if ($engine) {
             $adminPushoverKey = config('kraite.admin_user_pushover_key');

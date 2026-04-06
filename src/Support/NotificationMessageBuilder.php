@@ -55,7 +55,7 @@ final class NotificationMessageBuilder
 
         // Extract IP from Engine model or legacy 'ip' key
         $ipRaw = $context['ip'] ?? null;
-        $ip = is_string($ipRaw) ? $ipRaw : \Kraite\Core\Models\Engine::ip();
+        $ip = is_string($ipRaw) ? $ipRaw : \Kraite\Core\Models\Kraite::ip();
 
         // Extract hostname from 'server' key (new) or 'hostname' key (legacy) or apiRequestLog
         $hostnameRaw = $context['server'] ?? ($context['hostname'] ?? ($apiRequestLog->hostname ?? gethostname()));

@@ -9,7 +9,7 @@ use Illuminate\Support\Str;
 use Kraite\Core\Jobs\Lifecycles\Account\PreparePositionsOpeningJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\User;
-use Kraite\Core\Trading\Engine;
+use Kraite\Core\Trading\Kraite;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Support\BaseCommand;
 
@@ -91,7 +91,7 @@ final class CreatePositionsCommand extends BaseCommand
 
         $this->verboseInfo("  Account #{$account->id} ({$account->name}): {$openPositions}/{$maxSlots} positions open");
 
-        $engine = Engine::withAccount($account);
+        $engine = Kraite::withAccount($account);
 
         // Global guard with circuit breaker
         if (! $engine->canOpenPositions()) {

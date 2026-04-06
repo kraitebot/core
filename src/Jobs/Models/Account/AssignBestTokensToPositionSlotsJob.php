@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Jobs\Models\Account;
 
 use Kraite\Core\Abstracts\BaseQueueableJob;
-use Kraite\Core\Trading\Engine;
+use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\ExchangeSymbol;
@@ -136,7 +136,7 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
         $availableShortSlots = max(0, $maxShorts - $currentShorts);
 
         // Check directional guards
-        $engine = Engine::withAccount($this->account);
+        $engine = Kraite::withAccount($this->account);
         $canOpenLongs = $engine->canOpenLongs();
         $canOpenShorts = $engine->canOpenShorts();
 

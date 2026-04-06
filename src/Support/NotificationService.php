@@ -6,7 +6,7 @@ namespace Kraite\Core\Support;
 
 use Illuminate\Support\Facades\Cache;
 use InvalidArgumentException;
-use Kraite\Core\Models\Engine;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Notification;
 use Kraite\Core\Models\NotificationLog;
 use Kraite\Core\Models\User;
@@ -20,7 +20,7 @@ use Kraite\Core\Notifications\AlertNotification;
  * Usage:
  *   // Admin notification
  *   NotificationService::send(
- *       user: Engine::admin(),
+ *       user: Kraite::admin(),
  *       canonical: 'server_rate_limit_exceeded',
  *       referenceData: ['exchange' => 'binance']
  *   );
@@ -33,7 +33,7 @@ final class NotificationService
     /**
      * Send a notification to a specific user.
      *
-     * @param  User  $user  The user to send to (use Engine::admin() for admin notifications)
+     * @param  User  $user  The user to send to (use Kraite::admin() for admin notifications)
      * @param  string  $canonical  Notification canonical identifier (e.g., 'server_rate_limit_exceeded')
      * @param  array<string, mixed>  $referenceData  Reference data for template interpolation (e.g., ['exchange' => 'binance'])
      * @param  object|null  $relatable  Optional relatable model for audit trail
@@ -63,7 +63,7 @@ final class NotificationService
      * Send notification to a specific user (internal use only).
      * Handles throttling, message building, and actual notification dispatch.
      *
-     * @param  User  $user  The user to notify (real User or virtual admin via Engine::admin())
+     * @param  User  $user  The user to notify (real User or virtual admin via Kraite::admin())
      * @param  string  $canonical  Notification canonical identifier
      * @param  array<string, mixed>  $referenceData  Reference data for template interpolation
      * @param  object|null  $relatable  Optional relatable model for audit trail

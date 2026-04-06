@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Trading\Concerns;
 
-use Kraite\Core\Models\Engine as EngineModel;
+use Kraite\Core\Models\Kraite as KraiteModel;
 use Kraite\Core\Models\Position;
 
 trait HasTradingGuards
@@ -15,7 +15,7 @@ trait HasTradingGuards
      */
     public function canOpenPositions(): bool
     {
-        $engine = EngineModel::first();
+        $engine = KraiteModel::first();
 
         if ($engine === null) {
             return false;

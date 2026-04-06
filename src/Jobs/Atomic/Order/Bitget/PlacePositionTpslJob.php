@@ -7,7 +7,7 @@ namespace Kraite\Core\Jobs\Atomic\Order\Bitget;
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
-use Kraite\Core\Trading\Engine;
+use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
@@ -25,8 +25,8 @@ use Throwable;
  * Flow:
  * 1. startOrFail(): Verify position has required data
  * 2. computeApiable():
- *    - Calculate TP price via Engine::calculateProfitOrder()
- *    - Calculate SL price via Engine::calculateStopLossOrder()
+ *    - Calculate TP price via Kraite::calculateProfitOrder()
+ *    - Calculate SL price via Kraite::calculateStopLossOrder()
  *    - Call placePosTpsl() API
  *    - Query position to get takeProfitId and stopLossId
  *    - Create TP Order record (type=PROFIT-LIMIT)
@@ -124,7 +124,7 @@ class PlacePositionTpslJob extends BaseApiableJob
         $exchangeSymbol->updateSaving(['mark_price' => $markPrice]);
 
         // Calculate take-profit price (re-anchor TP if mark price already passed it)
-        $profitData = Engine::calculateProfitOrder(
+        $profitData = Kraite::calculateProfitOrder(
             direction: $direction,
             referencePrice: $this->position->opening_price,
             profitPercent: $this->position->profit_percentage,
@@ -138,7 +138,7 @@ class PlacePositionTpslJob extends BaseApiableJob
         $lastLimitOrder = $this->position->lastLimitOrder();
         $anchorPrice = $lastLimitOrder->price;
 
-        $stopLossData = Engine::calculateStopLossOrder(
+        $stopLossData = Kraite::calculateStopLossOrder(
             direction: $direction,
             anchorPrice: $anchorPrice,
             stopPercent: $account->stop_market_initial_percentage,

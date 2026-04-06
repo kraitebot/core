@@ -7,8 +7,8 @@ namespace Kraite\Core\Models;
 
 
 use Kraite\Core\Abstracts\BaseModel;
-use Kraite\Core\Concerns\Engine\HasAccessors;
-use Kraite\Core\Concerns\Engine\HasGetters;
+use Kraite\Core\Concerns\Kraite\HasAccessors;
+use Kraite\Core\Concerns\Kraite\HasGetters;
 
 
 /**
@@ -36,12 +36,12 @@ use Kraite\Core\Concerns\Engine\HasGetters;
  * @property \Illuminate\Support\Carbon $created_at
  * @property \Illuminate\Support\Carbon $updated_at
  */
-final class Engine extends BaseModel
+final class Kraite extends BaseModel
 {
     use HasAccessors;
     use HasGetters;
 
-    protected $table = 'martingalian';
+    protected $table = 'kraite';
 
     protected $casts = [
         'allow_opening_positions' => 'boolean',

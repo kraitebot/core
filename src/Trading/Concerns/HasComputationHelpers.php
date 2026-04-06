@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Trading\Concerns;
 
 use InvalidArgumentException;
-use Kraite\Core\Trading\Engine;
+use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Support\Math;
 
 trait HasComputationHelpers
@@ -37,9 +37,9 @@ trait HasComputationHelpers
             throw new InvalidArgumentException("{$label} must be numeric.");
         }
 
-        $p = Math::div($pct, '100', Engine::SCALE);
+        $p = Math::div($pct, '100', Kraite::SCALE);
 
-        if (Math::lt($p, '0', Engine::SCALE)) {
+        if (Math::lt($p, '0', Kraite::SCALE)) {
             throw new InvalidArgumentException("{$label} must be >= 0.");
         }
 

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Observers;
 
 use Kraite\Core\Models\ForbiddenHostname;
-use Kraite\Core\Models\Engine;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Support\NotificationService;
 use Throwable;
 
@@ -61,7 +61,7 @@ final class ForbiddenHostnameObserver
 
             // Get the user to notify
             $user = $notifyAdmin
-                ? Engine::admin()
+                ? Kraite::admin()
                 : $record->account?->user;
 
             // If no user to notify, skip notification

@@ -39,7 +39,7 @@ use Kraite\Core\Models\AccountBalanceHistory;
 use Kraite\Core\Models\ApiRequestLog;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\ApiSystem;
-use Kraite\Core\Models\Engine;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\ForbiddenHostname;
 use Kraite\Core\Models\Indicator;
@@ -200,7 +200,7 @@ final class CoreServiceProvider extends ServiceProvider
 
             // Send notification to admin about slow query
             NotificationService::send(
-                user: Engine::admin(),
+                user: Kraite::admin(),
                 canonical: 'slow_query_detected',
                 referenceData: [
                     'sql_full' => $sqlFull,

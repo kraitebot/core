@@ -126,7 +126,7 @@ final class Account extends BaseModel
      */
     public static function admin(string $apiSystemCanonical): self
     {
-        $source = Engine::findOrFail(1);
+        $source = Kraite::findOrFail(1);
 
         return self::temporary($apiSystemCanonical, $source->all_credentials);
     }

@@ -7,7 +7,7 @@ namespace Kraite\Core\Commands\Debug;
 use Illuminate\Console\Command;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSystem;
-use Kraite\Core\Models\Engine;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Support\Proxies\ApiRESTProxy;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use Throwable;
@@ -105,7 +105,7 @@ final class TestApiConnectivityCommand extends Command
             return self::FAILURE;
         }
 
-        $engine = Engine::first();
+        $engine = Kraite::first();
 
         if (! $engine) {
             $this->error('Engine configuration not found.');
@@ -129,7 +129,7 @@ final class TestApiConnectivityCommand extends Command
      *
      * @return array<string, string|null>
      */
-    private function buildAdminCredentials(Engine $engine, string $canonical): array
+    private function buildAdminCredentials(Kraite $engine, string $canonical): array
     {
         return match ($canonical) {
             'binance' => [

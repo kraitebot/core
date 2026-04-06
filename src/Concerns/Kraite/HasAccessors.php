@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Kraite\Core\Concerns\Engine;
+namespace Kraite\Core\Concerns\Kraite;
 
 trait HasAccessors
 {

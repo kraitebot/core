@@ -6,7 +6,7 @@ namespace Kraite\Core\Concerns\ExchangeSymbol;
 
 use Exception;
 use Illuminate\Support\Carbon;
-use Kraite\Core\Models\Engine;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\Proxies\TradingMapperProxy;
@@ -86,7 +86,7 @@ trait SendsNotifications
 
         // Send notification using NotificationService with throttling
         NotificationService::send(
-            user: Engine::admin(),
+            user: Kraite::admin(),
             canonical: 'token_delisting',
             referenceData: [
                 'apiSystem' => $this->apiSystem,

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Trading\Concerns;
 
 use InvalidArgumentException;
-use Kraite\Core\Trading\Engine;
+use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Support\Math;
 
@@ -30,7 +30,7 @@ trait HasPnLCalculations
         $lastPrice,
         ?ExchangeSymbol $exchangeSymbol = null
     ): array {
-        $scale = Engine::SCALE;
+        $scale = Kraite::SCALE;
         $dir = mb_strtoupper(mb_trim($direction));
 
         if (! in_array($dir, ['LONG', 'SHORT'], true)) {
@@ -76,7 +76,7 @@ trait HasPnLCalculations
      */
     public static function calculateWAPData(array $limits, string $direction, $profitPercent = null): array
     {
-        $scale = Engine::SCALE;
+        $scale = Kraite::SCALE;
 
         $direction = mb_strtoupper(mb_trim($direction));
         if (! in_array($direction, ['LONG', 'SHORT'], true)) {
@@ -86,7 +86,7 @@ trait HasPnLCalculations
         $useProfit = $profitPercent !== null && $profitPercent !== '';
         $p = '0';
         if ($useProfit) {
-            $p = Engine::pctToDecimal((string) $profitPercent, 'profitPercent');
+            $p = Kraite::pctToDecimal((string) $profitPercent, 'profitPercent');
         }
 
         $out = [];
@@ -157,7 +157,7 @@ trait HasPnLCalculations
         $tpPercent,
         $slPrice,
     ): array {
-        $scale = Engine::SCALE;
+        $scale = Kraite::SCALE;
         $dir = mb_strtoupper(mb_trim($direction));
 
         if (! in_array($dir, ['LONG', 'SHORT'], true)) {

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Trading\Concerns;
 
 use InvalidArgumentException;
-use Kraite\Core\Trading\Engine;
+use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\LeverageBracket;
 use Kraite\Core\Support\Math;
@@ -42,7 +42,7 @@ trait HasPositionPlanning
         ?array $limitQuantityMultipliers = null,
         bool $withDiagnostics = true
     ): array {
-        $scale = Engine::SCALE;
+        $scale = Kraite::SCALE;
 
         $direction = mb_strtoupper(mb_trim($direction));
         if (! in_array($direction, ['LONG', 'SHORT'], true)) {
@@ -130,7 +130,7 @@ trait HasPositionPlanning
         $prev = $Q0_unit;
         $activeRatios = [];
         for ($i = 0; $i < $N; $i++) {
-            $mi = Engine::returnLadderedValue($ratios, $i);
+            $mi = Kraite::returnLadderedValue($ratios, $i);
             if (! is_numeric($mi) || (float) $mi <= 0) {
                 throw new RuntimeException('limit_quantity_multipliers must contain positive numeric values');
             }
@@ -147,7 +147,7 @@ trait HasPositionPlanning
 
         // K_raw = M0 + A_lim_unit ; apply headroom
         $K_raw = Math::add($M0, $A_lim_unit, $scale);
-        $h = (string) (config('kraite.bracket_headroom_pct', Engine::BRACKET_HEADROOM_PCT));
+        $h = (string) (config('kraite.bracket_headroom_pct', Kraite::BRACKET_HEADROOM_PCT));
         $K = Math::mul($K_raw, Math::add('1', $h, $scale), $scale);
 
         // Determine feasible leverage via bracket intervals
@@ -167,8 +167,8 @@ trait HasPositionPlanning
             $initL = (int) $b->initial_leverage;
 
             // Lmin = ceil(floor / K), LmaxFromCap = floor(cap / K)
-            $Lmin = Engine::ceilPosDiv($floor, $K);
-            $LmaxFromCap = Engine::floorPosDiv($cap, $K);
+            $Lmin = Kraite::ceilPosDiv($floor, $K);
+            $LmaxFromCap = Kraite::floorPosDiv($cap, $K);
             $Lmax = min($LmaxFromCap, $initL, $leverageCap);
 
             $intervals[] = [
@@ -204,12 +204,12 @@ trait HasPositionPlanning
         /* -----------------------------
          * 2) MARKET leg at chosen L
          * ----------------------------- */
-        $market = Engine::calculateMarketOrderData($M0, $chosenLev, $exchangeSymbol, $referencePrice);
+        $market = Kraite::calculateMarketOrderData($M0, $chosenLev, $exchangeSymbol, $referencePrice);
 
         /* -----------------------------
          * 3) Unbounded ladder (no cap)
          * ----------------------------- */
-        $ladderPayload = Engine::calculateLimitOrdersData(
+        $ladderPayload = Kraite::calculateLimitOrdersData(
             $N,
             $direction,
             $ref,

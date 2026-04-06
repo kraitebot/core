@@ -6,7 +6,7 @@ namespace Kraite\Core\Jobs\Atomic\Order;
 
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
-use Kraite\Core\Trading\Engine;
+use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Throwable;
@@ -24,7 +24,7 @@ use Throwable;
  *
  * Flow:
  * 1. Query last limit order price from orders table
- * 2. Calculate stop price using Engine::calculateStopLossOrder()
+ * 2. Calculate stop price using Kraite::calculateStopLossOrder()
  * 3. Create Order record with type=STOP-MARKET
  * 4. Place order on exchange via apiPlace()
  * 5. doubleCheck() verifies order was accepted
@@ -100,7 +100,7 @@ final class PlaceStopLossOrderJob extends BaseApiableJob
         $anchorPrice = $lastLimitOrder->price;
 
         // Calculate stop-loss order data
-        $stopLossData = Engine::calculateStopLossOrder(
+        $stopLossData = Kraite::calculateStopLossOrder(
             direction: $direction,
             anchorPrice: $anchorPrice,
             stopPercent: $account->stop_market_initial_percentage,

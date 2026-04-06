@@ -23,7 +23,7 @@ use Kraite\Core\Support\Math;
  * - Rungs that round to zero quantity after formatting are dropped.
  * - Rung prices are clamped to symbol min/max and warnings are recorded.
  */
-final class Engine
+final class Kraite
 {
     use HasComputationHelpers;
     use HasMinNotionalChecks;

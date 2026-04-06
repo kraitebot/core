@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Jobs\Atomic\Order;
 
 use Kraite\Core\Abstracts\BaseQueueableJob;
-use Kraite\Core\Trading\Engine;
+use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use StepDispatcher\Models\Step;
@@ -78,7 +78,7 @@ class DispatchLimitOrdersJob extends BaseQueueableJob
         // 1. Calculate ladder → 2. Create Orders in database
         // Observer silently rejects excess orders (returns false from creating()),
         // so filter removes any nulls from blocked creations
-        $this->limitOrders = collect(Engine::calculateLimitOrdersData(
+        $this->limitOrders = collect(Kraite::calculateLimitOrdersData(
             totalLimitOrders: $totalLimitOrders,
             direction: $direction,
             referencePrice: $referencePrice,

@@ -247,6 +247,6 @@ final class BybitThrottler extends BaseApiThrottler
      */
     protected static function getCurrentIp(): string
     {
-        return \Kraite\Core\Models\Engine::ip();
+        return \Kraite\Core\Models\Kraite::ip();
     }
 }
