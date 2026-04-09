@@ -12,7 +12,7 @@ use Kraite\Core\Support\Proxies\JobProxy;
 /**
  * PrepareSyncOrdersJob (Orchestrator)
  *
- * Top-level lifecycle orchestrator dispatched by cronjobs:sync-orders.
+ * Top-level lifecycle orchestrator dispatched by kraite:cron-sync-orders.
  * Creates the atomic SyncPositionOrdersJob as a child step.
  *
  * The atomic sync job updates order statuses from the exchange.

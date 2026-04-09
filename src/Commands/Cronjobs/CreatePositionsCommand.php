@@ -20,7 +20,7 @@ final class CreatePositionsCommand extends BaseCommand
      *
      * @var string
      */
-    protected $signature = 'cronjobs:create-positions
+    protected $signature = 'kraite:cron-create-positions
                             {--clean : Truncate positions, orders, and related tables before running}
                             {--output : Display command output (silent by default)}';
 

@@ -29,7 +29,7 @@ final class ClearTablesCommand extends BaseCommand
         'users',
     ];
 
-    protected $signature = 'debug:clear-tables
+    protected $signature = 'kraite:debug-clear-tables
                             {--output : Display command output (silent by default)}';
 
     protected $description = 'Truncate all database tables except whitelisted ones (for debugging/testing)';

@@ -12,7 +12,7 @@ use StepDispatcher\Support\BaseCommand;
 
 final class StoreAccountsBalancesCommand extends BaseCommand
 {
-    protected $signature = 'cronjobs:store-accounts-balances
+    protected $signature = 'kraite:cron-store-accounts-balances
                             {--clean : Truncate tables and clear laravel.log}
                             {--output : Display command output (silent by default)}';
 

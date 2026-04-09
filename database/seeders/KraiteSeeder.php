@@ -859,7 +859,7 @@ final class KraiteSeeder extends Seeder
 
     /**
      * Seed symbols table from SQL dump.
-     * Exchange symbols are populated separately via cronjobs:refresh-exchange-symbols.
+     * Exchange symbols are populated separately via kraite:cron-refresh-exchange-symbols.
      * If dump doesn't exist or is incompatible, seeding is skipped.
      */
     private function seedCoreSymbolData(): void

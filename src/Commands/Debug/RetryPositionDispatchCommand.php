@@ -20,7 +20,7 @@ use StepDispatcher\Support\BaseCommand;
  */
 final class RetryPositionDispatchCommand extends BaseCommand
 {
-    protected $signature = 'debug:retry-position-dispatch
+    protected $signature = 'kraite:debug-retry-position-dispatch
                             {position_id : The position ID to retry}
                             {--clean : Truncate auxiliary tables (steps, api_snapshots, etc.) before retrying}
                             {--keep-orders : Do not delete existing orders before retrying}

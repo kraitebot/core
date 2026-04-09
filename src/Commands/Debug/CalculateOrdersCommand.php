@@ -14,7 +14,7 @@ final class CalculateOrdersCommand extends Command
 {
     /**
      * Usage (single line):
-     * php artisan debug:calculate-orders --price=64000 --margin=100 --exchange_symbol_id=96 --direction=LONG --account_id=1
+     * php artisan kraite:debug-calculate-orders --price=64000 --margin=100 --exchange_symbol_id=96 --direction=LONG --account_id=1
      *
      * This command previews:
      * - Market slice (entry MARKET)
@@ -28,7 +28,7 @@ final class CalculateOrdersCommand extends Command
      * - stop_percent:       stop_market_initial_percentage
      * - limit_orders (N):   total_limit_orders (from ExchangeSymbol)
      */
-    protected $signature = 'debug:calculate-orders
+    protected $signature = 'kraite:debug-calculate-orders
         {--price= : Reference price to compute quantities and the ladder from}
         {--margin= : Margin allocation (quote currency amount)}
         {--exchange_symbol_id= : ExchangeSymbol ID}

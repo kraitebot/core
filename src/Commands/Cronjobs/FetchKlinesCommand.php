@@ -18,7 +18,7 @@ use StepDispatcher\Support\BaseCommand;
 
 final class FetchKlinesCommand extends BaseCommand
 {
-    protected $signature = 'cronjobs:fetch-klines
+    protected $signature = 'kraite:cron-fetch-klines
         {--clean : Truncate candles, steps, and related operational tables}
         {--exchange_symbol_id= : Fetch klines for a specific exchange symbol}
         {--canonical= : Filter by API system canonical (e.g., binance, bybit)}

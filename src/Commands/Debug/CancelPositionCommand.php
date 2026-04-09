@@ -18,7 +18,7 @@ use StepDispatcher\Support\BaseCommand;
  */
 final class CancelPositionCommand extends BaseCommand
 {
-    protected $signature = 'debug:cancel-position
+    protected $signature = 'kraite:debug-cancel-position
                             {position_id : The position ID to cancel}
                             {--clean : Truncate steps, model_logs, and api_request_logs before running}';
 

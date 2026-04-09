@@ -32,7 +32,7 @@ use StepDispatcher\Support\BaseCommand;
  */
 final class RefreshExchangeSymbolsCommand extends BaseCommand
 {
-    protected $signature = 'cronjobs:refresh-exchange-symbols
+    protected $signature = 'kraite:cron-refresh-exchange-symbols
                             {--clean : Truncate all operational tables and start fresh}
                             {--exchange= : Only refresh a specific exchange (binance, bybit, kucoin, bitget)}';
 

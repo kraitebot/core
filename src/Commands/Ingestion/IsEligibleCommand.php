@@ -37,7 +37,7 @@ final class IsEligibleCommand extends BaseCommand
     /**
      * @var string
      */
-    protected $signature = 'ingestion:is-eligible
+    protected $signature = 'kraite:ingestion-is-eligible
                             {token : The cryptocurrency token symbol (e.g., SOL, BTC)}';
 
     /**

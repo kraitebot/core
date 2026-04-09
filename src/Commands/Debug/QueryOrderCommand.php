@@ -16,7 +16,7 @@ use Throwable;
  */
 final class QueryOrderCommand extends Command
 {
-    protected $signature = 'debug:query-order
+    protected $signature = 'kraite:debug-query-order
                             {order_id : The local order ID to query}';
 
     protected $description = 'Query an order from the exchange and display the API response alongside local state.';

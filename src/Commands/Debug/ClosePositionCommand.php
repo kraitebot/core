@@ -18,7 +18,7 @@ use StepDispatcher\Support\BaseCommand;
  */
 final class ClosePositionCommand extends BaseCommand
 {
-    protected $signature = 'debug:close-position
+    protected $signature = 'kraite:debug-close-position
                             {position_id : The position ID to close}
                             {--clean : Truncate steps, model_logs, and api_request_logs before running}';
 

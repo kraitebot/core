@@ -21,7 +21,7 @@ use StepDispatcher\Support\BaseCommand;
  */
 final class CheckStaleDataCommand extends BaseCommand
 {
-    protected $signature = 'cronjobs:check-stale-data
+    protected $signature = 'kraite:cron-check-stale-data
                             {--step-threshold=300 : Maximum seconds in Dispatched state before flagging as stale}
                             {--lock-threshold=30 : Maximum seconds a dispatcher lock can be held before auto-release}
                             {--output : Display command output (silent by default)}';

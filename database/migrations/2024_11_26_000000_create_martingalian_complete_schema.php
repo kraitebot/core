@@ -605,22 +605,6 @@ return new class extends Migration
             $table->index('created_at');
         });
 
-        // heartbeats table - General-purpose heartbeat tracking for system processes
-        Schema::create('heartbeats', function (Blueprint $table) {
-            $table->id();
-            $table->string('canonical', 100)->comment('Process identifier (e.g., price_stream, user_stream, step_dispatcher)');
-            $table->foreignId('api_system_id')->nullable()->constrained('api_systems')->comment('Optional reference to api_systems');
-            $table->foreignId('account_id')->nullable()->constrained('accounts')->comment('Optional reference to accounts');
-            $table->string('group', 50)->nullable()->comment('Optional group identifier (e.g., group-1 for KuCoin WebSocket groups)');
-            $table->timestamp('last_beat_at')->comment('When the last successful heartbeat occurred');
-            $table->unsignedBigInteger('beat_count')->default(0)->comment('Number of successful beats');
-            $table->json('metadata')->nullable()->comment('Optional extra data');
-            $table->timestamps();
-
-            $table->unique(['canonical', 'api_system_id', 'account_id', 'group'], 'heartbeats_unique');
-            $table->index('canonical', 'idx_heartbeats_canonical');
-            $table->index('last_beat_at', 'idx_heartbeats_last_beat_at');
-        });
     }
 
     /**
@@ -628,7 +612,7 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('heartbeats');
+
         Schema::dropIfExists('model_logs');
         Schema::dropIfExists('slow_queries');
         Schema::dropIfExists('steps');

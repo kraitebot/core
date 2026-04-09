@@ -11,9 +11,9 @@ final class DumpAccountCredentialsCommand extends BaseCommand
 {
     /**
      * Run with:
-     *  php artisan debug:dump-account-credentials {account_id}
+     *  php artisan kraite:debug-dump-account-credentials {account_id}
      */
-    protected $signature = 'debug:dump-account-credentials
+    protected $signature = 'kraite:debug-dump-account-credentials
                             {account_id : The account ID to dump credentials for}
                             {--output : Display command output (silent by default)}';
 

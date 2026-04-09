@@ -10,7 +10,7 @@ use Throwable;
 
 final class QueryAccountCommand extends BaseCommand
 {
-    protected $signature = 'debug:query-account
+    protected $signature = 'kraite:debug-query-account
                             {--account-id= : The account ID to query}
                             {--raw : Show raw API response before filtering}
                             {--output : Display command output (silent by default)}';

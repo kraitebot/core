@@ -26,7 +26,7 @@ final class PlaceOrderCommand extends BaseCommand
 
     private const DIRECTION = 'LONG';
 
-    protected $signature = 'debug:place-order
+    protected $signature = 'kraite:debug-place-order
                             {margin : Margin amount in USDT}
                             {token : Token to trade (e.g. BTC, ETH)}
                             {--account=1 : Account ID to use}

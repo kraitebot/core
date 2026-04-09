@@ -16,7 +16,7 @@ use StepDispatcher\Support\BaseCommand;
  */
 final class QueryPositionsCommand extends BaseCommand
 {
-    protected $signature = 'debug:query-positions
+    protected $signature = 'kraite:debug-query-positions
                             {account_id : The account ID to query positions for}
                             {--status= : Filter by position status (e.g., active, closed)}
                             {--with-orders : Include order details for each position}

@@ -70,31 +70,29 @@ final class CoreServiceProvider extends ServiceProvider
 {
     public function boot()
     {
-        if ($this->app->runningInConsole()) {
-            $this->commands([
-                SafeToRestartCommand::class,
-                UpdateRecvwindowSafetyDurationCommand::class,
-                CheckStaleDataCommand::class,
-                ConcludeSymbolsDirectionCommand::class,
-                CreatePositionsCommand::class,
-                FetchKlinesCommand::class,
-                RefreshExchangeSymbolsCommand::class,
-                StoreAccountsBalancesCommand::class,
-                SyncOrdersCommand::class,
-                QueryAccountCommand::class,
-                CalculateOrdersCommand::class,
-                CancelPositionCommand::class,
-                ClearTablesCommand::class,
-                ClosePositionCommand::class,
-                DumpAccountCredentialsCommand::class,
-                QueryOrderCommand::class,
-                QueryPositionsCommand::class,
-                RetryPositionDispatchCommand::class,
-                TestApiConnectivityCommand::class,
-                IsEligibleCommand::class,
-                TestNotificationCommand::class,
-            ]);
-        }
+        $this->commands([
+            SafeToRestartCommand::class,
+            UpdateRecvwindowSafetyDurationCommand::class,
+            CheckStaleDataCommand::class,
+            ConcludeSymbolsDirectionCommand::class,
+            CreatePositionsCommand::class,
+            FetchKlinesCommand::class,
+            RefreshExchangeSymbolsCommand::class,
+            StoreAccountsBalancesCommand::class,
+            SyncOrdersCommand::class,
+            QueryAccountCommand::class,
+            CalculateOrdersCommand::class,
+            CancelPositionCommand::class,
+            ClearTablesCommand::class,
+            ClosePositionCommand::class,
+            DumpAccountCredentialsCommand::class,
+            QueryOrderCommand::class,
+            QueryPositionsCommand::class,
+            RetryPositionDispatchCommand::class,
+            TestApiConnectivityCommand::class,
+            IsEligibleCommand::class,
+            TestNotificationCommand::class,
+        ]);
 
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
         $this->loadViewsFrom(__DIR__.'/../resources/views', 'kraite');

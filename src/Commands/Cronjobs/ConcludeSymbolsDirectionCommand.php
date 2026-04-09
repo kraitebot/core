@@ -20,7 +20,7 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
      *
      * @var string
      */
-    protected $signature = 'cronjobs:conclude-symbols-direction
+    protected $signature = 'kraite:cron-conclude-symbols-direction
                             {--clean : Truncate steps, api_request_logs, application_logs, and indicator_histories tables before running}
                             {--preserve : Do not delete indicator histories (for debugging purposes)}
                             {--reset : Reset all exchange symbols to default state (direction=NULL, clear all flags)}

@@ -18,7 +18,7 @@ use Throwable;
  */
 final class TestApiConnectivityCommand extends Command
 {
-    protected $signature = 'debug:test-api-connectivity
+    protected $signature = 'kraite:debug-test-api-connectivity
                             {--account= : Account ID to test}
                             {--admin : Test admin credentials from Engine model}
                             {--canonical= : API system canonical (required with --admin)}';

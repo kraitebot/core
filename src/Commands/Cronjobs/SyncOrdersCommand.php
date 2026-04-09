@@ -30,7 +30,7 @@ final class SyncOrdersCommand extends BaseCommand
      *
      * @var string
      */
-    protected $signature = 'cronjobs:sync-orders
+    protected $signature = 'kraite:cron-sync-orders
                             {--order_id= : Sync a single order by ID}
                             {--clean : Truncate steps and related tables before running (preserves positions and orders)}
                             {--output : Display command output (silent by default)}';
