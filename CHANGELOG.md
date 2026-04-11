@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.5 - 2026-04-11
+
+### Features
+
+- [NEW FEATURE] `CheckKLinesForCorrelationJob` — checks candle availability for BTC correlation, spawns child FetchKlines steps if missing
+
+### Improvements
+
+- [IMPROVED] `ConcludeSymbolDirectionAtTimeframeJob` now creates BTC correlation steps (INDEX 5-6) when `kraite.correlation.enabled` is true
+- [IMPROVED] Correlation workflow: CheckKLines → CalculateBtcCorrelation → CalculateBtcElasticity runs after direction finalization
+
 ## 1.3.4 - 2026-04-06
 
 ### Improvements

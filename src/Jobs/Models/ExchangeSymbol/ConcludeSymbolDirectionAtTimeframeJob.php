@@ -454,7 +454,8 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
 
     /**
      * Create finalization steps after direction is successfully concluded.
-     * These steps confirm price alignment and copy direction to other exchanges.
+     * These steps confirm price alignment, copy direction to other exchanges,
+     * and optionally fetch klines + compute BTC correlation when enabled.
      */
     private function createFinalizationSteps(int $symbolId): void
     {
@@ -484,6 +485,45 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
                 'sourceExchangeSymbolId' => $symbolId,
             ],
         ]);
+
+        // INDEX 5-6: BTC correlation (only when enabled)
+        $correlationConfig = config('kraite.correlation');
+        if ($correlationConfig && ($correlationConfig['enabled'] ?? false)) {
+            // INDEX 5: Check klines, spawn child block to fetch if missing
+            Step::create([
+                'class' => CheckKLinesForCorrelationJob::class,
+                'queue' => 'default',
+                'block_uuid' => $blockUuid,
+                'group' => $group,
+                'index' => 5,
+                'arguments' => [
+                    'exchangeSymbolId' => $symbolId,
+                ],
+            ]);
+
+            // INDEX 6: Calculate correlation + elasticity (runs after klines are fetched)
+            Step::create([
+                'class' => CalculateBtcCorrelationJob::class,
+                'queue' => 'default',
+                'block_uuid' => $blockUuid,
+                'group' => $group,
+                'index' => 6,
+                'arguments' => [
+                    'exchangeSymbolId' => $symbolId,
+                ],
+            ]);
+
+            Step::create([
+                'class' => CalculateBtcElasticityJob::class,
+                'queue' => 'default',
+                'block_uuid' => $blockUuid,
+                'group' => $group,
+                'index' => 6,
+                'arguments' => [
+                    'exchangeSymbolId' => $symbolId,
+                ],
+            ]);
+        }
     }
 
     /**
