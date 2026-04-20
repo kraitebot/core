@@ -197,11 +197,17 @@ final class OrderObserver
             return;
         }
 
-        // Update reference_status to prevent double-dispatch
-        $model->updateSaving(['reference_status' => 'FILLED']);
-
         // Deduplicate: skip if ApplyWapJob already pending for this position.
         // Prevents multiple dispatches when several LIMIT orders fill at once.
+        //
+        // IMPORTANT: the reference_status bump is AFTER this check, not before.
+        // reference_status means "observer has acknowledged this state". When
+        // dedup skips the dispatch, we have NOT acknowledged the fill — the
+        // WAP currently running was for a prior fill. Leaving ref_status
+        // un-bumped lets the next sync cycle re-detect this fill (now that
+        // the prior WAP has cleared dedup) and dispatch a fresh WAP for it.
+        // Without this ordering, a LIMIT that fills during another LIMIT's
+        // WAP would have its qty effectively ignored in TP adjustment.
         $alreadyPending = Step::query()
             ->where('class', ApplyWapJob::class)
             ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
@@ -211,6 +217,8 @@ final class OrderObserver
         if ($alreadyPending) {
             return;
         }
+
+        $model->updateSaving(['reference_status' => 'FILLED']);
 
         Step::create([
             'class' => ApplyWapJob::class,

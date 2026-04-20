@@ -4,13 +4,16 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\Order;
 
+use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
+use Kraite\Core\Jobs\Lifecycles\Position\ApplyWapJob;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
 use RuntimeException;
+use StepDispatcher\Models\Step;
 use Throwable;
 
 /**
@@ -40,6 +43,10 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
     public ?string $breakEvenPrice = null;
 
     public ?string $positionQty = null;
+
+    public ?string $intendedPrice = null;
+
+    public ?string $intendedQty = null;
 
     public function __construct(int $positionId)
     {
@@ -142,6 +149,22 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
             ? Math::mul($rawQty, '-1', $scale)
             : $rawQty;
 
+        // Consistency gate: the snapshot's positionAmt must reflect every
+        // FILLED order the DB already knows about. If the exchange reports
+        // less quantity than our local view of market + filled DCA orders,
+        // the matching engine has not yet committed the triggering fill
+        // into breakEvenPrice — the WAP would be computed against stale
+        // data. Fail the step so the parent retries with a fresh snapshot.
+        $expectedQty = $this->expectedPositionQty();
+        if (Math::lt($this->positionQty, $expectedQty, $scale)) {
+            throw new RuntimeException(sprintf(
+                'breakEvenPrice snapshot lags the local fill ledger for position #%d: exchange qty=%s, local expected=%s. Binance has not yet committed the fresh LIMIT fill. Retry.',
+                $this->position->id,
+                $this->positionQty,
+                $expectedQty
+            ));
+        }
+
         // 4) Calculate target price
         $profitPct = (string) $this->position->profit_percentage;  // e.g. "0.350"
         $fraction = Math::div($profitPct, '100', $scale);          // -> "0.0035"
@@ -161,8 +184,35 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
         $oldQty = (string) ($this->profitOrder->quantity ?? '0');
         $oldPrice = (string) ($this->profitOrder->price ?? '0');
 
-        // 7) Modify on exchange and sync
-        $this->profitOrder->apiModify((float) $formattedQty, (float) $formattedPrice);
+        // Remember what we SENT so doubleCheck() and failure diagnostics can
+        // compare against what the exchange actually applied.
+        $this->intendedPrice = $formattedPrice;
+        $this->intendedQty = $formattedQty;
+
+        // 7) Modify on exchange, sync, and if modify throws — sync anyway so
+        // the error message reports the real exchange state rather than
+        // leaving the operator wondering whether the modify partially applied.
+        try {
+            $this->profitOrder->apiModify((float) $formattedQty, (float) $formattedPrice);
+        } catch (Throwable $e) {
+            try {
+                $this->profitOrder->apiSync();
+            } catch (Throwable) {
+                // Sync itself failed too — fall through with the original error
+            }
+
+            throw new RuntimeException(sprintf(
+                'apiModify failed for profit order #%d (intended price=%s qty=%s; actual DB after sync: price=%s qty=%s status=%s). Original: %s',
+                $this->profitOrder->id,
+                $formattedPrice,
+                $formattedQty,
+                $this->profitOrder->price,
+                $this->profitOrder->quantity,
+                $this->profitOrder->status,
+                $e->getMessage()
+            ), 0, $e);
+        }
+
         $this->profitOrder->apiSync();
 
         return [
@@ -182,6 +232,12 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
 
     /**
      * Verify the profit order was modified successfully.
+     *
+     * Status alone isn't enough — Binance's PUT /fapi/v1/order is an in-place
+     * modify that keeps the orderId and status, so a no-op / silent-reject
+     * modify would leave the order at NEW and we'd think we succeeded. Also
+     * verify the intended price and quantity actually landed (tolerance: one
+     * tick on price, exact on qty since quantity_precision is respected).
      */
     public function doubleCheck(): bool
     {
@@ -191,8 +247,45 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
 
         $this->profitOrder->refresh();
 
-        // Profit order is valid if status is active
-        return in_array($this->profitOrder->status, ['NEW', 'PARTIALLY_FILLED'], true);
+        if (! in_array($this->profitOrder->status, ['NEW', 'PARTIALLY_FILLED'], true)) {
+            return false;
+        }
+
+        if ($this->intendedPrice !== null) {
+            $tick = (string) ($this->position->exchangeSymbol->tick_size ?? '0');
+            $actualPrice = (string) ($this->profitOrder->price ?? '0');
+            $drift = Math::lt($actualPrice, $this->intendedPrice, 20)
+                ? Math::sub($this->intendedPrice, $actualPrice, 20)
+                : Math::sub($actualPrice, $this->intendedPrice, 20);
+
+            if (Math::gt($tick, '0', 20) && Math::gt($drift, $tick, 20)) {
+                return false;
+            }
+        }
+
+        if ($this->intendedQty !== null) {
+            $actualQty = (string) ($this->profitOrder->quantity ?? '0');
+            if (! Math::equal($actualQty, $this->intendedQty, 8)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Sum of filled order quantities we know locally — market entry plus
+     * every FILLED DCA LIMIT order the DB has seen. This is the minimum
+     * the exchange's positionAmt must reflect for the WAP math to be using
+     * a trustworthy breakEvenPrice. Short positions are represented by the
+     * absolute quantity (same convention as $this->positionQty).
+     */
+    private function expectedPositionQty(): string
+    {
+        return (string) $this->position->orders()
+            ->whereIn('type', ['MARKET', 'LIMIT'])
+            ->where('status', 'FILLED')
+            ->sum('quantity');
     }
 
     /**
@@ -217,6 +310,34 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
             'was_waped' => true,
             'waped_at' => now(),
         ]);
+
+        // Re-entry for sequential fills: any LIMIT with status=FILLED but
+        // reference_status still != FILLED was skipped by observer dedup
+        // while this WAP was running. Those fills are now unacked — sync
+        // will not re-fire observer for them (no field change), so dispatch
+        // a follow-up ApplyWap so their qty gets reflected in the TP. The
+        // small dispatch_after delay ensures the current step's state has
+        // transitioned to Completed before the dedup check runs in observer.
+        $hasUnackedFills = $this->position->orders()
+            ->where('type', 'LIMIT')
+            ->where('status', 'FILLED')
+            ->where(function ($q) {
+                $q->where('reference_status', '!=', 'FILLED')
+                    ->orWhereNull('reference_status');
+            })
+            ->exists();
+
+        if ($hasUnackedFills) {
+            Step::create([
+                'class' => ApplyWapJob::class,
+                'arguments' => [
+                    'positionId' => $this->position->id,
+                    'message' => 'Follow-up WAP for LIMIT fills that arrived during the prior WAP run',
+                ],
+                'child_block_uuid' => (string) Str::uuid(),
+                'dispatch_after' => now()->addSeconds(3),
+            ]);
+        }
     }
 
     /**

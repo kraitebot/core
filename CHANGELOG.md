@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.9 - 2026-04-21
+
+### Fixes
+
+- [BUG FIX] `OrderObserver::dispatchApplyWap` — `reference_status = FILLED` bump moved to AFTER the dedup check. When dedup skipped the dispatch (another WAP was already pending), ack was happening anyway, silencing the observer for that fill permanently. Now the fill stays unacked and is picked up by a follow-up WAP.
+- [BUG FIX] `CalculateWapAndModifyProfitOrderJob::complete()` — after a successful WAP, scans for LIMIT orders with `status=FILLED` but `reference_status != FILLED` and self-dispatches a follow-up `ApplyWapJob` (3s delay). Covers the case where a DCA fill arrived during the prior WAP and was skipped by observer dedup; without this, that fill's quantity never made it into the TP.
+- [BUG FIX] `CalculateWapAndModifyProfitOrderJob::computeApiable()` — consistency gate: if the exchange's `positionAmt` is less than the local sum of MARKET+FILLED LIMIT quantities, the matching engine has not yet committed the triggering fill into `breakEvenPrice`. Throws with a clear message so the step retries with a fresh snapshot instead of silently computing WAP against stale breakeven.
+- [BUG FIX] `CalculateWapAndModifyProfitOrderJob::doubleCheck()` — now verifies the profit order's price (within one tick) and quantity (exact) actually match what the job intended to send, not just that status is NEW/PARTIALLY_FILLED. Catches silent no-op modifies.
+- [BUG FIX] `CalculateWapAndModifyProfitOrderJob::computeApiable()` — `apiModify()` wrapped in try/catch. On any exception, runs `apiSync` to capture the real exchange state and rethrows a descriptive `RuntimeException` with intended vs actual price/qty/status. Replaces the opaque "WAP failed" error with actionable diagnostics.
+
 ## 1.3.8 - 2026-04-21
 
 ### Fixes
