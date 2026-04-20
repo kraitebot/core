@@ -55,17 +55,29 @@ class PlaceMarketOrderJob extends BaseApiableJob
 
     /**
      * Verify position is ready for market order.
+     *
+     * On retry, restore $this->marketOrder from DB if a prior attempt already
+     * created + placed it. Without this, a retry creates a fresh Order row and
+     * re-calls apiPlace(), which would place a duplicate market order on the
+     * exchange. PlaceLimitOrderJob guards the same way via exchange_order_id.
      */
     public function startOrFail(): bool
     {
-        // Position must be in 'opening' status (set by PreparePositionDataJob)
         if ($this->position->status !== 'opening') {
             return false;
         }
 
-        // Margin must be set (set by PreparePositionDataJob)
         if ($this->position->margin === null) {
             return false;
+        }
+
+        $existing = $this->position->orders()
+            ->where('type', 'MARKET')
+            ->latest('id')
+            ->first();
+
+        if ($existing !== null) {
+            $this->marketOrder = $existing;
         }
 
         return true;
@@ -73,17 +85,30 @@ class PlaceMarketOrderJob extends BaseApiableJob
 
     public function computeApiable()
     {
+        // Retry path: a prior attempt already placed the market order. Skip
+        // re-placement; doubleCheck() + complete() will run against the
+        // existing order and finalise normally.
+        if ($this->marketOrder !== null && $this->marketOrder->exchange_order_id !== null) {
+            return [
+                'position_id' => $this->position->id,
+                'order_id' => $this->marketOrder->id,
+                'trading_pair' => $this->position->exchangeSymbol->parsed_trading_pair,
+                'direction' => $this->position->direction,
+                'side' => $this->marketOrder->side,
+                'quantity' => $this->marketOrder->quantity,
+                'message' => 'Market order already placed on prior attempt — skipping re-placement',
+                'exchange_order_id' => $this->marketOrder->exchange_order_id,
+            ];
+        }
+
         $exchangeSymbol = $this->position->exchangeSymbol;
         $direction = $this->position->direction;
         $leverage = $this->position->leverage;
 
-        // 1. Calculate market order notional using divider formula
-        // divider = 2^(totalLimitOrders + 1) e.g., 4 limits = 32
         $divider = get_market_order_amount_divider($this->position->total_limit_orders);
         $margin = (string) $this->position->margin;
         $notional = Math::div(Math::mul($margin, $leverage), $divider);
 
-        // 2. Get quantity using trait method (uses mark_price set by VerifyOrderNotionalJob)
         $quantity = $exchangeSymbol->getQuantityForAmount($notional, respectMinNotional: false);
 
         if ($quantity === '0') {
@@ -92,21 +117,23 @@ class PlaceMarketOrderJob extends BaseApiableJob
             );
         }
 
-        // 3. Determine side from direction
         $side = $direction === 'LONG' ? 'BUY' : 'SELL';
         $markPrice = api_format_price((string) $exchangeSymbol->mark_price, $exchangeSymbol);
 
-        // 4. Create Order record (reference_* fields set in complete() after first sync)
-        $this->marketOrder = Order::create([
-            'position_id' => $this->position->id,
-            'type' => 'MARKET',
-            'status' => 'NEW',
-            'side' => $side,
-            'position_side' => $direction,
-            'quantity' => $quantity,
-        ]);
+        // Reuse any Order row an aborted prior attempt left behind (no
+        // exchange_order_id means it never reached the exchange). Prevents
+        // orphan rows accumulating on retries.
+        if ($this->marketOrder === null) {
+            $this->marketOrder = Order::create([
+                'position_id' => $this->position->id,
+                'type' => 'MARKET',
+                'status' => 'NEW',
+                'side' => $side,
+                'position_side' => $direction,
+                'quantity' => $quantity,
+            ]);
+        }
 
-        // 5. Place order on exchange
         $apiResponse = $this->marketOrder->apiPlace();
 
         // Calculate actual notional for response

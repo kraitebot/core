@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.7 - 2026-04-20
+
+### Fixes
+
+- [BUG FIX] `PlaceMarketOrderJob` retry idempotency — `startOrFail()` now restores the existing `marketOrder` from DB on retry, and `computeApiable()` early-returns when the order already has an `exchange_order_id`. Previously, a retry could place a duplicate market order on the exchange (no `exchange_order_id` guard like `PlaceLimitOrderJob` has).
+
+### Security
+
+- [SECURITY] New migration adds a partial unique index `ux_positions_open_slot` on `(account_id, exchange_symbol_id, direction)` for non-terminal positions, using a `VIRTUAL` generated `is_open` column so NULL rows (closed/cancelled/failed) are exempt. DB-level guard against duplicate open positions regardless of application-layer races.
+
 ## 1.3.6 - 2026-04-20
 
 ### Fixes
