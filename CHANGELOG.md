@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.6 - 2026-04-20
+
+### Fixes
+
+- [BUG FIX] `DiscoverCMCTokenForExchangeSymbolJob` — renamed `startOrFail` hook to `startOrSkip` so symbols already linked by a parallel job transition to `Skipped` state instead of `Failed`. Previously, the idempotent "already linked" branch was incorrectly routed through the failure path, producing misleading errors.
+
+### Improvements
+
+- [IMPROVED] Default exchange timeframes trimmed from `[5m, 1h, 4h, 12h, 1d]` to `[1h, 4h, 12h]` in `KraiteSeeder` and `ApiSystemFactory` — removes noisy 5m signals and redundant 1d anchor to reduce TAAPI load per indicator-refresh cycle.
+
 ## 1.3.5 - 2026-04-11
 
 ### Features

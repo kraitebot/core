@@ -71,10 +71,12 @@ final class DiscoverCMCTokenForExchangeSymbolJob extends BaseApiableJob
             ->withAccount(Account::admin('coinmarketcap'));
     }
 
-    public function startOrFail()
+    public function startOrSkip()
     {
         // Skip if already has a symbol_id linked (may have been linked by parallel job)
-        // But first mark it as CMC verified since it already has a symbol
+        // But first mark it as CMC verified since it already has a symbol.
+        // Returns false from startOrSkip (not startOrFail) so the step transitions to
+        // Skipped rather than Failed — the parallel-linked case is a benign no-op.
         if ($this->exchangeSymbol->symbol_id !== null) {
             $this->markAsCmcVerified();
 

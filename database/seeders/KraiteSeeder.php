@@ -307,7 +307,7 @@ final class KraiteSeeder extends Seeder
                 'name' => 'Binance',
                 'logo_url' => 'https://public.bnbstatic.com/static/images/common/favicon.ico',
                 'is_exchange' => true,
-                'timeframes' => ['5m', '1h', '4h', '12h', '1d'],
+                'timeframes' => ['1h', '4h', '12h'],
             ]
         );
 
@@ -317,7 +317,7 @@ final class KraiteSeeder extends Seeder
                 'name' => 'Bybit',
                 'logo_url' => 'https://www.bybit.com/favicon.ico',
                 'is_exchange' => true,
-                'timeframes' => ['5m', '1h', '4h', '12h', '1d'],
+                'timeframes' => ['1h', '4h', '12h'],
             ]
         );
 
@@ -327,7 +327,7 @@ final class KraiteSeeder extends Seeder
                 'name' => 'KuCoin',
                 'logo_url' => 'https://www.kucoin.com/favicon.ico',
                 'is_exchange' => true,
-                'timeframes' => ['5m', '1h', '4h', '12h', '1d'],
+                'timeframes' => ['1h', '4h', '12h'],
             ]
         );
 
@@ -337,7 +337,7 @@ final class KraiteSeeder extends Seeder
                 'name' => 'BitGet',
                 'logo_url' => 'https://www.bitget.com/favicon.ico',
                 'is_exchange' => true,
-                'timeframes' => ['5m', '1h', '4h', '12h', '1d'],
+                'timeframes' => ['1h', '4h', '12h'],
             ]
         );
 
