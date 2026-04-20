@@ -16,19 +16,10 @@ use Kraite\Core\Commands\Cronjobs\CheckStaleDataCommand;
 use Kraite\Core\Commands\Cronjobs\ConcludeSymbolsDirectionCommand;
 use Kraite\Core\Commands\Cronjobs\CreatePositionsCommand;
 use Kraite\Core\Commands\Cronjobs\FetchKlinesCommand;
+use Kraite\Core\Commands\Cronjobs\PurgeCandlesCommand;
 use Kraite\Core\Commands\Cronjobs\RefreshExchangeSymbolsCommand;
 use Kraite\Core\Commands\Cronjobs\StoreAccountsBalancesCommand;
 use Kraite\Core\Commands\Cronjobs\SyncOrdersCommand;
-use Kraite\Core\Commands\Debug\Accounts\QueryAccountCommand;
-use Kraite\Core\Commands\Debug\CalculateOrdersCommand;
-use Kraite\Core\Commands\Debug\CancelPositionCommand;
-use Kraite\Core\Commands\Debug\ClearTablesCommand;
-use Kraite\Core\Commands\Debug\ClosePositionCommand;
-use Kraite\Core\Commands\Debug\DumpAccountCredentialsCommand;
-use Kraite\Core\Commands\Debug\QueryOrderCommand;
-use Kraite\Core\Commands\Debug\QueryPositionsCommand;
-use Kraite\Core\Commands\Debug\RetryPositionDispatchCommand;
-use Kraite\Core\Commands\Debug\TestApiConnectivityCommand;
 use Kraite\Core\Commands\Ingestion\IsEligibleCommand;
 use Kraite\Core\Commands\SafeToRestartCommand;
 use Kraite\Core\Commands\Tests\TestNotificationCommand;
@@ -77,19 +68,10 @@ final class CoreServiceProvider extends ServiceProvider
             ConcludeSymbolsDirectionCommand::class,
             CreatePositionsCommand::class,
             FetchKlinesCommand::class,
+            PurgeCandlesCommand::class,
             RefreshExchangeSymbolsCommand::class,
             StoreAccountsBalancesCommand::class,
             SyncOrdersCommand::class,
-            QueryAccountCommand::class,
-            CalculateOrdersCommand::class,
-            CancelPositionCommand::class,
-            ClearTablesCommand::class,
-            ClosePositionCommand::class,
-            DumpAccountCredentialsCommand::class,
-            QueryOrderCommand::class,
-            QueryPositionsCommand::class,
-            RetryPositionDispatchCommand::class,
-            TestApiConnectivityCommand::class,
             IsEligibleCommand::class,
             TestNotificationCommand::class,
         ]);
