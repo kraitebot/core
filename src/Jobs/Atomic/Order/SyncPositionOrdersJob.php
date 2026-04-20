@@ -126,6 +126,18 @@ class SyncPositionOrdersJob extends BaseApiableJob
             $this->position->updateToActive();
         }
 
+        // If every order failed, surface the failure so the job-level retry
+        // kicks in. Partial failures still pass — individual stuck orders get
+        // picked up by the next sync tick. A total failure almost always
+        // signals a broader issue (rate limit, exchange outage, auth) that
+        // deserves explicit retry/alerting instead of silent skip.
+        if (count($orders) > 0 && count($syncedOrders) === 0 && count($failedOrders) > 0) {
+            $firstError = $failedOrders[0]['error'] ?? 'unknown error';
+            throw new \RuntimeException(
+                "All {$failedOrders[0]['id']}+ orders failed to sync for position {$this->position->id}: {$firstError}"
+            );
+        }
+
         return [
             'position_id' => $this->position->id,
             'synced_count' => count($syncedOrders),

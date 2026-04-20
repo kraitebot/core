@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.8 - 2026-04-21
+
+### Fixes
+
+- [BUG FIX] `PreparePositionsOpeningJob::compute()` now bails out with a no-op if any child step already exists in its block. Prevents duplicate Position rows when the orchestrator's `compute()` re-executes after a retry (e.g. recover-stale flipping the parent Running → Pending).
+- [BUG FIX] `ClosePositionAtomicallyJob` — catches Binance `-2022` ("ReduceOnly Order is rejected") and rethrows as `NonNotifiableException` with a clear operator-facing message flagging potential orphan exposure on the exchange. No silent retry of an order that cannot succeed.
+- [BUG FIX] `InteractsWithApis::apiSyncDefault()` — when Bybit/KuCoin return `status = 'NOT_FOUND'` (order no longer in active list), the value is logged and the DB row is left untouched instead of polluting `orders.status` with the literal string.
+- [BUG FIX] `PrepareSyncOrdersJob::compute()` only flips the position to `syncing` when its current status is exactly `active` — prevents race with in-flight open/close/cancel workflows that own the position's status.
+- [BUG FIX] `OrderObserver::dispatchClosePosition()` deduplicates pending `ClosePositionJob` steps (mirroring the existing guards on replacement + WAP dispatches). Blocks double-close when TP and SL both reach FILLED in the same sync cycle.
+- [BUG FIX] `UpdateRemainingClosingDataJob` — replaces a per-order `updateSaving` loop with a single transactional `UPDATE ... reference_status = status`, avoiding half-updated state on mid-loop failure.
+- [BUG FIX] `SyncPositionOrdersJob` — if every order in the batch fails to sync (e.g. rate limit across the board), the job now throws to trigger retry escalation instead of silently continuing.
+
+### Security
+
+- [SECURITY] `HasOrderCalculations::calculateLimitOrdersData()` now rejects the ladder entirely if any rung's notional would fall below `exchange_symbol.min_notional`. Prevents placing sub-minimum orders that would be rejected mid-ladder and orphan a freshly-placed MARKET entry (root cause of one failed BAS position we observed with corrupt `limit_quantity_multipliers`).
+
 ## 1.3.7 - 2026-04-20
 
 ### Fixes

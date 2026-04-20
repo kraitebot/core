@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\Position;
 
+use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Order;
@@ -102,9 +103,13 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
             $highProfitNotificationSent = true;
         }
 
-        // 4. Update all orders' reference_status to match current status
-        $position->orders->each(function ($order) {
-            $order->updateSaving(['reference_status' => $order->status]);
+        // 4. Sync reference_status = status for all orders on this position.
+        // Single UPDATE inside a transaction — prior version did N individual
+        // updateSaving() calls in a foreach, which could leave mixed state if
+        // the job failed mid-loop and re-trigger the observer on next sync.
+        DB::transaction(function () use ($position) {
+            Order::where('position_id', $position->id)
+                ->update(['reference_status' => DB::raw('status')]);
         });
 
         return [

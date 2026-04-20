@@ -44,6 +44,26 @@ final class PreparePositionsOpeningJob extends BaseQueueableJob
 
     public function compute()
     {
+        // Idempotency guard — if a prior invocation already wrote children
+        // into this block, this is a retry (typically triggered by
+        // steps:recover-stale flipping the parent Running → Pending after
+        // the stale threshold, because the framework cannot distinguish a
+        // parent legitimately waiting for its child tree from an orphaned
+        // Running step). Without this guard, every retry would create
+        // another full round of Verify/Query/Assign/Dispatch steps, and
+        // AssignBestTokensToPositionSlotsJob would spawn duplicate Position
+        // rows on every round.
+        $alreadyDispatched = Step::query()
+            ->where('block_uuid', $this->uuid())
+            ->exists();
+
+        if ($alreadyDispatched) {
+            return [
+                'account_id' => $this->account->id,
+                'message' => 'Retry detected — child block already populated, no-op.',
+            ];
+        }
+
         $resolver = JobProxy::with($this->account);
         $workflowId = (string) Str::uuid();
 

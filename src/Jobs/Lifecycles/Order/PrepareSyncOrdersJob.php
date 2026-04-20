@@ -35,12 +35,26 @@ final class PrepareSyncOrdersJob extends BaseQueueableJob
 
     public function compute()
     {
-        // Set position to 'syncing' while we sync orders
+        // Only flip to 'syncing' when the position is in steady-state 'active'.
+        // Other opened statuses (opening, syncing, closing, cancelling) are
+        // owned by their respective workflows — clobbering them here races
+        // with in-flight dispatches (e.g. ActivatePositionJob still placing
+        // SL/TP) and can promote a half-opened position to 'active'
+        // prematurely via SyncPositionOrdersJob's end-of-job flip.
+        $this->position->refresh();
+
+        if ($this->position->status !== 'active') {
+            return [
+                'position_id' => $this->position->id,
+                'status' => $this->position->status,
+                'message' => 'Skipped — position not in active state, another workflow owns it',
+            ];
+        }
+
         $this->position->updateToSyncing();
 
         $resolver = JobProxy::with($this->position->account);
 
-        // Step 1: Sync all position orders from exchange
         $lifecycleClass = $resolver->resolve(SyncPositionOrdersLifecycle::class);
         $lifecycle = new $lifecycleClass($this->position);
         $lifecycle->dispatch(

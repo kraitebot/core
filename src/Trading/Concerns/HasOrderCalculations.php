@@ -376,6 +376,27 @@ trait HasOrderCalculations
             // Use RAW price × formatted quantity to avoid compounding rounding
             $amountRaw = Math::mul($rawPrices[$i], $qtyFmt, $scale);
 
+            // Reject the entire ladder if any rung would violate Binance/exchange min_notional.
+            // Root cause is almost always a corrupt `limit_quantity_multipliers` JSON on the
+            // symbol (e.g. [0.2, 0.2, 2, 2] produces shrinking rungs that fall below $5).
+            // Failing here propagates up through DispatchLimitOrdersJob → its
+            // resolve-exception dispatches CancelPositionJob → position transitions to
+            // 'failed'. Better to fail cleanly before placing any limit than to orphan
+            // the MARKET entry on the exchange with a partial ladder.
+            $minNotional = (string) ($exchangeSymbol->min_notional ?? '0');
+            if (Math::gt($minNotional, '0', $scale) && Math::lt($amountRaw, $minNotional, $scale)) {
+                throw new RuntimeException(sprintf(
+                    'Limit rung #%d on %s would produce notional %s (qty %s × price %s), below min_notional %s. Active multipliers: [%s]. Check limit_quantity_multipliers on the exchange_symbol.',
+                    $i + 1,
+                    $exchangeSymbol->parsed_trading_pair ?? (string) $exchangeSymbol->token,
+                    $amountRaw,
+                    $qtyFmt,
+                    $rawPrices[$i],
+                    $minNotional,
+                    implode(', ', $usedMultipliers)
+                ));
+            }
+
             $rungs[] = [
                 'price' => $fmtPrices[$i],
                 'quantity' => $qtyFmt,

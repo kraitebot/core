@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Kraite\Core\Jobs\Atomic\Position;
 
 use Carbon\Carbon;
+use GuzzleHttp\Exception\ClientException;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
+use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Models\IndicatorHistory;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Models\User;
@@ -120,8 +122,29 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
             ];
         }
 
-        // Close position on exchange
-        $apiResponse = $position->apiClose();
+        // Close position on exchange.
+        //
+        // Binance -2022 ("ReduceOnly Order is rejected") is terminal — no retry.
+        // It fires when Binance's matching engine receives the close before the
+        // position ledger reflects the fresh entry fill (TOC/TOU race), or when
+        // positionSide/qty mismatch the hedge-mode ledger. Retrying sends another
+        // bad order — we cannot recover from this state automatically. Fail
+        // deterministically so the cancel workflow marks the position 'failed'
+        // and an operator can reconcile the exchange-side position manually.
+        try {
+            $apiResponse = $position->apiClose();
+        } catch (ClientException $e) {
+            if (str_contains($e->getMessage(), '-2022')) {
+                throw new NonNotifiableException(sprintf(
+                    'Binance rejected reduceOnly close for position #%d on %s with -2022. Position on exchange may still be open — operator must reconcile manually. Original: %s',
+                    $position->id,
+                    $position->parsed_trading_pair,
+                    $e->getMessage()
+                ));
+            }
+
+            throw $e;
+        }
 
         // Count filled limit orders for notification (used by UpdateRemainingClosingDataJob)
         $filledLimitCount = $position->totalLimitOrdersFilled();

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Concerns\Order;
 
 use GuzzleHttp\Psr7\Response;
+use Illuminate\Support\Facades\Log;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 use Kraite\Core\Support\ValueObjects\ApiResponse;
@@ -143,10 +144,28 @@ trait InteractsWithApis
 
     /**
      * Default sync implementation.
+     *
+     * NOT_FOUND handling: Bybit and KuCoin return status = 'NOT_FOUND' when
+     * an order is no longer in the active-orders list (typically because it
+     * was filled or cancelled and the exchange moved it to history). Writing
+     * that literal string to orders.status pollutes the DB — the observer
+     * has no mapping for it and the order stays in limbo forever. Skip the
+     * update and log instead; next sync will find a real status or a
+     * history-aware sync method will pick it up.
      */
     public function apiSyncDefault(): ApiResponse
     {
         $apiResponse = $this->apiQueryDefault();
+
+        if (($apiResponse->result['status'] ?? '') === 'NOT_FOUND') {
+            Log::channel('jobs')->warning('[ORDER-SYNC] NOT_FOUND on sync — leaving DB status untouched', [
+                'order_id' => $this->id,
+                'db_status' => $this->status,
+                'exchange_order_id' => $this->exchange_order_id,
+            ]);
+
+            return $apiResponse;
+        }
 
         $this->updateSaving([
             'status' => $apiResponse->result['status'],

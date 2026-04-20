@@ -121,6 +121,20 @@ final class OrderObserver
 
     private function dispatchClosePosition(Order $model, mixed $position): void
     {
+        // Deduplicate: skip if ClosePositionJob already pending/running for this position.
+        // Prevents a second close workflow when both TP and SL reach FILLED in the same
+        // sync cycle — the second run would collide with the first and mark the
+        // position 'failed' on the "already closing/closed" guard.
+        $alreadyPending = Step::query()
+            ->where('class', ClosePositionJob::class)
+            ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
+            ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+            ->exists();
+
+        if ($alreadyPending) {
+            return;
+        }
+
         $model->updateSaving(['reference_status' => 'FILLED']);
 
         // Set status to 'closing' immediately so SyncPositionOrdersJob
