@@ -5,16 +5,17 @@ declare(strict_types=1);
 namespace Kraite\Core\Observers;
 
 use Illuminate\Support\Str;
+use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Jobs\Lifecycles\Order\PrepareOrderCorrectionJob;
 use Kraite\Core\Jobs\Lifecycles\Position\ApplyWapJob;
 use Kraite\Core\Jobs\Lifecycles\Position\ClosePositionJob;
 use Kraite\Core\Jobs\Lifecycles\Position\PreparePositionReplacementJob;
 use Kraite\Core\Models\Order;
+use Kraite\Core\Support\Math;
 use StepDispatcher\Models\Step;
 use StepDispatcher\States\Dispatched;
 use StepDispatcher\States\Pending;
 use StepDispatcher\States\Running;
-use Kraite\Core\Support\Math;
 
 final class OrderObserver
 {
@@ -243,9 +244,26 @@ final class OrderObserver
      * IMPORTANT: Uses Math::equal() for decimal comparison because price/quantity
      * accessors normalize trailing zeros (e.g., "26500") while reference values
      * may retain them (e.g., "26500.00000000"). String comparison would false-positive.
+     *
+     * Drift detection only runs when the position is in a stable 'active' state.
+     * During transitional states (opening / waping / syncing) our own workflows
+     * are intentionally mutating order price/quantity — the reference-vs-actual
+     * window is expected to diverge momentarily and will re-align by the time
+     * the state settles back to 'active'. Evaluating drift here would false-fire
+     * a correction against our own in-flight WAP / opening / sync.
      */
     private function checkForOrderModification(Order $model, mixed $position): void
     {
+        // Skip drift detection while a workflow we own is intentionally
+        // mutating orders — the reference-vs-actual window diverges during
+        // opening (placement + formatting), waping (TP modify + sync), and
+        // syncing (reconciliation rewrites price/qty). Any "drift" observed
+        // in those phases is our own, not a third-party modification. Drift
+        // checking resumes once the position settles back into active/new.
+        if (in_array($position->status, ['opening', 'waping', 'syncing'], true)) {
+            return;
+        }
+
         // Must have reference values to compare against
         if ($model->reference_price === null && $model->reference_quantity === null) {
             return;
@@ -296,8 +314,17 @@ final class OrderObserver
 
     /**
      * Enforce maximum active order limits per type on a position.
-     * Returns false to silently cancel creation when limits are exceeded.
-     * Logs rejected orders on the position for traceability.
+     *
+     * Throws NonNotifiableException when a rejection is detected so the
+     * offending creation bubbles up through the calling step instead of
+     * silently no-op'ing. Silent rejection was the historical behaviour
+     * and produced the worst kind of bug on exchange: the remote order
+     * could already be placed (apiPlace completes before DB insert),
+     * leaving a live order with no local row to reconcile it.
+     *
+     * Raising an exception lets the surrounding job hit its normal
+     * cancel-workflow fallback path — the position transitions to
+     * 'failed' with a clear message rather than continuing blind.
      */
     private function enforceOrderLimits(Order $model): bool
     {
@@ -319,29 +346,40 @@ final class OrderObserver
             default => true,
         };
 
-        if (! $allowed) {
-            $position->modelLog('order_creation_rejected', [
-                'type' => $model->type,
-                'side' => $model->side,
-                'position_side' => $model->position_side,
-                'price' => $model->price,
-                'quantity' => $model->quantity,
-            ], message: "{$model->type} order rejected — limit exceeded for position #{$position->id}");
-
-            $position->appLog(
-                event: 'order_rejected',
-                message: "{$model->type} order rejected — limit exceeded for position #{$position->id}",
-                severity: 'warning',
-                metadata: [
-                    'type' => $model->type,
-                    'side' => $model->side,
-                    'price' => $model->price,
-                    'quantity' => $model->quantity,
-                ]
-            );
+        if ($allowed) {
+            return true;
         }
 
-        return $allowed;
+        $position->modelLog('order_creation_rejected', [
+            'type' => $model->type,
+            'side' => $model->side,
+            'position_side' => $model->position_side,
+            'price' => $model->price,
+            'quantity' => $model->quantity,
+        ], message: "{$model->type} order rejected — limit exceeded for position #{$position->id}");
+
+        $position->appLog(
+            event: 'order_rejected',
+            message: "{$model->type} order rejected — limit exceeded for position #{$position->id}",
+            severity: 'warning',
+            metadata: [
+                'type' => $model->type,
+                'side' => $model->side,
+                'price' => $model->price,
+                'quantity' => $model->quantity,
+            ]
+        );
+
+        // PROFIT-LIMIT and PROFIT-MARKET share the same cap (one TP per
+        // position) — report a unified "PROFIT" group so callers and tests
+        // don't have to branch on which flavor tripped the guard.
+        $group = in_array($model->type, ['PROFIT-LIMIT', 'PROFIT-MARKET'], true)
+            ? 'PROFIT'
+            : $model->type;
+
+        throw new NonNotifiableException(
+            "{$group} order creation blocked for position #{$position->id} — active limit exceeded"
+        );
     }
 
     private function allowIfNoActiveExists(mixed $query, string $type): bool

@@ -7,6 +7,7 @@ namespace Kraite\Core\Jobs\Atomic\Order;
 use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
+use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Jobs\Lifecycles\Position\ApplyWapJob;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\Order;
@@ -34,7 +35,7 @@ use Throwable;
  * - Profit order must exist
  * - profit_percentage must be configured
  */
-class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
+final class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
 {
     public Position $position;
 
@@ -115,9 +116,13 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
         }
 
         if ($positionFromExchange === null) {
-            throw new RuntimeException(
-                "Position {$positionKey} not found in account-positions snapshot. " .
-                'Position may have been closed externally.'
+            // Position gone from the exchange snapshot — either closed by a
+            // concurrent workflow (TP/SL filled and close ran) or closed
+            // externally by the operator. Not a real failure; resolve the
+            // block quietly and let the close workflow / next sync reconcile.
+            throw new NonNotifiableException(
+                "Position {$positionKey} not found in account-positions snapshot — ".
+                'likely closed by concurrent workflow or externally. Aborting WAP.'
             );
         }
 
@@ -131,16 +136,18 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
         // Validate breakEvenPrice
         if (Math::lte($this->breakEvenPrice, '0')) {
             throw new RuntimeException(
-                "Invalid breakEvenPrice={$this->breakEvenPrice} for position {$positionKey}. " .
+                "Invalid breakEvenPrice={$this->breakEvenPrice} for position {$positionKey}. ".
                 'Cannot calculate WAP.'
             );
         }
 
-        // Validate quantity
+        // Validate quantity. A zero exchange qty with the position still in
+        // the snapshot is the "just closed" race — same treatment as the
+        // not-found branch above: non-notifiable, let close/sync reconcile.
         if (Math::equal($rawQty, '0')) {
-            throw new RuntimeException(
-                "Zero quantity from exchange for position {$positionKey}. " .
-                'Cannot calculate WAP.'
+            throw new NonNotifiableException(
+                "Zero position quantity on exchange for {$positionKey} — ".
+                'position likely closed mid-WAP. Aborting WAP.'
             );
         }
 
@@ -274,21 +281,6 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
     }
 
     /**
-     * Sum of filled order quantities we know locally — market entry plus
-     * every FILLED DCA LIMIT order the DB has seen. This is the minimum
-     * the exchange's positionAmt must reflect for the WAP math to be using
-     * a trustworthy breakEvenPrice. Short positions are represented by the
-     * absolute quantity (same convention as $this->positionQty).
-     */
-    private function expectedPositionQty(): string
-    {
-        return (string) $this->position->orders()
-            ->whereIn('type', ['MARKET', 'LIMIT'])
-            ->where('status', 'FILLED')
-            ->sum('quantity');
-    }
-
-    /**
      * Update reference values to prevent correction loop.
      */
     public function complete(): void
@@ -318,16 +310,27 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
         // a follow-up ApplyWap so their qty gets reflected in the TP. The
         // small dispatch_after delay ensures the current step's state has
         // transitioned to Completed before the dedup check runs in observer.
-        $hasUnackedFills = $this->position->orders()
+        //
+        // We claim the unacked fills here by bulk-bumping reference_status
+        // to FILLED in the same transaction that dispatches the follow-up
+        // WAP. Without this, the next sync-orders tick would see the same
+        // unacked LIMITs and dispatch a second redundant WAP on top of our
+        // self-dispatched one — harmless but wasteful. Bulk UPDATE skips
+        // the observer, which is what we want (the "need WAP" signal is
+        // already captured by the Step we're about to create below).
+        $unackedLimitsQuery = $this->position->orders()
             ->where('type', 'LIMIT')
             ->where('status', 'FILLED')
             ->where(function ($q) {
                 $q->where('reference_status', '!=', 'FILLED')
                     ->orWhereNull('reference_status');
-            })
-            ->exists();
+            });
+
+        $hasUnackedFills = $unackedLimitsQuery->exists();
 
         if ($hasUnackedFills) {
+            (clone $unackedLimitsQuery)->update(['reference_status' => 'FILLED']);
+
             Step::create([
                 'class' => ApplyWapJob::class,
                 'arguments' => [
@@ -346,7 +349,7 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
     public function resolveException(Throwable $e): void
     {
         $this->position->updateSaving([
-            'error_message' => 'WAP calculation failed: ' . $e->getMessage(),
+            'error_message' => 'WAP calculation failed: '.$e->getMessage(),
         ]);
     }
 
@@ -363,5 +366,20 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
         $direction = mb_strtoupper((string) $this->position->direction);
 
         return "{$symbol}:{$direction}";
+    }
+
+    /**
+     * Sum of filled order quantities we know locally — market entry plus
+     * every FILLED DCA LIMIT order the DB has seen. This is the minimum
+     * the exchange's positionAmt must reflect for the WAP math to be using
+     * a trustworthy breakEvenPrice. Short positions are represented by the
+     * absolute quantity (same convention as $this->positionQty).
+     */
+    private function expectedPositionQty(): string
+    {
+        return (string) $this->position->orders()
+            ->whereIn('type', ['MARKET', 'LIMIT'])
+            ->where('status', 'FILLED')
+            ->sum('quantity');
     }
 }

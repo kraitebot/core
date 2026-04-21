@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.4.0 - 2026-04-21
+
+### Improvements
+
+- [IMPROVED] `Position::profitOrder()` — now excludes `CANCELLED` and `EXPIRED` rows so the correction workflow's cancel-and-recreate window (old row CANCELLED, new row not yet created) never returns a dead order to callers like `VerifyIfTPIsFilledJob` or `CalculateWapAndModifyProfitOrderJob`. `FILLED` is kept intentionally — `VerifyIfTPIsFilledJob` needs it to detect a just-filled TP.
+- [IMPROVED] `UpdatePositionStatusJob` — added optional `onlyFromStatus` guard. When provided, the transition only fires if the current status matches. Prevents WAP's revert-to-active from clobbering a concurrent close workflow that has already moved the position to `closing`.
+- [IMPROVED] `ApplyWapJob` — step 1 (→waping) guarded `onlyFromStatus='active'`; step 5 and resolve-exception (→active) guarded `onlyFromStatus='waping'`. The lifecycle no longer stomps over in-flight close workflows when a TP fill slips past `VerifyIfTPIsFilledJob`.
+- [IMPROVED] `OrderObserver::checkForOrderModification` — skips drift detection while the position is in a transitional state (`opening`, `waping`, `syncing`). Our own workflows intentionally mutate order price/quantity during those states; evaluating drift there was false-firing `PrepareOrderCorrectionJob` against our own in-flight work.
+- [IMPROVED] `CalculateWapAndModifyProfitOrderJob` (Bitget variant) — added consistency gate, `intendedPrice`/`intendedQty` tracking, and try/catch around `apiModifyTpsl` with diagnostic `apiSync` on failure. Brings Bitget to parity with the Binance variant hardened in 1.3.9. Also converts "position closed externally" paths to `NonNotifiableException` so resolve-exception runs quietly.
+- [IMPROVED] `CalculateWapAndModifyProfitOrderJob` (base) — "position not in snapshot" and "zero exchange quantity" now throw `NonNotifiableException` so close/sync workflows reconcile without pushover noise.
+
 ## 1.3.9 - 2026-04-21
 
 ### Fixes

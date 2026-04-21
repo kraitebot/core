@@ -19,6 +19,11 @@ use RuntimeException;
  * Supported statuses:
  * - cancelling, closing, syncing, closed, cancelled, failed
  * - active, watching, waping
+ *
+ * Optional $onlyFromStatus guard: when provided, the transition only fires
+ * if the current status matches. Prevents concurrent workflows (e.g. a WAP
+ * revert-to-active racing a close workflow's transition to 'closing') from
+ * clobbering each other's state. When guard mismatches, the job no-ops.
  */
 final class UpdatePositionStatusJob extends BaseQueueableJob
 {
@@ -28,11 +33,18 @@ final class UpdatePositionStatusJob extends BaseQueueableJob
 
     public ?string $message;
 
-    public function __construct(int $positionId, string $status, ?string $message = null)
-    {
+    public ?string $onlyFromStatus;
+
+    public function __construct(
+        int $positionId,
+        string $status,
+        ?string $message = null,
+        ?string $onlyFromStatus = null,
+    ) {
         $this->position = Position::findOrFail($positionId);
         $this->status = $status;
         $this->message = $message;
+        $this->onlyFromStatus = $onlyFromStatus;
     }
 
     public function relatable()
@@ -44,6 +56,20 @@ final class UpdatePositionStatusJob extends BaseQueueableJob
     {
         $position = $this->position;
         $previousStatus = $position->status;
+
+        // Conditional guard: only flip when current status matches the
+        // declared precondition. Lets WAP / sync / similar workflows revert
+        // without stomping over a later workflow that has already advanced
+        // the position into a different non-terminal state (e.g. 'closing').
+        if ($this->onlyFromStatus !== null && $previousStatus !== $this->onlyFromStatus) {
+            return [
+                'position_id' => $position->id,
+                'previous_status' => $previousStatus,
+                'requested_status' => $this->status,
+                'skipped' => true,
+                'reason' => "guard requires status='{$this->onlyFromStatus}', got '{$previousStatus}'",
+            ];
+        }
 
         switch ($this->status) {
             case 'cancelling':

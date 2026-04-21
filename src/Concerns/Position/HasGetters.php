@@ -126,13 +126,21 @@ trait HasGetters
     }
 
     /**
-     * Latest PROFIT order (LIMIT or MARKET) on the same side.
+     * Latest live PROFIT order (LIMIT or MARKET) on the same side.
+     *
+     * Excludes CANCELLED and EXPIRED rows so the correction workflow's
+     * cancel-and-recreate window (old row CANCELLED, new row not yet created)
+     * never returns a dead order to callers like VerifyIfTPIsFilledJob or
+     * CalculateWapAndModifyProfitOrderJob. FILLED is kept intentionally —
+     * VerifyIfTPIsFilledJob needs it to detect a just-filled TP.
+     *
      * Safe: may return null.
      */
     public function profitOrder()
     {
         return $this->orders()
             ->whereIn('orders.type', ['PROFIT-LIMIT', 'PROFIT-MARKET'])
+            ->whereNotIn('orders.status', ['CANCELLED', 'EXPIRED'])
             ->orderByDesc('orders.id')
             ->first();
     }

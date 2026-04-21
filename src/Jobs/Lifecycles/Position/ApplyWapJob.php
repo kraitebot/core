@@ -11,8 +11,8 @@ use Kraite\Core\Jobs\Atomic\Order\VerifyIfTPIsFilledJob;
 use Kraite\Core\Jobs\Atomic\Position\UpdatePositionStatusJob as AtomicUpdatePositionStatusJob;
 use Kraite\Core\Jobs\Lifecycles\Account\QueryAccountPositionsJob as QueryAccountPositionsLifecycle;
 use Kraite\Core\Models\Position;
-use StepDispatcher\Models\Step;
 use Kraite\Core\Support\Proxies\JobProxy;
+use StepDispatcher\Models\Step;
 
 /**
  * ApplyWapJob (Lifecycle Orchestrator)
@@ -29,7 +29,7 @@ use Kraite\Core\Support\Proxies\JobProxy;
  * 5. UpdatePositionStatusJob → status='active'
  * + resolve-exception: UpdatePositionStatusJob → status='active' (revert on failure)
  */
-class ApplyWapJob extends BaseApiableJob
+final class ApplyWapJob extends BaseApiableJob
 {
     public Position $position;
 
@@ -82,13 +82,17 @@ class ApplyWapJob extends BaseApiableJob
         $resolver = JobProxy::with($this->position->account);
         $blockUuid = $this->uuid();
 
-        // Step 1: Update position status to 'waping'
+        // Step 1: Update position status to 'waping'.
+        // Guarded with onlyFromStatus='active': if a concurrent close workflow
+        // has already transitioned the position to 'closing' between our
+        // orchestrator's startOrFail and this step, skip rather than revive it.
         Step::create([
             'class' => $resolver->resolve(AtomicUpdatePositionStatusJob::class),
             'arguments' => [
                 'positionId' => $this->position->id,
                 'status' => 'waping',
                 'message' => $this->message,
+                'onlyFromStatus' => 'active',
             ],
             'block_uuid' => $blockUuid,
             'index' => 1,
@@ -128,26 +132,37 @@ class ApplyWapJob extends BaseApiableJob
         ]);
         $nextIndex++;
 
-        // Step 5: Update position status back to 'active'
+        // Step 5: Revert position status to 'active'.
+        // Guarded with onlyFromStatus='waping': if a concurrent close workflow
+        // triggered by a TP fill that slipped past VerifyIfTPIsFilledJob has
+        // already set the position to 'closing', do NOT promote it back to
+        // 'active' — that would silently break the close workflow's state
+        // machine. In that case the current status is 'closing' and this
+        // transition no-ops, which is the correct outcome.
         Step::create([
             'class' => $resolver->resolve(AtomicUpdatePositionStatusJob::class),
             'arguments' => [
                 'positionId' => $this->position->id,
                 'status' => 'active',
                 'message' => 'WAP applied successfully',
+                'onlyFromStatus' => 'waping',
             ],
             'block_uuid' => $blockUuid,
             'index' => $nextIndex,
             'workflow_id' => null,
         ]);
 
-        // Resolve-exception step: Revert status to 'active' on failure
+        // Resolve-exception step: Revert status to 'active' on failure.
+        // Same onlyFromStatus='waping' guard — if the failure path fires
+        // while a close workflow has already claimed the position, let the
+        // close workflow's state advance unmolested.
         Step::create([
             'class' => $resolver->resolve(AtomicUpdatePositionStatusJob::class),
             'arguments' => [
                 'positionId' => $this->position->id,
                 'status' => 'active',
                 'message' => 'WAP failed, reverting to active',
+                'onlyFromStatus' => 'waping',
             ],
             'block_uuid' => $blockUuid,
             'index' => 1,
