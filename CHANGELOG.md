@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.4.1 - 2026-04-21
+
+### Improvements
+
+- [IMPROVED] `BaseApiableJob::shouldStartOrThrottle` now writes per-step diagnostic lines to the `throttled.log` channel whenever a throttle or pre-flight check returns a wait > 0. Distinguishes between `ExceptionHandler::isSafeToMakeRequest`, `Throttler::isSafeToDispatch`, and `Throttler::canDispatch` so we can tell exchange-specific min-delay / IP-ban gating apart from base-class window/requests-per-window gating. Gated by the same `STEP_DISPATCHER_LOGGING_ENABLED` env flag — no writes in production unless debugging is on.
+
 ## 1.4.0 - 2026-04-21
 
 ### Improvements

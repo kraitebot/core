@@ -10,6 +10,7 @@ use Kraite\Core\Concerns\BaseApiableJob\HandlesApiJobLifecycle;
 use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Models\ForbiddenHostname;
 use Kraite\Core\Support\Proxies\ApiThrottlerProxy;
+use StepDispatcher\Models\Step;
 use Throwable;
 
 abstract class BaseApiableJob extends BaseQueueableJob
@@ -97,9 +98,16 @@ abstract class BaseApiableJob extends BaseQueueableJob
             $this->assignExceptionHandler();
         }
 
-        // 0. First check exception handler's pre-flight safety check
+        // 0. Exception handler's pre-flight safety check (e.g. banned host,
+        // exchange cooldown). Separate from throttler-level rate limiting
+        // but contributes to the same "wait and retry" outcome.
         if (isset($this->exceptionHandler) && ! $this->exceptionHandler->isSafeToMakeRequest()) {
             $this->jobBackoffSeconds = 5; // Default 5 second backoff when not safe
+
+            Step::log($stepId, 'throttled', sprintf(
+                'Throttled by %s::isSafeToMakeRequest | wait=5s | reason=handler_not_safe',
+                class_basename($this->exceptionHandler)
+            ));
 
             return false; // Not safe - wait and retry
         }
@@ -114,23 +122,43 @@ abstract class BaseApiableJob extends BaseQueueableJob
         // Extract account ID for per-account rate limit tracking (e.g., Binance ORDER limits)
         $accountId = $this->exceptionHandler->account?->id;
 
-        // 1. First check IP-based safety (bans, rate limit proximity) if throttler supports it
+        // 1. First check IP-based safety (bans, rate limit proximity) if
+        // throttler supports it. This is the exchange-specific pre-flight
+        // layer (min-delay between requests, IP-ban state, Binance weight
+        // proximity etc) — NOT the window/request-count cap.
         if (method_exists($throttler, 'isSafeToDispatch')) {
             $secondsToWait = $throttler::isSafeToDispatch($accountId, $stepId);
 
             if ($secondsToWait > 0) {
                 $this->jobBackoffSeconds = $secondsToWait;
 
+                Step::log($stepId, 'throttled', sprintf(
+                    'Throttled by %s::isSafeToDispatch | wait=%ds | account_id=%s',
+                    class_basename($throttler),
+                    $secondsToWait,
+                    $accountId ?? 'null'
+                ));
+
                 return false; // Not safe - wait and retry
             }
         }
 
-        // 2. Then check standard throttling (rate limits, min delays, etc.)
+        // 2. Base-class check — requests-per-window cap + min-delay between
+        // requests. Logs the exact throttler + retry count so we can tell
+        // window_exceeded-style rejections apart from min_delay-style ones.
         $retryCount = $this->step->retries ?? 0;
         $secondsToWait = $throttler::canDispatch($retryCount, $accountId, $stepId);
 
         if ($secondsToWait > 0) {
             $this->jobBackoffSeconds = $secondsToWait;
+
+            Step::log($stepId, 'throttled', sprintf(
+                'Throttled by %s::canDispatch | wait=%ds | retry_count=%d | account_id=%s',
+                class_basename($throttler),
+                $secondsToWait,
+                $retryCount,
+                $accountId ?? 'null'
+            ));
 
             return false; // Throttled - retry
         }
