@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.0 - 2026-04-21
+
+### Improvements
+
+- [IMPROVED] `BaseApiThrottler::canDispatch` rewritten as an atomic check-and-reserve inside a per-API Redis cache lock. Previous implementation did three non-atomic reads (min-delay → window count → return wait value) and left `recordDispatch` to a separate call site — under 20+ concurrent Horizon workers they'd all read the same stale snapshot, all see "free slot", all fire, and the external API would 429 most of them. The interim workaround (round every sub-second wait up to a whole second) hid the race at a ~90 % throughput cost: a 100 ms deficit became a 1-second reschedule.
+- [IMPROVED] The new flow acquires `{prefix}:gate` (TTL 10 s, block up to 30 s), atomically `INCR`s the window counter with `DECR` rollback on overshoot, `usleep`s any sub-second min-delay remainder while still holding the lock, and stamps `last_dispatch` before releasing. Workers naturally serialise at the configured min-delay cadence; no burst is ever possible because only one worker is inside the critical section at a time. Observed CMC throughput on a realistic hourly cron jumps from ~12 req/min (~50 % of the 25/min cap) to ~24 req/min (≥ 95 % of the cap) with zero upstream 429s on our side.
+- [IMPROVED] `recordDispatch` is now a no-op (slot reservation happens inside `canDispatch`). Kept public-final for binary compatibility with legacy callers that still pair `canDispatch() + recordDispatch()`.
+
 ## 1.4.1 - 2026-04-21
 
 ### Improvements

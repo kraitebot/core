@@ -54,8 +54,6 @@ use Kraite\Core\Observers\PositionObserver;
 use Kraite\Core\Observers\SymbolObserver;
 use Kraite\Core\Observers\UserObserver;
 use Kraite\Core\Support\NotificationService;
-use StepDispatcher\Models\Step;
-use StepDispatcher\Observers\StepObserver;
 
 final class CoreServiceProvider extends ServiceProvider
 {
@@ -102,7 +100,6 @@ final class CoreServiceProvider extends ServiceProvider
         ApiRequestLog::observe(ApiRequestLogObserver::class);
         ApiSnapshot::observe(ApiSnapshotObserver::class);
         ApiSystem::observe(ApiSystemObserver::class);
-        Step::observe(StepObserver::class);
         ExchangeSymbol::observe(ExchangeSymbolObserver::class);
         Indicator::observe(IndicatorObserver::class);
         NotificationLog::observe(NotificationLogObserver::class);
