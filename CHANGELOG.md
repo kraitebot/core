@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.4.2 - 2026-04-21
+
+### Fixes
+
+- [BUG FIX] Reverted the atomic-throttler rewrite (v1.5.0 / v1.5.1). The rewrite correctly eliminated 429s but introduced head-of-line blocking: 20 Horizon workers would all pick up CMC steps, each hold the per-API lock + `usleep()` for the full 2500 ms min-delay, leaving no free workers to process the 1,400+ non-CMC steps sitting in Dispatched. Reverted to the pre-rewrite `canDispatch` / `recordDispatch` behaviour — known to produce ~33% 429s on CMC but keeps workers productive. A real fix (atomic reservation WITHOUT inline sleep, returning positive wait seconds when min-delay isn't satisfied) is parked until we can validate it properly.
+- [BUG FIX] Kept the removal of the duplicate `Step::observe(StepObserver::class)` from `CoreServiceProvider::boot()`. The step-dispatcher package already registers its own observer; the duplicate here was causing every state-transition log line to fire twice. The revert of 1.5.0 accidentally restored it — removed again so the diagnostic logs stay clean when `STEP_DISPATCHER_LOGGING_ENABLED=true`.
+
 ## 1.4.1 - 2026-04-21
 
 ### Improvements
