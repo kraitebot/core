@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Abstracts;
 
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 
@@ -95,10 +96,14 @@ abstract class BaseApiThrottler
 
         $lock = Cache::lock($prefix.':gate', 10);
 
-        if (! $lock->block(30)) {
-            // Couldn't acquire the gate within 30 seconds. Something is
-            // badly wrong (stuck worker, Redis issue); back off briefly
-            // and retry rather than gamble on a burst.
+        try {
+            // block() waits up to N seconds for the gate. Laravel's Lock
+            // implementation THROWS LockTimeoutException on timeout (it
+            // does not return false), so we translate that into a backoff
+            // signal — the step reschedules for a few seconds later and
+            // tries again instead of hard-failing.
+            $lock->block(30);
+        } catch (LockTimeoutException) {
             return 5;
         }
 
