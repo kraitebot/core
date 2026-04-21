@@ -2,12 +2,6 @@
 
 All notable changes to this project will be documented in this file.
 
-## 1.5.1 - 2026-04-21
-
-### Fixes
-
-- [BUG FIX] `BaseApiThrottler::canDispatch` now catches `LockTimeoutException` around `$lock->block(30)` and returns a backoff integer instead of letting the exception propagate. Laravel's Cache `Lock::block()` throws on timeout (it does not return `false`), so the previous `if (! $lock->block(30))` check was unreachable and the exception flowed up to the step lifecycle, failing the step. Observed on a realistic CMC drain: 59 `DiscoverCMCTokenForExchangeSymbolJob` steps failed with `LockTimeoutException` when queue depth exceeded the 30-second block timeout (20 workers × 2.5s min-delay = 50s, so workers 13+ timed out). Now those workers back off 5 seconds and retry instead of dying.
-
 ## 1.5.0 - 2026-04-21
 
 ### Improvements
