@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.4.5 - 2026-04-22
+
+### Features
+
+- [NEW FEATURE] `Jobs\Models\ExchangeSymbol\DispatchPerSymbolKlineBlocksJob` — orchestrator that fires one independent block per exchange symbol after the shared BTC baseline klines have landed. Each per-symbol block holds `FetchKlinesJob` at index 1 and `CalculateBtcCorrelationJob`+`CalculateBtcElasticityJob` at index 2, so correlation for a symbol runs the moment its own klines complete rather than waiting for every other symbol in the batch.
+
+### Improvements
+
+- [IMPROVED] `FetchKlinesCommand` bulk + active-positions paths — replaced the single shared block (one `blockUuid` for the whole batch) with a two-phase layout: a shared block containing only the BTC baseline klines at index 1 and the new `DispatchPerSymbolKlineBlocksJob` at index 2. Once BTC klines are in the DB, the orchestrator spawns per-symbol sub-blocks in parallel. Fixes the previous behaviour where one slow/stuck kline blocked every correlation in the batch.
+
 ## 1.4.4 - 2026-04-22
 
 ### Improvements

@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kraite\Core\Jobs\Models\ExchangeSymbol\CalculateBtcCorrelationJob;
 use Kraite\Core\Jobs\Models\ExchangeSymbol\CalculateBtcElasticityJob;
+use Kraite\Core\Jobs\Models\ExchangeSymbol\DispatchPerSymbolKlineBlocksJob;
 use Kraite\Core\Jobs\Models\ExchangeSymbol\FetchKlinesJob;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
@@ -185,28 +186,25 @@ final class FetchKlinesCommand extends BaseCommand
 
             $btcSymbolIds = $btcSymbols->pluck('id')->all();
             $symbols = ExchangeSymbol::query()->where('api_system_id', $apiSystem->id)->whereNotIn('id', $btcSymbolIds)->get();
-            $blockUuid = Str::uuid()->toString();
+            $exchangeSymbolIds = $symbols->pluck('id')->all();
 
-            // Create kline steps for ALL BTC baselines (one per quote)
-            foreach ($btcSymbols as $btcSymbol) {
-                $this->createKlineStepsForTimeframes($blockUuid, $btcSymbol->id, $timeframes, $limit, 1);
-            }
+            // BTC baselines share one block at index 1. The per-symbol
+            // orchestrator at index 2 fires once BTC klines land in the DB,
+            // then spawns an independent block per symbol so each symbol's
+            // correlation runs the moment its own klines complete.
+            $this->createBtcAndPerSymbolBlock(
+                btcSymbolIds: $btcSymbolIds,
+                exchangeSymbolIds: $exchangeSymbolIds,
+                timeframes: $timeframes,
+                limit: $limit
+            );
+
             $btcStepsCreated = count($timeframes) * $btcSymbols->count();
             $totalBtcSteps += $btcStepsCreated;
-            $this->verboseInfo("  Created {$btcStepsCreated} BTC steps (".$btcSymbols->pluck('quote')->implode(', ').')');
-
-            $exchangeSymbolSteps = 0;
-            foreach ($symbols as $symbol) {
-                $this->createKlineStepsForTimeframes($blockUuid, $symbol->id, $timeframes, $limit, 2);
-                $exchangeSymbolSteps += count($timeframes);
-            }
-            $totalSymbolSteps += $exchangeSymbolSteps;
-            $this->verboseInfo("  Created {$exchangeSymbolSteps} symbol steps for {$symbols->count()} symbols");
-
-            foreach ($symbols as $symbol) {
-                $this->createCorrelationElasticitySteps($blockUuid, $symbol->id);
-            }
+            $totalSymbolSteps += count($timeframes) * $symbols->count();
             $totalCorrelationSteps += $symbols->count() * 2;
+
+            $this->verboseInfo("  Created {$btcStepsCreated} BTC steps (".$btcSymbols->pluck('quote')->implode(', ').') and dispatched per-symbol blocks for '.$symbols->count().' symbols');
         }
 
         $this->verboseInfo("Total: {$totalBtcSteps} BTC + {$totalSymbolSteps} symbol + {$totalCorrelationSteps} correlation/elasticity steps");
@@ -268,28 +266,27 @@ final class FetchKlinesCommand extends BaseCommand
 
         $btcSymbolIds = $btcSymbols->pluck('id')->all();
         $binanceSymbols = ExchangeSymbol::whereIn('id', $binanceSymbolIds)->whereNotIn('id', $btcSymbolIds)->get();
-        $blockUuid = Str::uuid()->toString();
+        $binanceSymbolIdsList = $binanceSymbols->pluck('id')->all();
 
-        // Create kline steps for ALL BTC baselines (one per quote)
-        foreach ($btcSymbols as $btcSymbol) {
-            $this->createKlineStepsForTimeframes($blockUuid, $btcSymbol->id, $timeframes, $limit, 1);
-        }
+        // BTC klines run first (shared block, index 1). The orchestrator at
+        // index 2 then spawns one block per active-position symbol so each
+        // symbol's correlation fires independently of the others.
+        $this->createBtcAndPerSymbolBlock(
+            btcSymbolIds: $btcSymbolIds,
+            exchangeSymbolIds: $binanceSymbolIdsList,
+            timeframes: $timeframes,
+            limit: $limit
+        );
+
         $btcStepsCreated = count($timeframes) * $btcSymbols->count();
-        $this->verboseInfo("Created {$btcStepsCreated} BTC baseline steps (".$btcSymbols->pluck('quote')->implode(', ').')');
-
-        $stepsCreated = 0;
-        foreach ($binanceSymbols as $binanceSymbol) {
-            $this->createKlineStepsForTimeframes($blockUuid, $binanceSymbol->id, $timeframes, $limit, 2);
-            $stepsCreated += count($timeframes);
-            $this->verboseLine('  - Created '.count($timeframes)." steps for {$binanceSymbol->parsed_trading_pair}");
-        }
-
-        foreach ($binanceSymbols as $binanceSymbol) {
-            $this->createCorrelationElasticitySteps($blockUuid, $binanceSymbol->id);
-        }
-
+        $stepsCreated = count($timeframes) * $binanceSymbols->count();
         $correlationSteps = $binanceSymbols->count() * 2;
-        $this->verboseInfo("Created {$btcStepsCreated} BTC + {$stepsCreated} FetchKlinesJob steps + {$correlationSteps} correlation/elasticity steps for active positions.");
+
+        $this->verboseInfo("Created {$btcStepsCreated} BTC baseline steps (".$btcSymbols->pluck('quote')->implode(', ').')');
+        foreach ($binanceSymbols as $binanceSymbol) {
+            $this->verboseLine("  - Per-symbol block queued for {$binanceSymbol->parsed_trading_pair}");
+        }
+        $this->verboseInfo("Queued {$btcStepsCreated} BTC + {$stepsCreated} FetchKlinesJob steps + {$correlationSteps} correlation/elasticity steps across {$binanceSymbols->count()} per-symbol blocks.");
 
         return self::SUCCESS;
     }
@@ -379,6 +376,48 @@ final class FetchKlinesCommand extends BaseCommand
             ->first();
 
         return $tokenMapper->other_token ?? $btcToken;
+    }
+
+    /**
+     * Create the shared BTC block that gates every per-symbol block.
+     *
+     * Block layout:
+     *   index 1: FetchKlinesJob for each BTC symbol × timeframe (parallel)
+     *   index 2: DispatchPerSymbolKlineBlocksJob — runs once BTC klines land,
+     *            spawns one independent block per target symbol with its own
+     *            klines at index 1 and correlation/elasticity at index 2.
+     *
+     * @param  array<int, int>  $btcSymbolIds
+     * @param  array<int, int>  $exchangeSymbolIds  non-BTC symbols to fan out
+     * @param  array<int, string>  $timeframes
+     */
+    private function createBtcAndPerSymbolBlock(
+        array $btcSymbolIds,
+        array $exchangeSymbolIds,
+        array $timeframes,
+        int $limit,
+    ): void {
+        if (empty($btcSymbolIds) || empty($exchangeSymbolIds)) {
+            return;
+        }
+
+        $blockUuid = Str::uuid()->toString();
+
+        foreach ($btcSymbolIds as $btcSymbolId) {
+            $this->createKlineStepsForTimeframes($blockUuid, $btcSymbolId, $timeframes, $limit, 1);
+        }
+
+        Step::create([
+            'block_uuid' => $blockUuid,
+            'index' => 2,
+            'class' => DispatchPerSymbolKlineBlocksJob::class,
+            'queue' => 'indicators',
+            'arguments' => [
+                'exchangeSymbolIds' => $exchangeSymbolIds,
+                'timeframes' => $timeframes,
+                'limit' => $limit,
+            ],
+        ]);
     }
 
     /** @param  array<int, string>  $timeframes */
