@@ -88,6 +88,7 @@ final class ApplyWapJob extends BaseApiableJob
         // orchestrator's startOrFail and this step, skip rather than revive it.
         Step::create([
             'class' => $resolver->resolve(AtomicUpdatePositionStatusJob::class),
+            'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
                 'status' => 'waping',
@@ -103,6 +104,7 @@ final class ApplyWapJob extends BaseApiableJob
         // This catches the edge case where LIMIT and TP fill in same sync cycle
         Step::create([
             'class' => $resolver->resolve(VerifyIfTPIsFilledJob::class),
+            'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
             ],
@@ -123,6 +125,7 @@ final class ApplyWapJob extends BaseApiableJob
         // Step 4: Calculate WAP and modify profit order
         Step::create([
             'class' => $resolver->resolve(CalculateWapAndModifyProfitOrderJob::class),
+            'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
             ],
@@ -141,6 +144,7 @@ final class ApplyWapJob extends BaseApiableJob
         // transition no-ops, which is the correct outcome.
         Step::create([
             'class' => $resolver->resolve(AtomicUpdatePositionStatusJob::class),
+            'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
                 'status' => 'active',
@@ -158,6 +162,7 @@ final class ApplyWapJob extends BaseApiableJob
         // close workflow's state advance unmolested.
         Step::create([
             'class' => $resolver->resolve(AtomicUpdatePositionStatusJob::class),
+            'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
                 'status' => 'active',

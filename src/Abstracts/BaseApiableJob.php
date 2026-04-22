@@ -99,71 +99,96 @@ abstract class BaseApiableJob extends BaseQueueableJob
         }
 
         // 0. Exception handler's pre-flight safety check (e.g. banned host,
-        // exchange cooldown). Separate from throttler-level rate limiting
-        // but contributes to the same "wait and retry" outcome.
+        // exchange cooldown). Seconds-precision is fine here — these are
+        // environmental problems (account blocked, IP banned) that don't
+        // need millisecond retry timing.
         if (isset($this->exceptionHandler) && ! $this->exceptionHandler->isSafeToMakeRequest()) {
-            $this->jobBackoffSeconds = 5; // Default 5 second backoff when not safe
+            $this->jobBackoffSeconds = 5;
+            $this->jobBackoffMs = 0;
 
             Step::log($stepId, 'throttled', sprintf(
                 'Throttled by %s::isSafeToMakeRequest | wait=5s | reason=handler_not_safe',
                 class_basename($this->exceptionHandler)
             ));
 
-            return false; // Not safe - wait and retry
+            return false;
         }
 
-        // Get throttler for this API system
         $throttler = $this->getThrottlerForApiSystem();
 
         if (! $throttler) {
-            return true; // No throttler = proceed
+            return true;
         }
 
-        // Extract account ID for per-account rate limit tracking (e.g., Binance ORDER limits)
+        // Per-account context (e.g. Binance UID-based ORDER limits).
         $accountId = $this->exceptionHandler->account?->id;
 
-        // 1. First check IP-based safety (bans, rate limit proximity) if
-        // throttler supports it. This is the exchange-specific pre-flight
-        // layer (min-delay between requests, IP-ban state, Binance weight
-        // proximity etc) — NOT the window/request-count cap.
+        // 1. Exchange-specific pre-flight (min-delay between requests,
+        // IP-ban status, Binance weight proximity). Returns **milliseconds**
+        // so sub-second deficits reschedule at their exact remainder.
         if (method_exists($throttler, 'isSafeToDispatch')) {
-            $secondsToWait = $throttler::isSafeToDispatch($accountId, $stepId);
+            $msToWait = $throttler::isSafeToDispatch($accountId, $stepId);
 
-            if ($secondsToWait > 0) {
-                $this->jobBackoffSeconds = $secondsToWait;
+            if ($msToWait > 0) {
+                $msToWait = $this->applyThrottleJitter($msToWait);
+                $this->jobBackoffMs = $msToWait;
+                $this->jobBackoffSeconds = 0;
 
                 Step::log($stepId, 'throttled', sprintf(
-                    'Throttled by %s::isSafeToDispatch | wait=%ds | account_id=%s',
+                    'Throttled by %s::isSafeToDispatch | wait=%dms | account_id=%s',
                     class_basename($throttler),
-                    $secondsToWait,
+                    $msToWait,
                     $accountId ?? 'null'
                 ));
 
-                return false; // Not safe - wait and retry
+                return false;
             }
         }
 
-        // 2. Base-class check — requests-per-window cap + min-delay between
-        // requests. Logs the exact throttler + retry count so we can tell
-        // window_exceeded-style rejections apart from min_delay-style ones.
+        // 2. Base-class check — window cap + min-delay. Returns milliseconds.
         $retryCount = $this->step->retries ?? 0;
-        $secondsToWait = $throttler::canDispatch($retryCount, $accountId, $stepId);
+        $msToWait = $throttler::canDispatch($retryCount, $accountId, $stepId);
 
-        if ($secondsToWait > 0) {
-            $this->jobBackoffSeconds = $secondsToWait;
+        if ($msToWait > 0) {
+            $msToWait = $this->applyThrottleJitter($msToWait);
+            $this->jobBackoffMs = $msToWait;
+            $this->jobBackoffSeconds = 0;
 
             Step::log($stepId, 'throttled', sprintf(
-                'Throttled by %s::canDispatch | wait=%ds | retry_count=%d | account_id=%s',
+                'Throttled by %s::canDispatch | wait=%dms | retry_count=%d | account_id=%s',
                 class_basename($throttler),
-                $secondsToWait,
+                $msToWait,
                 $retryCount,
                 $accountId ?? 'null'
             ));
 
-            return false; // Throttled - retry
+            return false;
         }
 
-        return true; // OK to proceed
+        return true;
+    }
+
+    /**
+     * Spread the reschedule so concurrent workers don't all land on the
+     * same dispatch_after.
+     *
+     * The throttler math `last_dispatch + min_delay` produces an identical
+     * target instant for every worker racing the cache at the same time —
+     * they all compute the same "earliest-allowed" moment regardless of
+     * when they actually checked. Without jitter the dispatcher releases
+     * them as a single herd, the throttler admits one, and the rest pile
+     * onto the next identical target. The cycle traps throughput well
+     * below the configured cap.
+     *
+     * Added jitter is 0–30% of the base wait with a 50 ms floor so even
+     * tiny deficits gain breathing room. Jitter only pushes the reschedule
+     * later, never earlier, so it cannot cause 429s.
+     */
+    private function applyThrottleJitter(int $msToWait): int
+    {
+        $jitterMax = max(50, (int) ($msToWait * 0.3));
+
+        return $msToWait + random_int(0, $jitterMax);
     }
 
     /**

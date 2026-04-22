@@ -49,6 +49,24 @@ abstract class BaseExceptionHandler
     // Calculate when to retry after rate limit. Provided via ApiExceptionHelpers trait or overridden by child classes.
     abstract public function rateLimitUntil(RequestException $exception): Carbon;
 
+    /**
+     * Classifier: the exchange says this symbol is delisted / removed.
+     *
+     * Complements `TradingMapper::isNowDelisted()` — which detects
+     * proactive delistings through `delivery_ts_ms` changes during the
+     * market-data refresh — by catching symbols that disappear from the
+     * exchange altogether and surface only through runtime API errors
+     * (e.g. BitGet 40309 "contract has been removed").
+     *
+     * Default: not detected. Override in exchange-specific handlers.
+     * Callers should flag the ExchangeSymbol as delisted so it stops
+     * being scheduled for klines/indicators/positions.
+     */
+    public function isSymbolDelisted(Throwable $exception): bool
+    {
+        return false;
+    }
+
     final public static function make(string $apiCanonical)
     {
         return match ($apiCanonical) {

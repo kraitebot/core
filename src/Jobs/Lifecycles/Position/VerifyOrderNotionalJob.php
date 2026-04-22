@@ -26,6 +26,7 @@ final class VerifyOrderNotionalJob extends BasePositionLifecycle
     {
         Step::create([
             'class' => $this->resolver->resolve(VerifyOrderNotionalForMarketOrderJob::class),
+            'queue' => 'positions',
             'arguments' => ['positionId' => $this->position->id],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

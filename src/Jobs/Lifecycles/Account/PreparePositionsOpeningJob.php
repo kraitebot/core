@@ -11,8 +11,8 @@ use Kraite\Core\Jobs\Lifecycles\Account\QueryAccountPositionsJob as QueryAccount
 use Kraite\Core\Jobs\Lifecycles\Account\VerifyMinAccountBalanceJob as VerifyMinAccountBalanceLifecycle;
 use Kraite\Core\Jobs\Models\Account\AssignBestTokensToPositionSlotsJob;
 use Kraite\Core\Models\Account;
-use StepDispatcher\Models\Step;
 use Kraite\Core\Support\Proxies\JobProxy;
+use StepDispatcher\Models\Step;
 
 /**
  * PreparePositionsOpeningJob
@@ -98,6 +98,7 @@ final class PreparePositionsOpeningJob extends BaseQueueableJob
         // Step 3: Create slots + assign best tokens (no resolver needed - same for all exchanges)
         Step::create([
             'class' => AssignBestTokensToPositionSlotsJob::class,
+            'queue' => 'cronjobs',
             'arguments' => ['accountId' => $this->account->id],
             'block_uuid' => $this->uuid(),
             'workflow_id' => $workflowId,
@@ -109,6 +110,7 @@ final class PreparePositionsOpeningJob extends BaseQueueableJob
         // Step 4: Dispatch positions for trading
         Step::create([
             'class' => DispatchPositionSlotsJob::class,
+            'queue' => 'cronjobs',
             'arguments' => ['accountId' => $this->account->id],
             'block_uuid' => $this->uuid(),
             'child_block_uuid' => (string) Str::uuid(),

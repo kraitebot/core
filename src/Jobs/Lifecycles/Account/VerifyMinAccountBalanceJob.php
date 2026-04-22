@@ -21,6 +21,7 @@ final class VerifyMinAccountBalanceJob extends BaseAccountLifecycle
     {
         Step::create([
             'class' => $this->resolver->resolve(AtomicVerifyMinAccountBalanceJob::class),
+            'queue' => 'cronjobs',
             'arguments' => ['accountId' => $this->account->id],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

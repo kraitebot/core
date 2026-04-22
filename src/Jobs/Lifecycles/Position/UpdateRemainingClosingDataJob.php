@@ -14,12 +14,13 @@ use StepDispatcher\Models\Step;
  * Orchestrator that creates step for updating closing data.
  * Sets closing_price, was_fast_traded, and sends high-profit notifications.
  */
-class UpdateRemainingClosingDataJob extends BasePositionLifecycle
+final class UpdateRemainingClosingDataJob extends BasePositionLifecycle
 {
     public function dispatch(string $blockUuid, int $startIndex, ?string $workflowId = null): int
     {
         Step::create([
             'class' => $this->resolver->resolve(AtomicUpdateRemainingClosingDataJob::class),
+            'queue' => 'positions',
             'arguments' => ['positionId' => $this->position->id],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

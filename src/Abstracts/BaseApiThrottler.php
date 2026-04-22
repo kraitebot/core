@@ -38,41 +38,52 @@ abstract class BaseApiThrottler
 
     /**
      * Check if we can dispatch a request to the API right now.
-     * Returns 0 if we can dispatch immediately.
-     * Returns number of seconds to wait if we need to throttle.
+     *
+     * Returns 0 when the caller may fire immediately.
+     * Returns a positive integer **in milliseconds** when the caller must wait.
+     *
+     * Milliseconds (not seconds) because `BaseApiableJob::shouldStartOrThrottle`
+     * forwards this value to the step-dispatcher's `jobBackoffMs`, which
+     * schedules retries against the millisecond-precision `dispatch_after`
+     * column (TIMESTAMP(3)). Sub-second deficits (e.g. 83 ms remaining
+     * against a 200 ms min-delay) reschedule at their exact remainder
+     * instead of being rounded up to the next whole second — that was
+     * historically costing 50–75 % of the configured rate budget on hot
+     * APIs (TAAPI, CMC) because every retry paid an extra 500–900 ms of
+     * unnecessary wait.
      *
      * @param  int  $retryCount  Number of retries already attempted (for exponential backoff)
      * @param  int|null  $accountId  Optional account ID for UID-based rate limits (e.g., ORDER limits)
      * @param  int|string|null  $stepId  Optional step ID for throttle logging
+     * @return int Milliseconds to wait, or 0 if OK to proceed
      */
     final public static function canDispatch(int $retryCount = 0, ?int $accountId = null, int|string|null $stepId = null): int
     {
         $config = static::getRateLimitConfig();
         $prefix = static::getCacheKeyPrefix();
 
-        // Check minimum delay between requests (if configured)
+        // Minimum delay between requests — sub-second precision preserved.
         if (isset($config['min_delay_between_requests_ms'])) {
-            $secondsToWait = static::checkMinimumDelay($prefix, $config['min_delay_between_requests_ms']);
-            if ($secondsToWait > 0) {
-                return $secondsToWait;
+            $msToWait = static::checkMinimumDelay($prefix, $config['min_delay_between_requests_ms']);
+            if ($msToWait > 0) {
+                return $msToWait;
             }
         }
 
-        // Check requests per window limit
-        $windowKey = static::getCurrentWindowKey($prefix, $config['window_seconds']);
-        $currentCount = Cache::get($windowKey, 0);
+        // Requests per window limit — seconds, promoted to milliseconds.
         $safetyThreshold = $config['safety_threshold'] ?? 1.0;
-        $effectiveLimit = (int) floor($config['requests_per_window'] * $safetyThreshold);
+        $msToWait = static::checkWindowLimit(
+            $prefix,
+            $config['requests_per_window'],
+            $config['window_seconds'],
+            $safetyThreshold
+        );
 
-        $secondsToWait = static::checkWindowLimit($prefix, $config['requests_per_window'], $config['window_seconds'], $safetyThreshold);
-
-        // Apply exponential backoff if this is a retry
-        if ($retryCount > 0 && $secondsToWait > 0) {
-            $exponentialDelay = static::calculateExponentialBackoff($retryCount);
-            $secondsToWait += $exponentialDelay;
+        if ($retryCount > 0 && $msToWait > 0) {
+            $msToWait += static::calculateExponentialBackoff($retryCount) * 1000;
         }
 
-        return $secondsToWait;
+        return $msToWait;
     }
 
     /**
@@ -130,7 +141,11 @@ abstract class BaseApiThrottler
     }
 
     /**
-     * Check if minimum delay between requests is satisfied
+     * Check if the minimum delay between requests is satisfied.
+     *
+     * Returns the remaining deficit in **milliseconds** — no rounding.
+     * A caller that arrives 183 ms into a 200 ms min-delay gets told to
+     * wait 17 ms, not "round up to 1 second". Zero means OK to proceed.
      */
     protected static function checkMinimumDelay(string $prefix, int $minDelayMs): int
     {
@@ -140,44 +155,43 @@ abstract class BaseApiThrottler
             return 0;
         }
 
-        // diffInMilliseconds returns negative if $lastDispatch is in the past
-        // We need the absolute value to get "time since last"
+        // diffInMilliseconds returns a signed delta; abs() gives us
+        // "time since last dispatch" regardless of the sign convention.
         $timeSinceLastMs = abs(Carbon::now()->diffInMilliseconds($lastDispatch, false));
-        $requiredDelayMs = $minDelayMs;
 
-        if ($timeSinceLastMs < $requiredDelayMs) {
-            return (int) ceil(($requiredDelayMs - $timeSinceLastMs) / 1000);
+        if ($timeSinceLastMs < $minDelayMs) {
+            return $minDelayMs - (int) $timeSinceLastMs;
         }
 
         return 0;
     }
 
     /**
-     * Check if we're within the requests-per-window limit
+     * Check the per-window request-count cap.
+     *
+     * Returns the remaining time until the current window rolls over, in
+     * **milliseconds**. Window arithmetic is still done in whole seconds
+     * internally (windows are typically 15-60s long), but the return value
+     * is converted up to ms for a uniform `canDispatch` contract.
      *
      * @param  float  $safetyThreshold  Percentage of limit to enforce (0.0-1.0). Default 1.0 = 100%
      */
     protected static function checkWindowLimit(string $prefix, int $maxRequests, int $windowSeconds, float $safetyThreshold = 1.0): int
     {
-        // Guard against division by zero - default to 1 second window
         if ($windowSeconds <= 0) {
             $windowSeconds = 1;
         }
 
-        // Apply safety threshold to create buffer
         $effectiveLimit = (int) floor($maxRequests * $safetyThreshold);
 
         $windowKey = static::getCurrentWindowKey($prefix, $windowSeconds);
         $currentCount = Cache::get($windowKey, 0);
 
         if ($currentCount >= $effectiveLimit) {
-            // Calculate how long until this window expires
-            $currentWindow = floor(Carbon::now()->timestamp / $windowSeconds);
-            $windowStartTime = $currentWindow * $windowSeconds;
-            $windowEndTime = $windowStartTime + $windowSeconds;
-            $secondsUntilWindowEnd = $windowEndTime - Carbon::now()->timestamp;
+            $nowMs = (int) round(Carbon::now()->getPreciseTimestamp(3));
+            $windowEndMs = ((int) floor($nowMs / ($windowSeconds * 1000)) + 1) * $windowSeconds * 1000;
 
-            return max(1, (int) ceil($secondsUntilWindowEnd));
+            return max(1, $windowEndMs - $nowMs);
         }
 
         return 0;

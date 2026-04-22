@@ -21,7 +21,7 @@ use StepDispatcher\Models\Step;
  * Exchanges requiring per-symbol calls (Bybit, KuCoin, BitGet) have overrides
  * that create child steps for each symbol.
  */
-class SyncLeverageBracketsJob extends BaseQueueableJob
+final class SyncLeverageBracketsJob extends BaseQueueableJob
 {
     public ApiSystem $apiSystem;
 
@@ -40,6 +40,7 @@ class SyncLeverageBracketsJob extends BaseQueueableJob
         // Default implementation: create single child step for batch fetching
         Step::create([
             'class' => AtomicSyncLeverageBracketsJob::class,
+            'queue' => 'cronjobs',
             'arguments' => ['apiSystemId' => $this->apiSystem->id],
             'block_uuid' => $this->uuid(),
             'index' => 1,

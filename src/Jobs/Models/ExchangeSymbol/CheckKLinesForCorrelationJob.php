@@ -109,6 +109,7 @@ final class CheckKLinesForCorrelationJob extends BaseQueueableJob
         foreach ($missingSteps as $missing) {
             Step::create([
                 'class' => FetchKlinesJob::class,
+                'queue' => 'indicators',
                 'block_uuid' => $childBlockUuid,
                 'group' => $group,
                 'index' => 1,

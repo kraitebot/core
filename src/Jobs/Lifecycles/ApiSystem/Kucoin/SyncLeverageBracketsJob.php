@@ -16,7 +16,7 @@ use StepDispatcher\Models\Step;
  * KuCoin's risk limit endpoint requires symbol in the URL path.
  * This override creates a child step for each exchange symbol to fetch brackets individually.
  */
-class SyncLeverageBracketsJob extends BaseQueueableJob
+final class SyncLeverageBracketsJob extends BaseQueueableJob
 {
     public ApiSystem $apiSystem;
 
@@ -32,8 +32,12 @@ class SyncLeverageBracketsJob extends BaseQueueableJob
 
     public function compute()
     {
-        // Get all exchange symbols for this API system
-        $symbols = ExchangeSymbol::where('api_system_id', $this->apiSystem->id)->get();
+        // Skip symbols already flagged for delisting — the exchange will
+        // answer with an invalid-symbol error for them and fail the whole
+        // parent step every hour until they're cleaned up.
+        $symbols = ExchangeSymbol::where('api_system_id', $this->apiSystem->id)
+            ->where('is_marked_for_delisting', false)
+            ->get();
 
         if ($symbols->isEmpty()) {
             // No children to create - clear child_block_uuid so StepDispatcher
@@ -51,6 +55,7 @@ class SyncLeverageBracketsJob extends BaseQueueableJob
         foreach ($symbols as $symbol) {
             Step::create([
                 'class' => SyncLeverageBracketJob::class,
+                'queue' => 'indicators',
                 'arguments' => ['exchangeSymbolId' => $symbol->id],
                 'block_uuid' => $this->uuid(),
                 'index' => 1,

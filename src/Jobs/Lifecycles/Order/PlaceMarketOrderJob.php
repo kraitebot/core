@@ -19,12 +19,13 @@ use StepDispatcher\Models\Step;
  *
  * Must run AFTER PreparePositionDataJob (margin, leverage must be set).
  */
-class PlaceMarketOrderJob extends BasePositionLifecycle
+final class PlaceMarketOrderJob extends BasePositionLifecycle
 {
     public function dispatch(string $blockUuid, int $startIndex, ?string $workflowId = null): int
     {
         Step::create([
             'class' => $this->resolver->resolve(PlaceMarketOrderAtomic::class),
+            'queue' => 'positions',
             'arguments' => ['positionId' => $this->position->id],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

@@ -54,6 +54,7 @@ final class StoreAccountsBalancesCommand extends BaseCommand
     {
         Step::create([
             'class' => DispatchAccountBalancesJob::class,
+            'queue' => 'cronjobs',
             'child_block_uuid' => (string) Str::uuid(),
         ]);
 

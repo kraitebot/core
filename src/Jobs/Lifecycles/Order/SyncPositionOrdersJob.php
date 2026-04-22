@@ -14,12 +14,13 @@ use StepDispatcher\Models\Step;
  * Orchestrator that creates step for syncing all position orders from exchange.
  * Updates order status, quantity, and price from the exchange.
  */
-class SyncPositionOrdersJob extends BasePositionLifecycle
+final class SyncPositionOrdersJob extends BasePositionLifecycle
 {
     public function dispatch(string $blockUuid, int $startIndex, ?string $workflowId = null): int
     {
         Step::create([
             'class' => $this->resolver->resolve(AtomicSyncPositionOrdersJob::class),
+            'queue' => 'positions',
             'arguments' => ['positionId' => $this->position->id],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

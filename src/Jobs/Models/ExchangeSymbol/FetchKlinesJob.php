@@ -17,6 +17,7 @@ use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 use Kraite\Core\Support\Proxies\ApiRESTProxy;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use RuntimeException;
+use Throwable;
 
 /**
  * FetchKlinesJob
@@ -85,8 +86,20 @@ final class FetchKlinesJob extends BaseApiableJob
         // Get REST API client (empty credentials for public endpoint)
         $api = new ApiRESTProxy($canonical, new ApiCredentials([]));
 
-        // Call the exchange API
-        $response = $api->getKlines($properties);
+        try {
+            // Call the exchange API
+            $response = $api->getKlines($properties);
+        } catch (Throwable $e) {
+            // If the exchange reports the symbol is gone (Binance -1121, Bybit
+            // 10001/"not supported", KuCoin 200003, BitGet 40309) we mark it
+            // for delisting and settle the step gracefully. Any other error
+            // bubbles up to the normal API exception handling pipeline.
+            if ($this->exceptionHandler->isSymbolDelisted($e)) {
+                return $this->handleSymbolDelisted();
+            }
+
+            throw $e;
+        }
 
         // Resolve the response using the DataMapper
         $klines = $mapper->resolveQueryKlinesResponse($response);
@@ -108,6 +121,42 @@ final class FetchKlinesJob extends BaseApiableJob
             'timeframe' => $this->timeframe,
             'fetched' => count($klines),
             'stored' => $storedCount,
+        ];
+    }
+
+    /**
+     * Persist the `is_marked_for_delisting` flag on the ExchangeSymbol and
+     * return a terminal "delisted" payload so the step completes cleanly.
+     *
+     * Complements the proactive detection in ExchangeSymbolObserver +
+     * *TradingMapper::isNowDelisted(): that path fires when the exchange
+     * announces a delivery date during market-data refresh, while this one
+     * handles symbols that simply disappear from the exchange and only
+     * surface the fact through runtime errors.
+     *
+     * @return array<string, mixed>
+     */
+    private function handleSymbolDelisted(): array
+    {
+        DB::transaction(function (): void {
+            $symbol = ExchangeSymbol::query()
+                ->whereKey($this->exchangeSymbol->id)
+                ->lockForUpdate()
+                ->first();
+
+            if ($symbol !== null && ! $symbol->is_marked_for_delisting) {
+                $symbol->update(['is_marked_for_delisting' => true]);
+            }
+        });
+
+        $canonical = $this->exchangeSymbol->apiSystem->canonical;
+
+        return [
+            'exchange_symbol_id' => $this->exchangeSymbol->id,
+            'symbol' => $this->exchangeSymbol->parsed_trading_pair,
+            'timeframe' => $this->timeframe,
+            'delisted' => true,
+            'message' => "Symbol marked for delisting after {$canonical} reported it as removed",
         ];
     }
 

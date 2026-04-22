@@ -18,12 +18,13 @@ use StepDispatcher\Models\Step;
  *
  * Must run AFTER PlaceMarketOrderJob (position must have opening_price and quantity).
  */
-class PlaceProfitOrderJob extends BasePositionLifecycle
+final class PlaceProfitOrderJob extends BasePositionLifecycle
 {
     public function dispatch(string $blockUuid, int $startIndex, ?string $workflowId = null): int
     {
         Step::create([
             'class' => $this->resolver->resolve(PlaceProfitOrderAtomic::class),
+            'queue' => 'positions',
             'arguments' => ['positionId' => $this->position->id],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

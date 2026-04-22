@@ -91,6 +91,7 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
             if ($binance !== null) {
                 Step::create([
                     'class' => UpsertExchangeSymbolsFromExchangeJob::class,
+                    'queue' => 'cronjobs',
                     'arguments' => ['apiSystemId' => $binance->id],
                     'block_uuid' => $blockUuid,
                     'index' => 1,
@@ -103,6 +104,7 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
             foreach ($otherExchanges as $exchange) {
                 Step::create([
                     'class' => UpsertExchangeSymbolsFromExchangeJob::class,
+                    'queue' => 'cronjobs',
                     'arguments' => ['apiSystemId' => $exchange->id],
                     'block_uuid' => $blockUuid,
                     'index' => 2,
@@ -119,6 +121,7 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
             // child_block_uuid is required so the parent waits for all children to complete.
             Step::create([
                 'class' => DiscoverCMCTokensForOrphanedSymbolsJob::class,
+                'queue' => 'cronjobs',
                 'arguments' => [],
                 'block_uuid' => $blockUuid,
                 'child_block_uuid' => (string) Str::uuid(),
@@ -127,6 +130,7 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
 
             Step::create([
                 'class' => TouchTaapiDataForExchangeSymbolsJob::class,
+                'queue' => 'cronjobs',
                 'arguments' => [],
                 'block_uuid' => $blockUuid,
                 'child_block_uuid' => (string) Str::uuid(),
@@ -144,6 +148,7 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
 
                 Step::create([
                     'class' => $lifecycleClass,
+                    'queue' => 'cronjobs',
                     'arguments' => ['apiSystemId' => $exchange->id],
                     'block_uuid' => $blockUuid,
                     'child_block_uuid' => (string) Str::uuid(),

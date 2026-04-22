@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Lifecycles\Position\Binance;
 
-use Kraite\Core\Jobs\Atomic\Position\UpdatePositionStatusJob as AtomicUpdatePositionStatusJob;
 use Kraite\Core\Jobs\Lifecycles\Order\PlaceLimitOrdersJob as PlaceLimitOrdersLifecycle;
 use Kraite\Core\Jobs\Lifecycles\Order\PlaceProfitOrderJob as PlaceProfitOrderLifecycle;
 use Kraite\Core\Jobs\Lifecycles\Order\PlaceStopLossOrderJob as PlaceStopLossOrderLifecycle;
@@ -14,8 +13,8 @@ use Kraite\Core\Jobs\Lifecycles\Position\CancelPositionJob;
 use Kraite\Core\Jobs\Lifecycles\Position\CancelPositionOpenOrdersJob;
 use Kraite\Core\Jobs\Lifecycles\Position\ReplacePositionOrdersJob as BaseReplacePositionOrdersJob;
 use Kraite\Core\Jobs\Lifecycles\Position\UpdatePositionStatusJob;
-use StepDispatcher\Models\Step;
 use Kraite\Core\Support\Proxies\JobProxy;
+use StepDispatcher\Models\Step;
 
 /**
  * ReplacePositionOrdersJob (Orchestrator) - Binance
@@ -33,7 +32,7 @@ use Kraite\Core\Support\Proxies\JobProxy;
  *
  * resolve-exception: CancelPositionJob → if replacement fails, cancel the position
  */
-class ReplacePositionOrdersJob extends BaseReplacePositionOrdersJob
+final class ReplacePositionOrdersJob extends BaseReplacePositionOrdersJob
 {
     public function computeApiable()
     {
@@ -112,7 +111,7 @@ class ReplacePositionOrdersJob extends BaseReplacePositionOrdersJob
             'type' => 'resolve-exception',
             'arguments' => [
                 'positionId' => $this->position->id,
-                'message' => 'Position replacement failed: ' . ($this->message ?? 'Unknown error'),
+                'message' => 'Position replacement failed: '.($this->message ?? 'Unknown error'),
             ],
         ]);
 

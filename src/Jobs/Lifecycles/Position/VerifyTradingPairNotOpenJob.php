@@ -15,12 +15,13 @@ use StepDispatcher\Models\Step;
  * Default implementation creates a single atomic step.
  * Exchange-specific overrides can add additional checks if needed.
  */
-class VerifyTradingPairNotOpenJob extends BasePositionLifecycle
+final class VerifyTradingPairNotOpenJob extends BasePositionLifecycle
 {
     public function dispatch(string $blockUuid, int $startIndex, ?string $workflowId = null): int
     {
         Step::create([
             'class' => $this->resolver->resolve(AtomicVerifyTradingPairNotOpenJob::class),
+            'queue' => 'positions',
             'arguments' => ['positionId' => $this->position->id],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

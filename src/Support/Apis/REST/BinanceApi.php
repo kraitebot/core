@@ -31,18 +31,21 @@ final class BinanceApi
     public function serverTime(): mixed
     {
         $apiRequest = ApiRequest::make('GET', '/fapi/v1/time');
+
         return $this->client->publicRequest($apiRequest);
     }
 
     public function getLeverageBrackets(ApiProperties $properties): mixed
     {
         $apiRequest = ApiRequest::make('GET', '/fapi/v1/leverageBracket', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
     public function getExchangeInformation(ApiProperties $properties): mixed
     {
         $apiRequest = ApiRequest::make('GET', '/fapi/v1/exchangeInfo', $properties);
+
         return $this->client->publicRequest($apiRequest);
     }
 
@@ -50,18 +53,21 @@ final class BinanceApi
     {
         $properties ??= new ApiProperties;
         $apiRequest = ApiRequest::make('GET', '/fapi/v1/klines', $properties);
+
         return $this->client->publicRequest($apiRequest);
     }
 
     public function getCurrentOpenOrders(ApiProperties $properties): mixed
     {
         $apiRequest = ApiRequest::make('GET', '/fapi/v1/openOrders', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
     public function getAlgoOpenOrders(ApiProperties $properties): mixed
     {
         $apiRequest = ApiRequest::make('GET', '/fapi/v1/openAlgoOrders', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
@@ -77,6 +83,7 @@ final class BinanceApi
         ]);
 
         $apiRequest = ApiRequest::make('POST', '/fapi/v1/algoOrder', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
@@ -88,6 +95,7 @@ final class BinanceApi
         ]);
 
         $apiRequest = ApiRequest::make('GET', '/fapi/v1/openAlgoOrders', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
@@ -99,18 +107,21 @@ final class BinanceApi
         ]);
 
         $apiRequest = ApiRequest::make('DELETE', '/fapi/v1/algoOrder', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
     public function getAllOrders(ApiProperties $properties): mixed
     {
         $apiRequest = ApiRequest::make('GET', '/fapi/v1/allOrders', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
     public function getOrder(ApiProperties $properties): mixed
     {
         $apiRequest = ApiRequest::make('GET', '/fapi/v1/order', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
@@ -122,6 +133,7 @@ final class BinanceApi
         ]);
 
         $apiRequest = ApiRequest::make('DELETE', '/fapi/v1/order', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
@@ -132,6 +144,7 @@ final class BinanceApi
         ]);
 
         $apiRequest = ApiRequest::make('DELETE', '/fapi/v1/allOpenOrders', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
@@ -143,6 +156,7 @@ final class BinanceApi
         ]);
 
         $apiRequest = ApiRequest::make('POST', '/fapi/v1/marginType', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
@@ -150,18 +164,29 @@ final class BinanceApi
     {
         $properties ??= new ApiProperties;
         $apiRequest = ApiRequest::make('GET', '/fapi/v3/positionRisk', $properties);
+
+        return $this->client->signRequest($apiRequest);
+    }
+
+    public function getSymbolConfig(?ApiProperties $properties = null): mixed
+    {
+        $properties ??= new ApiProperties;
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/symbolConfig', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
     public function getAccountBalance(): mixed
     {
         $apiRequest = ApiRequest::make('GET', '/fapi/v3/balance');
+
         return $this->client->signRequest($apiRequest);
     }
 
     public function getSpotAccountBalance(): mixed
     {
         $apiRequest = ApiRequest::make('GET', '/api/v3/account');
+
         return $this->client->signRequest($apiRequest);
     }
 
@@ -173,6 +198,7 @@ final class BinanceApi
         ]);
 
         $apiRequest = ApiRequest::make('POST', '/fapi/v1/leverage', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
@@ -183,6 +209,7 @@ final class BinanceApi
         ]);
 
         $apiRequest = ApiRequest::make('GET', '/fapi/v1/premiumIndex', $properties);
+
         return $this->client->publicRequest($apiRequest);
     }
 
@@ -196,6 +223,7 @@ final class BinanceApi
         ]);
 
         $apiRequest = ApiRequest::make('POST', '/fapi/v1/order', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
@@ -207,6 +235,7 @@ final class BinanceApi
         ]);
 
         $apiRequest = ApiRequest::make('GET', '/fapi/v1/order', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
@@ -219,6 +248,7 @@ final class BinanceApi
         ]);
 
         $apiRequest = ApiRequest::make('PUT', '/fapi/v1/order', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
@@ -230,12 +260,14 @@ final class BinanceApi
         ]);
 
         $apiRequest = ApiRequest::make('GET', '/fapi/v1/userTrades', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
     public function account(ApiProperties $properties): mixed
     {
         $apiRequest = ApiRequest::make('GET', '/fapi/v3/account', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
@@ -247,6 +279,7 @@ final class BinanceApi
         ]);
 
         $apiRequest = ApiRequest::make('GET', '/fapi/v1/income', $properties);
+
         return $this->client->signRequest($apiRequest);
     }
 
@@ -306,6 +339,7 @@ final class BinanceApi
     public function closeListenKey(): mixed
     {
         $apiRequest = ApiRequest::make('DELETE', '/fapi/v1/listenKey');
+
         return $this->client->signRequest($apiRequest);
     }
 }

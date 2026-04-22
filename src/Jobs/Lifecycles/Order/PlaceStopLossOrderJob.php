@@ -18,12 +18,13 @@ use StepDispatcher\Models\Step;
  *
  * Must run AFTER PlaceLimitOrdersJob (needs limit order prices for anchor).
  */
-class PlaceStopLossOrderJob extends BasePositionLifecycle
+final class PlaceStopLossOrderJob extends BasePositionLifecycle
 {
     public function dispatch(string $blockUuid, int $startIndex, ?string $workflowId = null): int
     {
         Step::create([
             'class' => $this->resolver->resolve(PlaceStopLossOrderAtomic::class),
+            'queue' => 'positions',
             'arguments' => ['positionId' => $this->position->id],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

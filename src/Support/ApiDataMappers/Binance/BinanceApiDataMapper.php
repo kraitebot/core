@@ -23,8 +23,10 @@ use Kraite\Core\Support\ApiDataMappers\Binance\ApiRequests\MapsPlaceAlgoOrder;
 use Kraite\Core\Support\ApiDataMappers\Binance\ApiRequests\MapsPlaceOrder;
 use Kraite\Core\Support\ApiDataMappers\Binance\ApiRequests\MapsPositionsQuery;
 use Kraite\Core\Support\ApiDataMappers\Binance\ApiRequests\MapsServerTimeQuery;
+use Kraite\Core\Support\ApiDataMappers\Binance\ApiRequests\MapsSymbolConfigQuery;
 use Kraite\Core\Support\ApiDataMappers\Binance\ApiRequests\MapsSymbolMarginType;
 use Kraite\Core\Support\ApiDataMappers\Binance\ApiRequests\MapsTokenLeverageRatios;
+use SensitiveParameter;
 
 final class BinanceApiDataMapper extends BaseDataMapper
 {
@@ -45,6 +47,7 @@ final class BinanceApiDataMapper extends BaseDataMapper
     use MapsPlaceOrder;
     use MapsPositionsQuery;
     use MapsServerTimeQuery;
+    use MapsSymbolConfigQuery;
     use MapsSymbolMarginType;
     use MapsTokenLeverageRatios;
 
@@ -88,7 +91,7 @@ final class BinanceApiDataMapper extends BaseDataMapper
      * Returns the well formed base symbol with the quote on it.
      * E.g.: AVAXUSDT. Token and quote are stored directly on exchange_symbols.
      */
-    public function baseWithQuote(#[\SensitiveParameter] string $token, string $quote): string
+    public function baseWithQuote(#[SensitiveParameter] string $token, string $quote): string
     {
         return $token.$quote;
     }
@@ -99,7 +102,7 @@ final class BinanceApiDataMapper extends BaseDataMapper
      * input: MANAUSDT
      * returns: ['MANA', 'USDT']
      */
-    public function identifyBaseAndQuote(#[\SensitiveParameter] string $token): array
+    public function identifyBaseAndQuote(#[SensitiveParameter] string $token): array
     {
         $availableQuoteCurrencies = [
             'USDT', 'BUSD', 'USDC', 'BTC', 'ETH', 'BNB',
@@ -107,12 +110,14 @@ final class BinanceApiDataMapper extends BaseDataMapper
         ];
 
         foreach ($availableQuoteCurrencies as $quoteCurrency) {
-            if (!(str_ends_with(haystack: $token, needle: $quoteCurrency))) { continue; }
+            if (! (str_ends_with(haystack: $token, needle: $quoteCurrency))) {
+                continue;
+            }
 
-return [
-                    'base' => str_replace(search: $quoteCurrency, replace: '', subject: $token),
-                    'quote' => $quoteCurrency,
-                ];
+            return [
+                'base' => str_replace(search: $quoteCurrency, replace: '', subject: $token),
+                'quote' => $quoteCurrency,
+            ];
         }
 
         throw new InvalidArgumentException("Invalid token format: {$token}");

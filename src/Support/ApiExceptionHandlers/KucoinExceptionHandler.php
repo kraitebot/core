@@ -308,6 +308,25 @@ final class KucoinExceptionHandler extends BaseExceptionHandler
     }
 
     /**
+     * Symbol removed / delisted by KuCoin.
+     * Detected by vendor code 200003 ("The symbol parameter is invalid.").
+     *
+     * KuCoin emits 200003 on futures endpoints when the requested symbol
+     * has been retired or never existed. Codes are delivered as strings.
+     */
+    public function isSymbolDelisted(Throwable $exception): bool
+    {
+        if (! $exception instanceof RequestException || ! $exception->hasResponse()) {
+            return false;
+        }
+
+        $data = $this->extractHttpErrorCodes($exception);
+        $code = (string) ($data['api_code'] ?? $data['status_code'] ?? '');
+
+        return $code === '200003';
+    }
+
+    /**
      * Record response headers for IP-based rate limiting coordination.
      * Delegates to KucoinThrottler to record headers in cache.
      */

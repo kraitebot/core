@@ -16,8 +16,8 @@ use Kraite\Core\Jobs\Lifecycles\Position\SetLeverageJob as SetLeverageLifecycle;
 use Kraite\Core\Jobs\Lifecycles\Position\SetMarginModeJob as SetMarginModeLifecycle;
 use Kraite\Core\Jobs\Lifecycles\Position\VerifyOrderNotionalJob as VerifyOrderNotionalLifecycle;
 use Kraite\Core\Jobs\Lifecycles\Position\VerifyTradingPairNotOpenJob as VerifyTradingPairNotOpenLifecycle;
-use StepDispatcher\Models\Step;
 use Kraite\Core\Support\Proxies\JobProxy;
+use StepDispatcher\Models\Step;
 
 /**
  * DispatchPositionJob (Orchestrator) - BitGet
@@ -36,7 +36,7 @@ use Kraite\Core\Support\Proxies\JobProxy;
  * • Step 9: PlacePositionTpslJob - Place combined TP/SL via position endpoint
  * • Step 10: ActivatePositionJob - Validate orders, set status='active'
  */
-class DispatchPositionJob extends BaseDispatchPositionJob
+final class DispatchPositionJob extends BaseDispatchPositionJob
 {
     public function compute()
     {

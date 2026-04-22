@@ -245,6 +245,26 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
     }
 
     /**
+     * Symbol removed / delisted by BitGet.
+     * Detected by vendor code 40309 ("The contract has been removed").
+     *
+     * BitGet returns this on kline and other endpoints once a futures
+     * contract has been delisted from the platform. BitGet codes are
+     * delivered as strings inside the JSON body.
+     */
+    public function isSymbolDelisted(Throwable $exception): bool
+    {
+        if (! $exception instanceof RequestException || ! $exception->hasResponse()) {
+            return false;
+        }
+
+        $data = $this->extractHttpErrorCodes($exception);
+        $code = (string) ($data['api_code'] ?? $data['status_code'] ?? '');
+
+        return $code === '40309';
+    }
+
+    /**
      * Ping the BitGet API to check connectivity.
      */
     public function ping(): bool

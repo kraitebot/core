@@ -324,6 +324,42 @@ final class BybitExceptionHandler extends BaseExceptionHandler
     }
 
     /**
+     * Symbol removed / delisted by Bybit.
+     *
+     * Bybit does not expose a dedicated "symbol delisted" retCode for
+     * kline requests; it responds with HTTP 200 and retCode 10001 (the
+     * generic parameter error) together with messages like
+     * "Not supported symbols" or "symbol not exist".
+     *
+     * We therefore require both the retCode AND a descriptive message
+     * phrase to avoid flagging unrelated parameter mistakes as a
+     * delisting.
+     */
+    public function isSymbolDelisted(Throwable $exception): bool
+    {
+        if (! $exception instanceof RequestException || ! $exception->hasResponse()) {
+            return false;
+        }
+
+        $data = $this->extractHttpErrorCodes($exception);
+
+        if ((int) ($data['status_code'] ?? 0) !== 10001) {
+            return false;
+        }
+
+        $message = mb_strtolower((string) ($data['message'] ?? ''));
+
+        if ($message === '' || ! str_contains($message, 'symbol')) {
+            return false;
+        }
+
+        return str_contains($message, 'not supported')
+            || str_contains($message, 'not exist')
+            || str_contains($message, 'invalid')
+            || str_contains($message, 'delisted');
+    }
+
+    /**
      * Ping the Bybit API to check connectivity.
      */
     public function ping(): bool

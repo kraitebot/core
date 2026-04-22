@@ -18,7 +18,7 @@ use StepDispatcher\Models\Step;
  * - cancelling, closing, closed, cancelled, failed
  * - active, watching, waping
  */
-class UpdatePositionStatusJob extends BasePositionLifecycle
+final class UpdatePositionStatusJob extends BasePositionLifecycle
 {
     protected string $status;
 
@@ -39,6 +39,7 @@ class UpdatePositionStatusJob extends BasePositionLifecycle
     {
         Step::create([
             'class' => $this->resolver->resolve(AtomicUpdatePositionStatusJob::class),
+            'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
                 'status' => $this->status,

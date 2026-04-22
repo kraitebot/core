@@ -14,12 +14,13 @@ use StepDispatcher\Models\Step;
  * Orchestrator that creates step for verifying no residual position remains.
  * Checks the account-positions snapshot after closing.
  */
-class VerifyPositionResidualAmountJob extends BasePositionLifecycle
+final class VerifyPositionResidualAmountJob extends BasePositionLifecycle
 {
     public function dispatch(string $blockUuid, int $startIndex, ?string $workflowId = null): int
     {
         Step::create([
             'class' => $this->resolver->resolve(AtomicVerifyPositionResidualAmountJob::class),
+            'queue' => 'positions',
             'arguments' => ['positionId' => $this->position->id],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

@@ -10,8 +10,8 @@ use Kraite\Core\Jobs\Atomic\Order\RecreateCancelledOrderJob;
 use Kraite\Core\Jobs\Atomic\Order\SyncPositionOrdersJob;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
-use StepDispatcher\Models\Step;
 use Kraite\Core\Support\Proxies\JobProxy;
+use StepDispatcher\Models\Step;
 
 /**
  * SmartReplaceOrdersJob (Orchestrator)
@@ -25,7 +25,7 @@ use Kraite\Core\Support\Proxies\JobProxy;
  *
  * This is a lightweight alternative to ReplacePositionOrdersJob which does full replacement.
  */
-class SmartReplaceOrdersJob extends BaseQueueableJob
+final class SmartReplaceOrdersJob extends BaseQueueableJob
 {
     public Position $position;
 
@@ -74,6 +74,7 @@ class SmartReplaceOrdersJob extends BaseQueueableJob
         foreach ($this->ordersToRecreate as $order) {
             Step::create([
                 'class' => $resolver->resolve(RecreateCancelledOrderJob::class),
+                'queue' => 'positions',
                 'arguments' => [
                     'positionId' => $this->position->id,
                     'orderId' => $order->id,
@@ -86,6 +87,7 @@ class SmartReplaceOrdersJob extends BaseQueueableJob
         // Final step: Sync position orders to update status
         Step::create([
             'class' => $resolver->resolve(SyncPositionOrdersJob::class),
+            'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
             ],

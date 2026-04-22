@@ -16,7 +16,7 @@ use StepDispatcher\Models\Step;
  * Creates a single child step to place a limit order on the exchange.
  * Used for stress-testing the step dispatcher workflow with real API calls.
  */
-class DispatchPlaceLimitOrderJob extends BaseQueueableJob
+final class DispatchPlaceLimitOrderJob extends BaseQueueableJob
 {
     public Order $order;
 
@@ -37,6 +37,7 @@ class DispatchPlaceLimitOrderJob extends BaseQueueableJob
         // Single child step: place the limit order on the exchange
         Step::create([
             'class' => $resolver->resolve(PlaceLimitOrderJob::class),
+            'queue' => 'orders',
             'arguments' => [
                 'orderId' => $this->order->id,
                 'rungIndex' => 1,

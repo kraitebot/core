@@ -65,6 +65,7 @@ final class TouchTaapiDataForExchangeSymbolsJob extends BaseQueueableJob
         foreach ($symbolsToVerify as $exchangeSymbol) {
             Step::create([
                 'class' => TouchTaapiDataForExchangeSymbolJob::class,
+                'queue' => 'indicators',
                 'arguments' => [
                     'exchangeSymbolId' => $exchangeSymbol->id,
                 ],

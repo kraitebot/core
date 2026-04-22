@@ -389,6 +389,7 @@ final class FetchKlinesCommand extends BaseCommand
                 'block_uuid' => $blockUuid,
                 'index' => $index,
                 'class' => FetchKlinesJob::class,
+                'queue' => 'indicators',
                 'arguments' => ['exchangeSymbolId' => $exchangeSymbolId, 'timeframe' => $timeframe, 'limit' => $limit],
             ]);
         }
@@ -400,12 +401,14 @@ final class FetchKlinesCommand extends BaseCommand
             'block_uuid' => $blockUuid,
             'index' => 3,
             'class' => CalculateBtcCorrelationJob::class,
+            'queue' => 'indicators',
             'arguments' => ['exchangeSymbolId' => $exchangeSymbolId],
         ]);
         Step::create([
             'block_uuid' => $blockUuid,
             'index' => 3,
             'class' => CalculateBtcElasticityJob::class,
+            'queue' => 'indicators',
             'arguments' => ['exchangeSymbolId' => $exchangeSymbolId],
         ]);
     }

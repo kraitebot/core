@@ -12,8 +12,8 @@ use Kraite\Core\Jobs\Lifecycles\Position\CancelPositionJob;
 use Kraite\Core\Jobs\Lifecycles\Position\CancelPositionOpenOrdersJob;
 use Kraite\Core\Jobs\Lifecycles\Position\ReplacePositionOrdersJob as BaseReplacePositionOrdersJob;
 use Kraite\Core\Jobs\Lifecycles\Position\UpdatePositionStatusJob;
-use StepDispatcher\Models\Step;
 use Kraite\Core\Support\Proxies\JobProxy;
+use StepDispatcher\Models\Step;
 
 /**
  * ReplacePositionOrdersJob (Orchestrator) - Bitget
@@ -107,7 +107,7 @@ final class ReplacePositionOrdersJob extends BaseReplacePositionOrdersJob
             'type' => 'resolve-exception',
             'arguments' => [
                 'positionId' => $this->position->id,
-                'message' => 'Position replacement failed: ' . ($this->message ?? 'Unknown error'),
+                'message' => 'Position replacement failed: '.($this->message ?? 'Unknown error'),
             ],
         ]);
 

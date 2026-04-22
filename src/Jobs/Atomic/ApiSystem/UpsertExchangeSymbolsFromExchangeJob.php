@@ -67,6 +67,7 @@ final class UpsertExchangeSymbolsFromExchangeJob extends BaseApiableJob
         $upsertedCount = 0;
         $linkedCount = 0;
         $skippedCount = 0;
+        $markedForDelistingCount = 0;
 
         // Wrap entire upsert loop in a single transaction to:
         // 1. Reduce observer overhead (fires once at commit instead of 601 times)
@@ -149,12 +150,75 @@ final class UpsertExchangeSymbolsFromExchangeJob extends BaseApiableJob
             }
         });
 
+        // Any symbol that previously lived under this api_system but is no
+        // longer returned by the exchange is flagged for delisting. This
+        // catches the case where a contract is simply removed from the
+        // exchange listing without any advance-notice delivery date (the
+        // announced case is handled by ExchangeSymbolObserver + each
+        // TradingMapper::isNowDelisted()).
+        $markedForDelistingCount = $this->flagMissingSymbolsForDelisting($apiResponse->result);
+
         return [
             'exchange' => $this->apiSystem->canonical,
             'upserted' => $upsertedCount,
             'linked_to_symbols' => $linkedCount,
             'skipped' => $skippedCount,
+            'marked_for_delisting' => $markedForDelistingCount,
             'total_from_api' => $totalFromApi,
         ];
+    }
+
+    /**
+     * Flag every ExchangeSymbol belonging to this api_system that is absent
+     * from the latest exchange response so it stops being scheduled for
+     * klines, indicators, and position management.
+     *
+     * An empty response is treated as an API anomaly (partial outage, etc.)
+     * rather than a mass delisting event: we do not flag anything in that
+     * case — a later run with real data will do the right thing.
+     *
+     * Rows that were already flagged are left untouched so observers do
+     * not fire repeatedly for the same delisting.
+     *
+     * @param  array<int, array<string, mixed>>  $apiResult
+     *   The mapped market-data rows coming out of
+     *   `ApiDataMapperProxy::resolveQueryMarketDataResponse()`. Each row
+     *   carries at minimum `baseAsset` and `quoteAsset`.
+     * @return int Number of rows newly flagged as delisted.
+     */
+    public function flagMissingSymbolsForDelisting(array $apiResult): int
+    {
+        if ($apiResult === []) {
+            return 0;
+        }
+
+        // "token|quote" composite keys of everything the exchange still lists.
+        $liveKeys = collect($apiResult)
+            ->map(static function (array $row): string {
+                return ($row['baseAsset'] ?? '').'|'.($row['quoteAsset'] ?? '');
+            })
+            ->unique()
+            ->all();
+
+        return DB::transaction(function () use ($liveKeys): int {
+            $orphans = ExchangeSymbol::query()
+                ->where('api_system_id', $this->apiSystem->id)
+                ->where('is_marked_for_delisting', false)
+                ->lockForUpdate()
+                ->get()
+                ->filter(static function (ExchangeSymbol $symbol) use ($liveKeys): bool {
+                    return ! in_array(
+                        needle: $symbol->token.'|'.$symbol->quote,
+                        haystack: $liveKeys,
+                        strict: true
+                    );
+                });
+
+            foreach ($orphans as $orphan) {
+                $orphan->update(['is_marked_for_delisting' => true]);
+            }
+
+            return $orphans->count();
+        });
     }
 }

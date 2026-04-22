@@ -14,7 +14,7 @@ use StepDispatcher\Models\Step;
  * Orchestrator that creates step for closing a position on the exchange.
  * Includes pump cooldown logic when price spikes above threshold.
  */
-class ClosePositionAtomicallyJob extends BasePositionLifecycle
+final class ClosePositionAtomicallyJob extends BasePositionLifecycle
 {
     protected bool $verifyPrice = false;
 
@@ -32,6 +32,7 @@ class ClosePositionAtomicallyJob extends BasePositionLifecycle
     {
         Step::create([
             'class' => $this->resolver->resolve(AtomicClosePositionAtomicallyJob::class),
+            'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
                 'verifyPrice' => $this->verifyPrice,

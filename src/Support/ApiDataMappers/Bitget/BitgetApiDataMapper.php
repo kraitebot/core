@@ -26,8 +26,10 @@ use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsPlaceTpslOrder;
 use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsPlanOrdersQuery;
 use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsPositionsQuery;
 use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsServerTimeQuery;
+use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsSymbolConfigQuery;
 use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsSymbolMarginType;
 use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsTokenLeverageRatios;
+use SensitiveParameter;
 
 final class BitgetApiDataMapper extends BaseDataMapper
 {
@@ -51,6 +53,7 @@ final class BitgetApiDataMapper extends BaseDataMapper
     use MapsPlanOrdersQuery;
     use MapsPositionsQuery;
     use MapsServerTimeQuery;
+    use MapsSymbolConfigQuery;
     use MapsSymbolMarginType;
     use MapsTokenLeverageRatios;
 
@@ -98,10 +101,10 @@ final class BitgetApiDataMapper extends BaseDataMapper
      *
      * Token and quote are stored directly on exchange_symbols.
      */
-    public function baseWithQuote(#[\SensitiveParameter] string $token, string $quote): string
+    public function baseWithQuote(#[SensitiveParameter] string $token, string $quote): string
     {
         // BitGet uses simple format: BTCUSDT, ETHUSDT (similar to Binance)
-        return $token . $quote;
+        return $token.$quote;
     }
 
     /**
@@ -122,14 +125,16 @@ final class BitgetApiDataMapper extends BaseDataMapper
         ];
 
         foreach ($availableQuoteCurrencies as $quoteCurrency) {
-            if (!(str_ends_with(haystack: $symbol, needle: $quoteCurrency))) { continue; }
+            if (! (str_ends_with(haystack: $symbol, needle: $quoteCurrency))) {
+                continue;
+            }
 
-$base = str_replace(search: $quoteCurrency, replace: '', subject: $symbol);
+            $base = str_replace(search: $quoteCurrency, replace: '', subject: $symbol);
 
-                return [
-                    'base' => $base,
-                    'quote' => $quoteCurrency,
-                ];
+            return [
+                'base' => $base,
+                'quote' => $quoteCurrency,
+            ];
         }
 
         throw new InvalidArgumentException("Invalid BitGet symbol format: {$symbol}");
@@ -156,7 +161,7 @@ $base = str_replace(search: $quoteCurrency, replace: '', subject: $symbol);
         }
 
         // Regular orders
-        $orderType = strtolower($order['orderType'] ?? '');
+        $orderType = mb_strtolower($order['orderType'] ?? '');
         $triggerPrice = (float) ($order['triggerPrice'] ?? 0);
 
         if ($triggerPrice > 0) {

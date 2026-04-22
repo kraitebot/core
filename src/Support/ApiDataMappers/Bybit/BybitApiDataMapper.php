@@ -22,8 +22,10 @@ use Kraite\Core\Support\ApiDataMappers\Bybit\ApiRequests\MapsPlaceOrder;
 use Kraite\Core\Support\ApiDataMappers\Bybit\ApiRequests\MapsPositionsQuery;
 use Kraite\Core\Support\ApiDataMappers\Bybit\ApiRequests\MapsServerTimeQuery;
 use Kraite\Core\Support\ApiDataMappers\Bybit\ApiRequests\MapsStopOrdersQuery;
+use Kraite\Core\Support\ApiDataMappers\Bybit\ApiRequests\MapsSymbolConfigQuery;
 use Kraite\Core\Support\ApiDataMappers\Bybit\ApiRequests\MapsSymbolMarginType;
 use Kraite\Core\Support\ApiDataMappers\Bybit\ApiRequests\MapsTokenLeverageRatios;
+use SensitiveParameter;
 
 final class BybitApiDataMapper extends BaseDataMapper
 {
@@ -43,6 +45,7 @@ final class BybitApiDataMapper extends BaseDataMapper
     use MapsPositionsQuery;
     use MapsServerTimeQuery;
     use MapsStopOrdersQuery;
+    use MapsSymbolConfigQuery;
     use MapsSymbolMarginType;
     use MapsTokenLeverageRatios;
 
@@ -88,7 +91,7 @@ final class BybitApiDataMapper extends BaseDataMapper
      * E.g.: BNBPERP for USDC-settled contracts
      * Token and quote are stored directly on exchange_symbols.
      */
-    public function baseWithQuote(#[\SensitiveParameter] string $token, string $quote): string
+    public function baseWithQuote(#[SensitiveParameter] string $token, string $quote): string
     {
         // Bybit uses PERP suffix for USDC-settled perpetual contracts
         if ($quote === 'USDC') {
@@ -106,7 +109,7 @@ final class BybitApiDataMapper extends BaseDataMapper
      * input: BNBPERP
      * returns: ['base' => 'BNB', 'quote' => 'USDC']
      */
-    public function identifyBaseAndQuote(#[\SensitiveParameter] string $token): array
+    public function identifyBaseAndQuote(#[SensitiveParameter] string $token): array
     {
         // Handle PERP suffix (Bybit uses PERP for USDC-settled perpetual contracts)
         if (str_ends_with(haystack: $token, needle: 'PERP')) {
@@ -122,12 +125,14 @@ final class BybitApiDataMapper extends BaseDataMapper
         ];
 
         foreach ($availableQuoteCurrencies as $quoteCurrency) {
-            if (!(str_ends_with(haystack: $token, needle: $quoteCurrency))) { continue; }
+            if (! (str_ends_with(haystack: $token, needle: $quoteCurrency))) {
+                continue;
+            }
 
-return [
-                    'base' => str_replace(search: $quoteCurrency, replace: '', subject: $token),
-                    'quote' => $quoteCurrency,
-                ];
+            return [
+                'base' => str_replace(search: $quoteCurrency, replace: '', subject: $token),
+                'quote' => $quoteCurrency,
+            ];
         }
 
         throw new InvalidArgumentException("Invalid token format: {$token}");

@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace Kraite\Core\Jobs\Atomic\Order;
 
 use Kraite\Core\Abstracts\BaseQueueableJob;
-use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
-use StepDispatcher\Models\Step;
 use Kraite\Core\Support\Proxies\JobProxy;
+use Kraite\Core\Trading\Kraite;
+use StepDispatcher\Models\Step;
 
 /**
  * DispatchLimitOrdersJob (Orchestrator)
@@ -23,7 +23,7 @@ use Kraite\Core\Support\Proxies\JobProxy;
  * - position.status = 'opening'
  * - Market order already filled (position has quantity and opening_price)
  */
-class DispatchLimitOrdersJob extends BaseQueueableJob
+final class DispatchLimitOrdersJob extends BaseQueueableJob
 {
     public Position $position;
 
@@ -107,6 +107,7 @@ class DispatchLimitOrdersJob extends BaseQueueableJob
             ->each(function (Order $order, int $rungIndex) use ($resolver, $blockUuid): void {
                 Step::create([
                     'class' => $resolver->resolve(PlaceLimitOrderJob::class),
+                    'queue' => 'orders',
                     'arguments' => [
                         'orderId' => $order->id,
                         'rungIndex' => $rungIndex + 1,

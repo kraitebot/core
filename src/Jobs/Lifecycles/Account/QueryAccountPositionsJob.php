@@ -16,12 +16,13 @@ use StepDispatcher\Models\Step;
  * Exchange-specific overrides can add additional steps if needed
  * (e.g., querying margin info, leverage settings, etc.).
  */
-class QueryAccountPositionsJob extends BaseAccountLifecycle
+final class QueryAccountPositionsJob extends BaseAccountLifecycle
 {
     public function dispatch(string $blockUuid, int $startIndex, ?string $workflowId = null): int
     {
         Step::create([
             'class' => $this->resolver->resolve(AtomicQueryAccountPositionsJob::class),
+            'queue' => 'cronjobs',
             'arguments' => ['accountId' => $this->account->id],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

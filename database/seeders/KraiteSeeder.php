@@ -381,7 +381,7 @@ final class KraiteSeeder extends Seeder
      */
     public function seedAdminUser(): User
     {
-        return User::updateOrCreate(
+        $admin = User::updateOrCreate(
             ['email' => config('kraite.admin_user_email')],
             [
                 'name' => config('kraite.admin_user_name'),
@@ -390,6 +390,8 @@ final class KraiteSeeder extends Seeder
                 'is_admin' => true,
             ]
         );
+
+        return $admin;
     }
 
     /**
@@ -483,6 +485,7 @@ final class KraiteSeeder extends Seeder
             ['id' => 1],
             [
                 'allow_opening_positions' => true,
+                'is_cooling_down' => false,
                 'admin_pushover_application_key' => config('kraite.admin_user_pushover_application_key'),
                 'admin_pushover_user_key' => config('kraite.admin_user_pushover_user_key'),
                 'email' => config('kraite.admin_user_email'),
@@ -565,14 +568,19 @@ final class KraiteSeeder extends Seeder
 
     /**
      * Seed the servers table with the current server.
-     * Secrets are read from configuration for health check authentication.
+     *
+     * The hostname is taken from the OS so subsequent `Kraite::ip()` calls
+     * resolve straight out of the DB. The IP is read from `Kraite::ip()`
+     * itself — at seed time the table is still empty, so it falls through
+     * to the cached ipify lookup and persists *this* box's real public IP
+     * without any hardcoding.
      */
     public function seedServers(): void
     {
         $servers = [
             [
-                'hostname' => 'full-stack',
-                'ip_address' => '91.107.213.11',
+                'hostname' => gethostname() ?: 'full-stack',
+                'ip_address' => Kraite::ip(),
                 'is_apiable' => true,
                 'needs_whitelisting' => true,
                 'own_queue_name' => 'default',

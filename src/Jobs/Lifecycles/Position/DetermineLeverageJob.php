@@ -20,12 +20,13 @@ use StepDispatcher\Models\Step;
  * Must run AFTER PreparePositionDataJob (margin must be set).
  * Must run BEFORE SetLeverageJob.
  */
-class DetermineLeverageJob extends BasePositionLifecycle
+final class DetermineLeverageJob extends BasePositionLifecycle
 {
     public function dispatch(string $blockUuid, int $startIndex, ?string $workflowId = null): int
     {
         Step::create([
             'class' => $this->resolver->resolve(AtomicDetermineLeverageJob::class),
+            'queue' => 'positions',
             'arguments' => ['positionId' => $this->position->id],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

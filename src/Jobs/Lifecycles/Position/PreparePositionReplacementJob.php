@@ -9,8 +9,8 @@ use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Jobs\Atomic\Position\VerifyPositionExistsOnExchangeJob;
 use Kraite\Core\Jobs\Lifecycles\Account\QueryAccountPositionsJob as QueryAccountPositionsLifecycle;
 use Kraite\Core\Models\Position;
-use StepDispatcher\Models\Step;
 use Kraite\Core\Support\Proxies\JobProxy;
+use StepDispatcher\Models\Step;
 
 /**
  * PreparePositionReplacementJob (Orchestrator)
@@ -25,7 +25,7 @@ use Kraite\Core\Support\Proxies\JobProxy;
  *    - Position GONE → dispatches CancelPositionJob
  *    - Position EXISTS → dispatches ReplacePositionOrdersJob
  */
-class PreparePositionReplacementJob extends BaseApiableJob
+final class PreparePositionReplacementJob extends BaseApiableJob
 {
     public Position $position;
 
@@ -79,6 +79,7 @@ class PreparePositionReplacementJob extends BaseApiableJob
         $verifyExistsClass = $resolver->resolve(VerifyPositionExistsOnExchangeJob::class);
         Step::create([
             'class' => $verifyExistsClass,
+            'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
                 'triggerStatus' => $this->triggerStatus,

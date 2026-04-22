@@ -120,6 +120,15 @@ final class BitgetApi
     }
 
     /**
+     * BitGet returns per-symbol leverage and marginMode inline on the positions
+     * payload, so we reuse the same endpoint and normalize downstream.
+     */
+    public function getSymbolConfig(?ApiProperties $properties = null)
+    {
+        return $this->getPositions($properties);
+    }
+
+    /**
      * Get account information (balance).
      *
      * @see https://www.bitget.com/api-doc/contract/account/Get-Account-List

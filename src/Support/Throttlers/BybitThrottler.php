@@ -47,78 +47,65 @@ final class BybitThrottler extends BaseApiThrottler
      * @param  int|string|null  $stepId  Optional step ID for throttle logging
      * @return int Seconds to wait, or 0 if safe to proceed
      */
+    /**
+     * Pre-flight safety check — returns milliseconds to wait, or 0 if OK.
+     * See BinanceThrottler for the ms-precision rationale.
+     */
     public static function isSafeToDispatch(?int $accountId = null, int|string|null $stepId = null): int
     {
         $prefix = self::getCacheKeyPrefix();
 
-        // 1. Check minimum delay between requests
+        // 1. Minimum delay — ms precision.
         $ip = self::getCurrentIp();
-        $minDelayMs = config('kraite.throttlers.bybit.min_delay_ms', 0);
+        $minDelayMs = (int) config('kraite.throttlers.bybit.min_delay_ms', 0);
 
         if ($minDelayMs > 0) {
-            // Check both IP-based timestamp (from recordResponseHeaders)
-            // and prefix-based Carbon (from recordDispatch)
-            $lastRequest = Cache::get("bybit:{$ip}:last_request");
+            $lastRequestTs = Cache::get("bybit:{$ip}:last_request");
             $lastDispatch = Cache::get($prefix.':last_dispatch');
 
-            $lastTimestamp = null;
-            if ($lastRequest) {
-                $lastTimestamp = $lastRequest;
-            } elseif ($lastDispatch && $lastDispatch instanceof \Illuminate\Support\Carbon) {
-                $lastTimestamp = $lastDispatch->timestamp;
+            $nowMs = (int) round(now()->getPreciseTimestamp(3));
+            $elapsedMs = PHP_INT_MAX;
+
+            if ($lastRequestTs) {
+                $elapsedMs = min($elapsedMs, ($nowMs / 1000 - (int) $lastRequestTs) * 1000);
             }
 
-            if ($lastTimestamp) {
-                $minDelaySeconds = $minDelayMs / 1000;
-                $elapsedSeconds = now()->timestamp - $lastTimestamp;
+            if ($lastDispatch instanceof \Illuminate\Support\Carbon) {
+                $elapsedMs = min(
+                    $elapsedMs,
+                    abs(now()->diffInMilliseconds($lastDispatch, false))
+                );
+            }
 
-                if ($elapsedSeconds < $minDelaySeconds) {
-                    $waitSeconds = (int) ceil($minDelaySeconds - $elapsedSeconds);
-
-                    return $waitSeconds;
-                }
+            if ($elapsedMs < $minDelayMs) {
+                return $minDelayMs - (int) $elapsedMs;
             }
         }
 
-        // 2. Check if IP is currently banned (403 response)
+        // 2. IP ban (403 response) — seconds promoted to ms.
         if (self::isCurrentlyBanned()) {
-            $secondsRemaining = self::getSecondsUntilBanLifts();
-
-            return $secondsRemaining;
+            return self::getSecondsUntilBanLifts() * 1000;
         }
 
         try {
-            $ip = self::getCurrentIp();
-
-            // 3. Check rate limit threshold
             $safetyThreshold = config('kraite.throttlers.bybit.safety_threshold', 0.1);
             $limitStatus = Cache::get("bybit:{$ip}:limit:status");
             $limitMax = Cache::get("bybit:{$ip}:limit:max");
 
-            // If no rate limit data exists, allow request (fail-safe)
-            if ($limitStatus === null || $limitMax === null) {
+            if ($limitStatus === null || $limitMax === null || $limitMax === 0) {
                 return 0;
             }
 
-            // If max is 0, allow request (avoid division by zero)
-            if ($limitMax === 0) {
-                return 0;
-            }
-
-            // If status is 0 or negative, we're at or over limit
             if ($limitStatus <= 0) {
-                return 1; // Wait at least 1 second
+                return 1000; // ~1 second in ms
             }
 
-            // Calculate remaining percentage
             $remainingPercentage = $limitStatus / $limitMax;
 
-            // If below safety threshold, wait
             if ($remainingPercentage < $safetyThreshold) {
-                return 1; // Wait at least 1 second
+                return 1000;
             }
         } catch (Throwable $e) {
-            // Fail-safe: allow request on error
             return 0;
         }
 

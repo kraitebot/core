@@ -10,9 +10,9 @@ use Kraite\Core\Jobs\Lifecycles\Position\ClosePositionJob;
 use Kraite\Core\Jobs\Lifecycles\Position\SmartReplaceOrdersJob;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\Position;
-use StepDispatcher\Models\Step;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\JobProxy;
+use StepDispatcher\Models\Step;
 
 /**
  * VerifyPositionExistsOnExchangeJob (Atomic)
@@ -90,6 +90,7 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
 
             Step::create([
                 'class' => $resolver->resolve(ClosePositionJob::class),
+                'queue' => 'positions',
                 'arguments' => [
                     'positionId' => $position->id,
                     'message' => $this->message ?? "Position closed externally ({$this->triggerStatus})",
@@ -100,6 +101,7 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
             // Position still exists — smart replace only missing orders
             Step::create([
                 'class' => $resolver->resolve(SmartReplaceOrdersJob::class),
+                'queue' => 'positions',
                 'arguments' => [
                     'positionId' => $position->id,
                 ],

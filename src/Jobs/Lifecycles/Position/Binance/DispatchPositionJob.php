@@ -17,8 +17,8 @@ use Kraite\Core\Jobs\Lifecycles\Position\SetLeverageJob as SetLeverageLifecycle;
 use Kraite\Core\Jobs\Lifecycles\Position\SetMarginModeJob as SetMarginModeLifecycle;
 use Kraite\Core\Jobs\Lifecycles\Position\VerifyOrderNotionalJob as VerifyOrderNotionalLifecycle;
 use Kraite\Core\Jobs\Lifecycles\Position\VerifyTradingPairNotOpenJob as VerifyTradingPairNotOpenLifecycle;
-use StepDispatcher\Models\Step;
 use Kraite\Core\Support\Proxies\JobProxy;
+use StepDispatcher\Models\Step;
 
 /**
  * DispatchPositionJob (Orchestrator) - Binance
@@ -38,7 +38,7 @@ use Kraite\Core\Support\Proxies\JobProxy;
  * • Step 10: PlaceStopLossOrderJob - Place stop-loss order
  * • Step 11: ActivatePositionJob - Validate orders, set status='active'
  */
-class DispatchPositionJob extends BaseDispatchPositionJob
+final class DispatchPositionJob extends BaseDispatchPositionJob
 {
     public function compute()
     {

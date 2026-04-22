@@ -105,6 +105,15 @@ final class KucoinApi
     }
 
     /**
+     * KuCoin exposes per-symbol realLeverage and crossMode inline on the
+     * positions payload, so we reuse the same endpoint and normalize downstream.
+     */
+    public function getSymbolConfig(?ApiProperties $properties = null)
+    {
+        return $this->getPositions($properties);
+    }
+
+    /**
      * Get account overview (balance information).
      *
      * @see https://www.kucoin.com/docs/rest/futures-trading/account/get-account-overview

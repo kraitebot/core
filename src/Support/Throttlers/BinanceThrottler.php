@@ -48,50 +48,61 @@ final class BinanceThrottler extends BaseApiThrottler
      * @param  int|string|null  $stepId  Optional step ID for throttle logging
      * @return int Seconds to wait, or 0 if safe to proceed
      */
+    /**
+     * Pre-flight safety check — returns milliseconds to wait, or 0 if OK.
+     *
+     * Minimum-delay calculations preserve millisecond precision so the
+     * step-dispatcher's retry scheduling (against the TIMESTAMP(3)
+     * `dispatch_after` column) can honour sub-second deficits. IP-ban
+     * and rate-limit-proximity paths promote their second-precision
+     * values to milliseconds for a uniform contract.
+     */
     public static function isSafeToDispatch(?int $accountId = null, int|string|null $stepId = null): int
     {
         $prefix = self::getCacheKeyPrefix();
 
-        // 1. Check minimum delay between requests
+        // 1. Minimum delay between requests — ms precision.
         $ip = self::getCurrentIp();
-        $minDelayMs = config('kraite.throttlers.binance.min_delay_ms', 0);
+        $minDelayMs = (int) config('kraite.throttlers.binance.min_delay_ms', 0);
 
         if ($minDelayMs > 0) {
-            // Check both IP-based timestamp (from recordResponseHeaders)
-            // and prefix-based Carbon (from recordDispatch)
-            $lastRequest = Cache::get("binance:{$ip}:last_request");
+            // Two possible sources for the "last request happened" stamp:
+            // `last_request` is a unix-seconds integer written by
+            // recordResponseHeaders (second-precision only), while
+            // `:last_dispatch` is a Carbon with millisecond precision
+            // written by the base-class canDispatch when it reserves a slot.
+            // Prefer whichever is most recent.
+            $lastRequestTs = Cache::get("binance:{$ip}:last_request");
             $lastDispatch = Cache::get($prefix.':last_dispatch');
 
-            $lastTimestamp = null;
-            if ($lastRequest) {
-                $lastTimestamp = $lastRequest;
-            } elseif ($lastDispatch && $lastDispatch instanceof \Illuminate\Support\Carbon) {
-                $lastTimestamp = $lastDispatch->timestamp;
+            $nowMs = (int) round(now()->getPreciseTimestamp(3));
+            $elapsedMs = PHP_INT_MAX;
+
+            if ($lastRequestTs) {
+                $elapsedMs = min($elapsedMs, ($nowMs / 1000 - (int) $lastRequestTs) * 1000);
             }
 
-            if ($lastTimestamp) {
-                $minDelaySeconds = $minDelayMs / 1000;
-                $elapsedSeconds = now()->timestamp - $lastTimestamp;
+            if ($lastDispatch instanceof \Illuminate\Support\Carbon) {
+                $elapsedMs = min(
+                    $elapsedMs,
+                    abs(now()->diffInMilliseconds($lastDispatch, false))
+                );
+            }
 
-                if ($elapsedSeconds < $minDelaySeconds) {
-                    $waitSeconds = (int) ceil($minDelaySeconds - $elapsedSeconds);
-
-                    return $waitSeconds;
-                }
+            if ($elapsedMs < $minDelayMs) {
+                return $minDelayMs - (int) $elapsedMs;
             }
         }
 
-        // 2. Check if IP is currently banned (418 response)
+        // 2. IP ban (418 response) — seconds remaining, promoted to ms.
         if (self::isCurrentlyBanned()) {
-            $secondsRemaining = self::getSecondsUntilBanLifts();
-
-            return $secondsRemaining;
+            return self::getSecondsUntilBanLifts() * 1000;
         }
 
-        // 3. Check if approaching any rate limit (>80% threshold)
-        $secondsToWait = self::checkRateLimitProximity($accountId, $stepId);
-        if ($secondsToWait > 0) {
-            return $secondsToWait;
+        // 3. Rate-limit proximity (weight budget, ORDER budget) — ms.
+        $msToWait = self::checkRateLimitProximity($accountId, $stepId);
+        if ($msToWait > 0) {
+            return $msToWait;
         }
 
         return 0;
@@ -260,10 +271,7 @@ final class BinanceThrottler extends BaseApiThrottler
                 $percentage = $limit > 0 ? ($current / $limit) : 0;
 
                 if ($percentage > $safetyThreshold) {
-                    // Calculate time until this window resets
-                    $waitTime = self::calculateWindowResetTime($interval);
-
-                    return $waitTime;
+                    return self::calculateWindowResetTime($interval) * 1000;
                 }
             }
 

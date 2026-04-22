@@ -8,8 +8,8 @@ use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Jobs\Lifecycles\Position\DispatchPositionJob;
 use Kraite\Core\Models\Account;
-use StepDispatcher\Models\Step;
 use Kraite\Core\Support\Proxies\JobProxy;
+use StepDispatcher\Models\Step;
 
 /**
  * DispatchPositionSlotsJob
@@ -61,6 +61,7 @@ final class DispatchPositionSlotsJob extends BaseQueueableJob
         foreach ($positions as $position) {
             Step::create([
                 'class' => $dispatchJobClass,
+                'queue' => 'positions',
                 'arguments' => ['positionId' => $position->id],
                 'block_uuid' => (string) Str::uuid(),
                 'child_block_uuid' => (string) Str::uuid(),

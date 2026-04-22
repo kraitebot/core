@@ -6,14 +6,14 @@ namespace Kraite\Core\Jobs\Models\ExchangeSymbol;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
+use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Jobs\Atomic\ExchangeSymbol\ConfirmPriceAlignmentWithDirectionJob;
 use Kraite\Core\Jobs\Atomic\ExchangeSymbol\CopyDirectionToOtherExchangesJob;
-use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Jobs\Models\Indicator\QuerySymbolIndicatorsJob;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\IndicatorHistory;
-use StepDispatcher\Models\Step;
 use Kraite\Core\Models\TradeConfiguration;
+use StepDispatcher\Models\Step;
 
 /**
  * ConcludeSymbolDirectionAtTimeframeJob
@@ -422,7 +422,7 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
         // INDEX 1: Query indicator data
         Step::create([
             'class' => QuerySymbolIndicatorsJob::class,
-            'queue' => 'default',
+            'queue' => 'indicators',
             'block_uuid' => $childBlockUuid,
             'group' => $group,
             'index' => 1,
@@ -436,7 +436,7 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
         // INDEX 2: Conclude direction
         Step::create([
             'class' => self::class,
-            'queue' => 'default',
+            'queue' => 'indicators',
             'block_uuid' => $childBlockUuid,
             'group' => $group,
             'index' => 2,
@@ -465,7 +465,7 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
         // INDEX 3: Confirm price alignment
         Step::create([
             'class' => ConfirmPriceAlignmentWithDirectionJob::class,
-            'queue' => 'default',
+            'queue' => 'indicators',
             'block_uuid' => $blockUuid,
             'group' => $group,
             'index' => 3,
@@ -477,7 +477,7 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
         // INDEX 4: Copy direction to other exchanges
         Step::create([
             'class' => CopyDirectionToOtherExchangesJob::class,
-            'queue' => 'default',
+            'queue' => 'indicators',
             'block_uuid' => $blockUuid,
             'group' => $group,
             'index' => 4,
@@ -492,7 +492,7 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
             // INDEX 5: Check klines, spawn child block to fetch if missing
             Step::create([
                 'class' => CheckKLinesForCorrelationJob::class,
-                'queue' => 'default',
+                'queue' => 'indicators',
                 'block_uuid' => $blockUuid,
                 'group' => $group,
                 'index' => 5,
@@ -504,7 +504,7 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
             // INDEX 6: Calculate correlation + elasticity (runs after klines are fetched)
             Step::create([
                 'class' => CalculateBtcCorrelationJob::class,
-                'queue' => 'default',
+                'queue' => 'indicators',
                 'block_uuid' => $blockUuid,
                 'group' => $group,
                 'index' => 6,
@@ -515,7 +515,7 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
 
             Step::create([
                 'class' => CalculateBtcElasticityJob::class,
-                'queue' => 'default',
+                'queue' => 'indicators',
                 'block_uuid' => $blockUuid,
                 'group' => $group,
                 'index' => 6,

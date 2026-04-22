@@ -19,12 +19,13 @@ use StepDispatcher\Models\Step;
  *
  * Must run AFTER all orders are placed (market, limit, TP, SL).
  */
-class ActivatePositionJob extends BasePositionLifecycle
+final class ActivatePositionJob extends BasePositionLifecycle
 {
     public function dispatch(string $blockUuid, int $startIndex, ?string $workflowId = null): int
     {
         Step::create([
             'class' => $this->resolver->resolve(AtomicActivatePositionJob::class),
+            'queue' => 'positions',
             'arguments' => ['positionId' => $this->position->id],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

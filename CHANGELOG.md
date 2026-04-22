@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.4.4 - 2026-04-22
+
+### Improvements
+
+- [IMPROVED] Dispatcher-health monitoring moved out of Kraite and into `brunocfalcao/step-dispatcher` (v1.11+). The old `kraite:cron-check-stale-data` command is removed; stall detection (Running zombies, stuck Dispatched steps, wedged dispatcher locks) now lives in the package as `steps:recover-stale --recover-dispatched --release-locks`. Kraite only owns the notification translation now — `SendStaleStepsNotification` listens for `StepDispatcher\Events\StaleStepsDetected` and maps it to the existing `stale_dispatched_steps_detected` / `stale_priority_steps_detected` canonicals, so operators see the same pushover/email output they did before.
+
+### Breaking
+
+- [IMPROVED] Removed command `kraite:cron-check-stale-data` and class `Kraite\Core\Commands\Cronjobs\CheckStaleDataCommand`. Host apps that had it scheduled must swap to `steps:recover-stale --recover-dispatched --release-locks` on the same cadence. Notification canonicals and templates are unchanged.
+
+## 1.4.3 - 2026-04-22
+
+### Features
+
+- [NEW FEATURE] `Account::apiQuerySymbolConfig()` — cross-exchange method returning per-symbol `leverage + marginType` keyed by symbol. Binance hits the dedicated `/fapi/v1/symbolConfig` endpoint (v3 positionRisk stopped returning those fields). Bitget/Bybit/Kucoin reuse their positions payload and normalize to the same shape. Backed by new `MapsSymbolConfigQuery` traits + `BinanceApi::getSymbolConfig()` (REST method per exchange).
+
+### Improvements
+
+- [IMPROVED] Multi-queue routing — every `Step::create([...])` call site across the package now sets an explicit `'queue' => '<domain>'` based on the target job's constructor primary parameter: `positions` (positionId), `orders` (orderId), `indicators` (exchangeSymbolId / apiSystemId-indicator work), `cronjobs` (accountId / no-entity cron orchestrators). Removes the old global-default fallback so any unmapped step surfaces in the audit instead of silently routing to `default`.
+- [IMPROVED] `CalculateBtcCorrelationJob` — replaced the O(n²) `Collection::firstWhere` pairing loop with an O(1) array lookup keyed by timestamp. BTC candles are now cached per `(exchange_symbol, timeframe, window)` for 30 s so one query serves the whole correlation batch instead of ~3,500 duplicate reads per tick.
+- [IMPROVED] `PrepareSyncOrdersJob::compute()` — temporary instrumentation logging per-block timings (`refresh_ms`, `update_to_syncing_ms`, `resolve_lifecycle_ms`, `dispatch_child_ms`, `total_ms`) to `Log::channel('jobs')`. Confirmed compute body runs in ~20 ms; the residual 1-5 s wall-clock lives in the step-dispatcher state transition machinery around the job, not inside it.
+
 ## 1.4.2 - 2026-04-21
 
 ### Fixes

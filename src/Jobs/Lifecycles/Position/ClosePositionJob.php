@@ -10,8 +10,8 @@ use Kraite\Core\Jobs\Atomic\Position\UpdatePositionStatusJob as AtomicUpdatePosi
 use Kraite\Core\Jobs\Lifecycles\Account\QueryAccountPositionsJob as QueryAccountPositionsLifecycle;
 use Kraite\Core\Jobs\Lifecycles\Order\SyncPositionOrdersJob as SyncPositionOrdersLifecycle;
 use Kraite\Core\Models\Position;
-use StepDispatcher\Models\Step;
 use Kraite\Core\Support\Proxies\JobProxy;
+use StepDispatcher\Models\Step;
 
 /**
  * ClosePositionJob (Orchestrator)
@@ -35,7 +35,7 @@ use Kraite\Core\Support\Proxies\JobProxy;
  * - Close cancels orders FIRST then closes (orderly exit)
  * - Cancel closes THEN cancels orders (exit at any price)
  */
-class ClosePositionJob extends BaseApiableJob
+final class ClosePositionJob extends BaseApiableJob
 {
     public Position $position;
 
@@ -148,10 +148,11 @@ class ClosePositionJob extends BaseApiableJob
         // Note: index=1 allows immediate dispatch when promoted to Pending
         Step::create([
             'class' => $resolver->resolve(AtomicUpdatePositionStatusJob::class),
+            'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
                 'status' => 'failed',
-                'message' => 'Close workflow failed: ' . ($this->message ?? 'Unknown error'),
+                'message' => 'Close workflow failed: '.($this->message ?? 'Unknown error'),
             ],
             'block_uuid' => $blockUuid,
             'index' => 1,

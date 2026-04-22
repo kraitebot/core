@@ -152,6 +152,7 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
         // INDEX 1: QuerySymbolIndicatorsJob
         Step::create([
             'class' => QuerySymbolIndicatorsJob::class,
+            'queue' => 'indicators',
             'block_uuid' => $blockUuid,
             'group' => $group,
             'index' => 1,
@@ -165,6 +166,7 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
         // INDEX 2: ConcludeSymbolDirectionAtTimeframeJob
         Step::create([
             'class' => ConcludeSymbolDirectionAtTimeframeJob::class,
+            'queue' => 'indicators',
             'block_uuid' => $blockUuid,
             'group' => $group,
             'index' => 2,

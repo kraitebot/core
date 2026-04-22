@@ -12,7 +12,6 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
-use Kraite\Core\Commands\Cronjobs\CheckStaleDataCommand;
 use Kraite\Core\Commands\Cronjobs\ConcludeSymbolsDirectionCommand;
 use Kraite\Core\Commands\Cronjobs\CreatePositionsCommand;
 use Kraite\Core\Commands\Cronjobs\FetchKlinesCommand;
@@ -23,8 +22,10 @@ use Kraite\Core\Commands\Cronjobs\SyncOrdersCommand;
 use Kraite\Core\Commands\Ingestion\IsEligibleCommand;
 use Kraite\Core\Commands\SafeToRestartCommand;
 use Kraite\Core\Commands\Tests\TestNotificationCommand;
+use Kraite\Core\Commands\Tests\ThrottlerStressTestCommand;
 use Kraite\Core\Commands\UpdateRecvwindowSafetyDurationCommand;
 use Kraite\Core\Listeners\NotificationLogListener;
+use Kraite\Core\Listeners\SendStaleStepsNotification;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\AccountBalanceHistory;
 use Kraite\Core\Models\ApiRequestLog;
@@ -54,6 +55,7 @@ use Kraite\Core\Observers\PositionObserver;
 use Kraite\Core\Observers\SymbolObserver;
 use Kraite\Core\Observers\UserObserver;
 use Kraite\Core\Support\NotificationService;
+use StepDispatcher\Events\StaleStepsDetected;
 
 final class CoreServiceProvider extends ServiceProvider
 {
@@ -62,7 +64,6 @@ final class CoreServiceProvider extends ServiceProvider
         $this->commands([
             SafeToRestartCommand::class,
             UpdateRecvwindowSafetyDurationCommand::class,
-            CheckStaleDataCommand::class,
             ConcludeSymbolsDirectionCommand::class,
             CreatePositionsCommand::class,
             FetchKlinesCommand::class,
@@ -72,6 +73,7 @@ final class CoreServiceProvider extends ServiceProvider
             SyncOrdersCommand::class,
             IsEligibleCommand::class,
             TestNotificationCommand::class,
+            ThrottlerStressTestCommand::class,
         ]);
 
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
@@ -94,6 +96,9 @@ final class CoreServiceProvider extends ServiceProvider
 
         // Register NotificationLogListener as event subscriber
         Event::subscribe(NotificationLogListener::class);
+
+        // Bridge step-dispatcher stall detection into Kraite's notification stack.
+        Event::listen(StaleStepsDetected::class, [SendStaleStepsNotification::class, 'handle']);
 
         AccountBalanceHistory::observe(AccountBalanceHistoryObserver::class);
         Account::observe(AccountObserver::class);

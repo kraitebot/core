@@ -26,6 +26,7 @@ final class DispatchAccountBalancesJob extends BaseQueueableJob
         foreach ($accounts as $account) {
             Step::create([
                 'class' => StoreAccountBalanceJob::class,
+                'queue' => 'cronjobs',
                 'arguments' => ['accountId' => $account->id],
                 'block_uuid' => $this->uuid(),
                 'workflow_id' => $workflowId,

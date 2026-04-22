@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Models\ExchangeSymbol;
 
+use Illuminate\Support\Facades\Cache;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\Candle;
 use Kraite\Core\Models\ExchangeSymbol;
@@ -134,51 +135,44 @@ final class CalculateBtcCorrelationJob extends BaseQueueableJob
         string $timeframe,
         array $config
     ): array {
-        // Fetch candles for this token
-        $tokenCandles = Candle::query()
-            ->where('exchange_symbol_id', $exchangeSymbol->id)
-            ->where('timeframe', $timeframe)
-            ->orderBy('timestamp', 'desc')
-            ->limit($config['window_size'])
-            ->get()
-            ->sortBy('timestamp')
-            ->values();
+        // Fetch candles for this token, keyed by timestamp for O(1) pairing below.
+        $tokenCloses = $this->fetchCandleCloses(
+            $exchangeSymbol->id,
+            $timeframe,
+            (int) $config['window_size']
+        );
 
-        // Fetch candles for BTC
-        $btcCandles = Candle::query()
-            ->where('exchange_symbol_id', $btcExchangeSymbol->id)
-            ->where('timeframe', $timeframe)
-            ->orderBy('timestamp', 'desc')
-            ->limit($config['window_size'])
-            ->get()
-            ->sortBy('timestamp')
-            ->values();
+        // BTC candles are identical across every correlation job running in the
+        // same tick (hundreds per minute hammering the same rows). Cache per
+        // (exchange_symbol, timeframe, window) for a short TTL so one query
+        // serves the whole batch.
+        $btcCloses = Cache::remember(
+            "btc_candle_closes:{$btcExchangeSymbol->id}:{$timeframe}:{$config['window_size']}",
+            30,
+            fn (): array => $this->fetchCandleCloses(
+                $btcExchangeSymbol->id,
+                $timeframe,
+                (int) $config['window_size']
+            )
+        );
 
-        // Align timestamps (only use overlapping candles)
-        $tokenTimestamps = $tokenCandles->pluck('timestamp', 'timestamp')->all();
-        $btcTimestamps = $btcCandles->pluck('timestamp', 'timestamp')->all();
-        $commonTimestamps = array_intersect_key($tokenTimestamps, $btcTimestamps);
+        // Overlap by timestamp — both maps are already keyed, intersection is O(n).
+        $commonTimestamps = array_intersect_key($tokenCloses, $btcCloses);
 
         if (empty($commonTimestamps)) {
             return [
                 'error' => 'No overlapping candle timestamps found',
-                'token_candles' => $tokenCandles->count(),
-                'btc_candles' => $btcCandles->count(),
+                'token_candles' => count($tokenCloses),
+                'btc_candles' => count($btcCloses),
             ];
         }
 
-        // Extract close prices for common timestamps
         $tokenPrices = [];
         $btcPrices = [];
 
         foreach ($commonTimestamps as $timestamp => $_) {
-            $tokenCandle = $tokenCandles->firstWhere('timestamp', $timestamp);
-            $btcCandle = $btcCandles->firstWhere('timestamp', $timestamp);
-
-            if ($tokenCandle && $btcCandle) {
-                $tokenPrices[] = (float) $tokenCandle->close;
-                $btcPrices[] = (float) $btcCandle->close;
-            }
+            $tokenPrices[] = $tokenCloses[$timestamp];
+            $btcPrices[] = $btcCloses[$timestamp];
         }
 
         // Need at least 2 aligned candles for correlation
@@ -342,5 +336,33 @@ final class CalculateBtcCorrelationJob extends BaseQueueableJob
         }
 
         return $orderedRanks;
+    }
+
+    /**
+     * Fetch close prices for a symbol/timeframe window, keyed by timestamp and
+     * sorted chronologically. Returns [timestamp => close] so callers can pair
+     * series in O(1) via array access instead of Collection::firstWhere scans.
+     *
+     * @return array<int|string, float>
+     */
+    private function fetchCandleCloses(int $exchangeSymbolId, string $timeframe, int $windowSize): array
+    {
+        $rows = Candle::query()
+            ->where('exchange_symbol_id', $exchangeSymbolId)
+            ->where('timeframe', $timeframe)
+            ->orderBy('timestamp', 'desc')
+            ->limit($windowSize)
+            ->get(['timestamp', 'close']);
+
+        $closes = [];
+        foreach ($rows as $row) {
+            $closes[$row->timestamp] = (float) $row->close;
+        }
+
+        // Restore chronological order so downstream sliding-window logic
+        // treats the array as oldest → newest.
+        ksort($closes);
+
+        return $closes;
     }
 }

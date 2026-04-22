@@ -18,12 +18,13 @@ use StepDispatcher\Models\Step;
  * Flow:
  * - Step N: SetLeverageJob (Atomic) - Sets leverage ratio on exchange
  */
-class SetLeverageJob extends BasePositionLifecycle
+final class SetLeverageJob extends BasePositionLifecycle
 {
     public function dispatch(string $blockUuid, int $startIndex, ?string $workflowId = null): int
     {
         Step::create([
             'class' => $this->resolver->resolve(AtomicSetLeverageJob::class),
+            'queue' => 'positions',
             'arguments' => ['positionId' => $this->position->id],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

@@ -91,6 +91,7 @@ final class SyncOrdersCommand extends BaseCommand
         foreach ($openPositions as $position) {
             Step::create([
                 'class' => PrepareSyncOrdersJob::class,
+                'queue' => 'positions',
                 'arguments' => [
                     'positionId' => $position->id,
                 ],

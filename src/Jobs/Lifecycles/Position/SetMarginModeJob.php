@@ -18,12 +18,13 @@ use StepDispatcher\Models\Step;
  * Flow:
  * - Step N: SetMarginModeJob (Atomic) - Sets margin mode (isolated/crossed) on exchange
  */
-class SetMarginModeJob extends BasePositionLifecycle
+final class SetMarginModeJob extends BasePositionLifecycle
 {
     public function dispatch(string $blockUuid, int $startIndex, ?string $workflowId = null): int
     {
         Step::create([
             'class' => $this->resolver->resolve(AtomicSetMarginModeJob::class),
+            'queue' => 'positions',
             'arguments' => ['positionId' => $this->position->id],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

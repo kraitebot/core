@@ -124,6 +124,18 @@ final class BinanceExceptionHandler extends BaseExceptionHandler
         400 => [-1021, -5028],
     ];
 
+    /**
+     * Symbol removed / delisted by Binance.
+     * • HTTP 400 with -1121: "Invalid symbol." — standard response for a
+     *   symbol that no longer exists on the exchange (klines and other
+     *   public endpoints).
+     *
+     * @var array<int, array<int, int>|int>
+     */
+    public array $symbolDelistedHttpCodes = [
+        400 => [-1121],
+    ];
+
     public function __construct()
     {
         // Base fallback when no Retry-After is available.
@@ -248,6 +260,19 @@ final class BinanceExceptionHandler extends BaseExceptionHandler
 
         // If message contains "IP", it's Case 1 (IP not whitelisted), not Case 4
         return ! str_contains(haystack: $message, needle: 'ip');
+    }
+
+    /**
+     * Symbol removed / delisted by Binance.
+     * Detected by HTTP 400 with vendor code -1121 ("Invalid symbol.").
+     *
+     * Binance returns -1121 for both truly non-existent symbols and for
+     * symbols it has removed from trading; from our perspective both
+     * should stop the ingestion pipeline for that pair.
+     */
+    public function isSymbolDelisted(Throwable $exception): bool
+    {
+        return $this->containsHttpExceptionIn($exception, $this->symbolDelistedHttpCodes);
     }
 
     /**

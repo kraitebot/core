@@ -129,6 +129,15 @@ final class BybitApi
         return $this->client->signRequest($apiRequest);
     }
 
+    /**
+     * Bybit exposes per-symbol leverage and tradeMode inline on the positions
+     * payload, so we reuse the same endpoint and normalize downstream.
+     */
+    public function getSymbolConfig(?ApiProperties $properties = null)
+    {
+        return $this->getPositions($properties);
+    }
+
     // https://bybit-exchange.github.io/docs/v5/account/wallet-balance
     public function getAccountBalance(?ApiProperties $properties = null)
     {

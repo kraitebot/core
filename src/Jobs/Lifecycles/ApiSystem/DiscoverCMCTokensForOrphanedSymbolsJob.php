@@ -63,6 +63,7 @@ final class DiscoverCMCTokensForOrphanedSymbolsJob extends BaseQueueableJob
         foreach ($orphanedSymbols as $exchangeSymbol) {
             Step::create([
                 'class' => DiscoverCMCTokenForExchangeSymbolJob::class,
+                'queue' => 'indicators',
                 'arguments' => [
                     'exchangeSymbolId' => $exchangeSymbol->id,
                 ],

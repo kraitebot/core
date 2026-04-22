@@ -20,12 +20,13 @@ use StepDispatcher\Models\Step;
  * Must run AFTER token assignment (exchange_symbol_id must be set).
  * Must run BEFORE PlaceMarketOrderJob.
  */
-class PreparePositionDataJob extends BasePositionLifecycle
+final class PreparePositionDataJob extends BasePositionLifecycle
 {
     public function dispatch(string $blockUuid, int $startIndex, ?string $workflowId = null): int
     {
         Step::create([
             'class' => $this->resolver->resolve(AtomicPreparePositionDataJob::class),
+            'queue' => 'positions',
             'arguments' => ['positionId' => $this->position->id],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

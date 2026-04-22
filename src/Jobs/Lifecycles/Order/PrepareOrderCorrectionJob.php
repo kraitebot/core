@@ -11,8 +11,8 @@ use Kraite\Core\Jobs\Atomic\Order\RecreateCancelledOrderJob;
 use Kraite\Core\Jobs\Atomic\Order\SyncPositionOrdersJob;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
-use StepDispatcher\Models\Step;
 use Kraite\Core\Support\Proxies\JobProxy;
+use StepDispatcher\Models\Step;
 
 /**
  * PrepareOrderCorrectionJob (Orchestrator)
@@ -39,7 +39,7 @@ use Kraite\Core\Support\Proxies\JobProxy;
  *   4. RecreateCancelledOrderJob → create new order with reference values
  *   5. SyncPositionOrdersJob → verify recreation + update position status
  */
-class PrepareOrderCorrectionJob extends BaseQueueableJob
+final class PrepareOrderCorrectionJob extends BaseQueueableJob
 {
     public Position $position;
 
@@ -113,6 +113,7 @@ class PrepareOrderCorrectionJob extends BaseQueueableJob
         // Step 1: Correct the order via apiModify()
         Step::create([
             'class' => $resolver->resolve(CorrectModifiedOrderJob::class),
+            'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
                 'orderId' => $this->order->id,
@@ -124,6 +125,7 @@ class PrepareOrderCorrectionJob extends BaseQueueableJob
         // Step 2: Sync all orders to verify and update position status
         Step::create([
             'class' => $resolver->resolve(SyncPositionOrdersJob::class),
+            'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
             ],
@@ -155,6 +157,7 @@ class PrepareOrderCorrectionJob extends BaseQueueableJob
         // via a custom atomic job that handles just this order
         Step::create([
             'class' => $resolver->resolve(CancelSingleAlgoOrderJob::class),
+            'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
                 'orderId' => $this->order->id,
@@ -166,6 +169,7 @@ class PrepareOrderCorrectionJob extends BaseQueueableJob
         // Step 2: Sync to get CANCELLED status
         Step::create([
             'class' => $resolver->resolve(SyncPositionOrdersJob::class),
+            'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
             ],
@@ -176,6 +180,7 @@ class PrepareOrderCorrectionJob extends BaseQueueableJob
         // Step 3: Recreate the order with reference values
         Step::create([
             'class' => $resolver->resolve(RecreateCancelledOrderJob::class),
+            'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
                 'orderId' => $this->order->id,
@@ -187,6 +192,7 @@ class PrepareOrderCorrectionJob extends BaseQueueableJob
         // Step 4: Final sync to verify recreation + update position status
         Step::create([
             'class' => $resolver->resolve(SyncPositionOrdersJob::class),
+            'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
             ],

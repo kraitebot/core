@@ -6,9 +6,12 @@ namespace Kraite\Core\Models;
 
 
 
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 use Kraite\Core\Abstracts\BaseModel;
 use Kraite\Core\Concerns\Kraite\HasAccessors;
 use Kraite\Core\Concerns\Kraite\HasGetters;
+use RuntimeException;
 
 
 /**
@@ -67,21 +70,47 @@ final class Kraite extends BaseModel
         'notification_channels' => 'array',
     ];
 
+    public const IP_CACHE_KEY = 'kraite.server.public_ip';
+
+    public const IP_CACHE_TTL_SECONDS = 86400;
+
     /**
-     * Get the current server's public IP address from the servers table.
-     * Falls back to gethostbyname if server not found.
+     * Current server's public IP.
+     *
+     * Primary source is the `servers` row matching the OS hostname — one
+     * local DB roundtrip, authoritative. The previous fallback used
+     * `gethostbyname()`, which on Ubuntu boxes resolves the hostname to
+     * `127.0.1.1` via `/etc/hosts` and poisoned every IP-scoped downstream
+     * check (ForbiddenHostname lookups, API-key whitelist diagnostics,
+     * per-IP rate-limit ledgers). If the DB row is missing or misconfigured
+     * we resolve via an external echo service and cache the answer for a
+     * day — the public IP of a long-running server very rarely moves.
      */
     public static function ip(): string
     {
         $hostname = gethostname();
 
-        $server = Server::where('hostname', $hostname)->first();
+        if ($hostname !== false) {
+            $server = Server::where('hostname', $hostname)->first();
 
-        if ($server && $server->ip_address) {
-            return $server->ip_address;
+            if ($server && $server->ip_address) {
+                return $server->ip_address;
+            }
         }
 
-        // Fallback for unknown servers
-        return gethostbyname($hostname);
+        return Cache::remember(
+            self::IP_CACHE_KEY,
+            self::IP_CACHE_TTL_SECONDS,
+            static function (): string {
+                $response = Http::timeout(5)->get('https://api.ipify.org', ['format' => 'text']);
+                $ip = $response->successful() ? mb_trim($response->body()) : '';
+
+                if (! filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                    throw new RuntimeException('Unable to resolve the server public IP via the external resolver.');
+                }
+
+                return $ip;
+            }
+        );
     }
 }

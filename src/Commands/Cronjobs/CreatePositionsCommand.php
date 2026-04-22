@@ -124,6 +124,7 @@ final class CreatePositionsCommand extends BaseCommand
         // Dispatch workflow to cross-check with exchange and open positions
         Step::create([
             'class' => PreparePositionsOpeningJob::class,
+            'queue' => 'cronjobs',
             'arguments' => [
                 'accountId' => $account->id,
             ],

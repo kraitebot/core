@@ -16,12 +16,13 @@ use StepDispatcher\Models\Step;
  * Exchange-specific overrides can add additional steps if needed
  * (e.g., querying conditional orders, stop orders, etc.).
  */
-class QueryAccountOpenOrdersJob extends BaseAccountLifecycle
+final class QueryAccountOpenOrdersJob extends BaseAccountLifecycle
 {
     public function dispatch(string $blockUuid, int $startIndex, ?string $workflowId = null): int
     {
         Step::create([
             'class' => $this->resolver->resolve(AtomicQueryAccountOpenOrdersJob::class),
+            'queue' => 'cronjobs',
             'arguments' => ['accountId' => $this->account->id],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

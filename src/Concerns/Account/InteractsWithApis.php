@@ -127,6 +127,32 @@ trait InteractsWithApis
         );
     }
 
+    /**
+     * Query per-symbol account configuration (leverage + marginType).
+     *
+     * Binance's /fapi/v3/positionRisk stopped returning leverage and marginType,
+     * so a dedicated /fapi/v1/symbolConfig endpoint is used there. Other exchanges
+     * expose the same information inline on their positions payload; their mappers
+     * reuse the positions endpoint and normalize the shape.
+     *
+     * Response is keyed by symbol:
+     *   [
+     *     'LINKUSDT' => ['symbol' => 'LINKUSDT', 'leverage' => 20, 'marginType' => 'CROSSED'],
+     *     ...
+     *   ]
+     */
+    public function apiQuerySymbolConfig(): ApiResponse
+    {
+        $this->apiProperties = $this->apiMapper()->prepareQuerySymbolConfigProperties($this);
+        $this->apiProperties->set('account', $this);
+        $this->apiResponse = $this->withApi()->getSymbolConfig($this->apiProperties);
+
+        return new ApiResponse(
+            response: $this->apiResponse,
+            result: $this->apiMapper()->resolveQuerySymbolConfigResponse($this->apiResponse)
+        );
+    }
+
     // V4 ready.
     public function apiQueryBalance(): ApiResponse
     {

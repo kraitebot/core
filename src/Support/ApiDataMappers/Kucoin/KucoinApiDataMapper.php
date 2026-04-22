@@ -22,8 +22,10 @@ use Kraite\Core\Support\ApiDataMappers\Kucoin\ApiRequests\MapsPositionsQuery;
 use Kraite\Core\Support\ApiDataMappers\Kucoin\ApiRequests\MapsServerTimeQuery;
 use Kraite\Core\Support\ApiDataMappers\Kucoin\ApiRequests\MapsStopOrder;
 use Kraite\Core\Support\ApiDataMappers\Kucoin\ApiRequests\MapsStopOrdersQuery;
+use Kraite\Core\Support\ApiDataMappers\Kucoin\ApiRequests\MapsSymbolConfigQuery;
 use Kraite\Core\Support\ApiDataMappers\Kucoin\ApiRequests\MapsSymbolMarginType;
 use Kraite\Core\Support\ApiDataMappers\Kucoin\ApiRequests\MapsTokenLeverageRatios;
+use SensitiveParameter;
 
 /**
  * KuCoin Futures API Data Mapper.
@@ -53,6 +55,7 @@ final class KucoinApiDataMapper extends BaseDataMapper
     use MapsServerTimeQuery;
     use MapsStopOrder;
     use MapsStopOrdersQuery;
+    use MapsSymbolConfigQuery;
     use MapsSymbolMarginType;
     use MapsTokenLeverageRatios;
 
@@ -100,7 +103,7 @@ final class KucoinApiDataMapper extends BaseDataMapper
      *
      * Token and quote are stored directly on exchange_symbols.
      */
-    public function baseWithQuote(#[\SensitiveParameter] string $token, string $quote): string
+    public function baseWithQuote(#[SensitiveParameter] string $token, string $quote): string
     {
         // KuCoin uses XBT instead of BTC
         if ($token === 'BTC') {
@@ -136,14 +139,16 @@ final class KucoinApiDataMapper extends BaseDataMapper
         ];
 
         foreach ($availableQuoteCurrencies as $quoteCurrency) {
-            if (!(str_ends_with(haystack: $symbolPart, needle: $quoteCurrency))) { continue; }
+            if (! (str_ends_with(haystack: $symbolPart, needle: $quoteCurrency))) {
+                continue;
+            }
 
-$base = str_replace(search: $quoteCurrency, replace: '', subject: $symbolPart);
+            $base = str_replace(search: $quoteCurrency, replace: '', subject: $symbolPart);
 
-                return [
-                    'base' => $base,
-                    'quote' => $quoteCurrency,
-                ];
+            return [
+                'base' => $base,
+                'quote' => $quoteCurrency,
+            ];
         }
 
         throw new InvalidArgumentException("Invalid KuCoin symbol format: {$symbol}");
@@ -156,7 +161,7 @@ $base = str_replace(search: $quoteCurrency, replace: '', subject: $symbolPart);
      */
     public function canonicalOrderType(array $order): string
     {
-        $type = strtolower($order['type'] ?? '');
+        $type = mb_strtolower($order['type'] ?? '');
         $stop = $order['stop'] ?? '';
         $stopPrice = (float) ($order['stopPrice'] ?? 0);
 
