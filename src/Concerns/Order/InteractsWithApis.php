@@ -126,24 +126,6 @@ trait InteractsWithApis
     }
 
     /**
-     * Resolve the price to write on sync, preserving the stored value when
-     * the exchange returns null/empty/zero.
-     *
-     * Cancelled algo orders on some exchanges (notably Binance) echo back
-     * `price=0` because the exchange no longer carries the trigger on a
-     * cancelled record. Writing that 0 erases the original trigger price
-     * from our DB and destroys the audit trail. Since no legitimately
-     * synced order on our workflow ever resolves to a 0 price (LIMIT / TP
-     * / SL all have a real price; MARKET is excluded from syncable), a
-     * zero incoming value is always a "exchange-dropped" signal — keep
-     * what we had.
-     */
-    protected function resolveSyncedPrice(mixed $incoming): mixed
-    {
-        return Math::isPositive($incoming) ? $incoming : $this->price;
-    }
-
-    /**
      * Sync an order (query and update local record).
      */
     public function apiSync(): ApiResponse
@@ -186,9 +168,13 @@ trait InteractsWithApis
             return $apiResponse;
         }
 
+        $incomingQuantity = $apiResponse->result['quantity']
+            ?? $apiResponse->result['original_quantity']
+            ?? null;
+
         $this->updateSaving([
             'status' => $apiResponse->result['status'],
-            'quantity' => $apiResponse->result['quantity'] ?? $apiResponse->result['original_quantity'] ?? $this->quantity,
+            'quantity' => $this->resolveSyncedQuantity($incomingQuantity),
             'price' => $this->resolveSyncedPrice($apiResponse->result['price'] ?? null),
         ]);
 
@@ -284,7 +270,7 @@ trait InteractsWithApis
 
         $this->updateSaving([
             'status' => $apiResponse->result['status'],
-            'quantity' => $apiResponse->result['quantity'],
+            'quantity' => $this->resolveSyncedQuantity($apiResponse->result['quantity'] ?? null),
             'price' => $this->resolveSyncedPrice($apiResponse->result['price'] ?? null),
         ]);
 
@@ -319,7 +305,7 @@ trait InteractsWithApis
 
         $this->updateSaving([
             'status' => $apiResponse->result['status'],
-            'quantity' => $apiResponse->result['original_quantity'] ?? $this->quantity,
+            'quantity' => $this->resolveSyncedQuantity($apiResponse->result['original_quantity'] ?? null),
             'price' => $this->resolveSyncedPrice($apiResponse->result['price'] ?? null),
         ]);
 
@@ -401,37 +387,6 @@ trait InteractsWithApis
     }
 
     /**
-     * Fetch the TP or SL order ID from position query.
-     *
-     * Used after place-pos-tpsl which doesn't return the order ID directly.
-     */
-    private function fetchTpslOrderIdFromPosition(): ?string
-    {
-        $account = $this->apiAccount();
-        $mapper = $this->apiMapper();
-
-        $properties = $mapper->prepareQueryPositionsProperties($account);
-        $properties->set('account', $account);
-
-        $response = $account->withApi()->getPositions($properties);
-        $positions = $mapper->resolveQueryPositionsResponse($response);
-
-        // Find our position by symbol and direction
-        $symbol = $this->position->exchangeSymbol->parsed_trading_pair;
-        $direction = mb_strtoupper($this->position->direction);
-        $key = "{$symbol}:{$direction}";
-
-        $positionData = $positions[$key] ?? [];
-
-        // Return the relevant ID based on order type
-        $isStopLoss = in_array(strtoupper(str_replace('-', '_', $this->type)), ['STOP_MARKET', 'STOP_LOSS'], true);
-
-        return $isStopLoss
-            ? ($positionData['stopLossId'] ?? null)
-            : ($positionData['takeProfitId'] ?? null);
-    }
-
-    /**
      * Query a plan order via Bitget's Plan Order API.
      */
     public function apiQueryPlanOrder(): ApiResponse
@@ -465,7 +420,7 @@ trait InteractsWithApis
 
         $this->updateSaving([
             'status' => $apiResponse->result['status'],
-            'quantity' => $apiResponse->result['quantity'] ?? $this->quantity,
+            'quantity' => $this->resolveSyncedQuantity($apiResponse->result['quantity'] ?? null),
             'price' => $this->resolveSyncedPrice($apiResponse->result['price'] ?? null),
         ]);
 
@@ -532,5 +487,80 @@ trait InteractsWithApis
         }
 
         return $finalResponse;
+    }
+
+    /**
+     * Resolve the price to write on sync, preserving the stored value when
+     * the exchange returns null/empty/zero.
+     *
+     * Cancelled algo orders on some exchanges (notably Binance) echo back
+     * `price=0` because the exchange no longer carries the trigger on a
+     * cancelled record. Writing that 0 erases the original trigger price
+     * from our DB and destroys the audit trail. Since no legitimately
+     * synced order on our workflow ever resolves to a 0 price (LIMIT / TP
+     * / SL all have a real price; MARKET is excluded from syncable), a
+     * zero incoming value is always a "exchange-dropped" signal — keep
+     * what we had.
+     *
+     * A positive incoming price is passed through `api_format_price` so the
+     * stored value is tick-aligned against the symbol's current precision,
+     * matching the contract enforced on the outbound (place/modify) path.
+     */
+    protected function resolveSyncedPrice(mixed $incoming): mixed
+    {
+        if (! Math::isPositive($incoming)) {
+            return $this->price;
+        }
+
+        return api_format_price((string) $incoming, $this->position->exchangeSymbol);
+    }
+
+    /**
+     * Normalize an incoming quantity before persisting it on sync. A null or
+     * non-numeric payload keeps the DB value (sync responses occasionally
+     * omit the field, e.g. KuCoin plan orders in certain states). A numeric
+     * payload — including legitimate zero, such as Binance algo executedQty
+     * for an unfilled STOP-MARKET with closePosition=true — is routed
+     * through `api_format_quantity` so it lands on the symbol's lot grid,
+     * matching the outbound placement contract.
+     */
+    protected function resolveSyncedQuantity(mixed $incoming): mixed
+    {
+        if ($incoming === null || ! is_numeric($incoming)) {
+            return $this->quantity;
+        }
+
+        return api_format_quantity((string) $incoming, $this->position->exchangeSymbol);
+    }
+
+    /**
+     * Fetch the TP or SL order ID from position query.
+     *
+     * Used after place-pos-tpsl which doesn't return the order ID directly.
+     */
+    private function fetchTpslOrderIdFromPosition(): ?string
+    {
+        $account = $this->apiAccount();
+        $mapper = $this->apiMapper();
+
+        $properties = $mapper->prepareQueryPositionsProperties($account);
+        $properties->set('account', $account);
+
+        $response = $account->withApi()->getPositions($properties);
+        $positions = $mapper->resolveQueryPositionsResponse($response);
+
+        // Find our position by symbol and direction
+        $symbol = $this->position->exchangeSymbol->parsed_trading_pair;
+        $direction = mb_strtoupper($this->position->direction);
+        $key = "{$symbol}:{$direction}";
+
+        $positionData = $positions[$key] ?? [];
+
+        // Return the relevant ID based on order type
+        $isStopLoss = in_array(mb_strtoupper(str_replace('-', '_', $this->type)), ['STOP_MARKET', 'STOP_LOSS'], true);
+
+        return $isStopLoss
+            ? ($positionData['stopLossId'] ?? null)
+            : ($positionData['takeProfitId'] ?? null);
     }
 }

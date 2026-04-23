@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Support;
 
+use Exception;
 use Kraite\Core\Enums\NotificationSeverity;
 use Kraite\Core\Models\Notification;
 use Kraite\Core\Models\User;
@@ -137,7 +138,7 @@ final class NotificationMessageBuilder
                 if (is_string($forbiddenUntilRaw)) {
                     try {
                         $forbiddenUntilCarbon = \Carbon\Carbon::parse($forbiddenUntilRaw);
-                    } catch (\Exception $e) {
+                    } catch (Exception $e) {
                         // Invalid date format, ignore
                     }
                 }
@@ -386,7 +387,7 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
-            'server_ip_not_whitelisted' => (static function () use ($context, $exchangeTitle, $ip, $accountName) {
+            'server_ip_not_whitelisted' => (static function () use ($exchangeTitle, $ip, $accountName) {
                 return [
                     'severity' => NotificationSeverity::High,
                     'title' => 'Please Whitelist Our Server IP',
@@ -685,6 +686,47 @@ final class NotificationMessageBuilder
                     'severity' => NotificationSeverity::High,
                     'priority' => 1,
                     'title' => "Pump Cooldown — {$pair}",
+                    'emailMessage' => implode(separator: "\n", array: $emailLines),
+                    'pushoverMessage' => implode(separator: "\n", array: $pushoverLines),
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                ];
+            })(),
+
+            'position_opening_failed' => (static function () use ($context) {
+                $token = is_string($context['token'] ?? null) ? $context['token'] : 'symbol';
+                $pair = is_string($context['pair'] ?? null) ? $context['pair'] : $token;
+                $direction = is_string($context['direction'] ?? null) ? $context['direction'] : '';
+                $positionId = is_int($context['position_id'] ?? null) ? (int) $context['position_id'] : null;
+                $reason = is_string($context['reason'] ?? null) ? $context['reason'] : 'Unknown error';
+                $tokenBlocked = (bool) ($context['token_blocked'] ?? false);
+
+                $posRef = $positionId !== null ? "#{$positionId}" : '';
+
+                $pushoverLines = [
+                    "⛔ Opening failed · {$direction} {$pair} · {$posRef}",
+                    "Reason: {$reason}",
+                ];
+                if ($tokenBlocked) {
+                    $pushoverLines[] = "Token {$token} auto-disabled from selection.";
+                }
+
+                $emailLines = [
+                    "⛔ Position opening failed {$posRef} on {$pair}",
+                    '',
+                    "• Direction: {$direction}",
+                    "• Reason: {$reason}",
+                ];
+                if ($tokenBlocked) {
+                    $emailLines[] = "• Token {$token} auto-disabled (is_manually_enabled=false) so the scheduler won't retry it.";
+                }
+                $emailLines[] = '';
+                $emailLines[] = 'Inspect the position on the exchange UI, reconcile if needed, and re-enable the token manually once the root cause is addressed.';
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'priority' => 1,
+                    'title' => "Opening Failed — {$pair}",
                     'emailMessage' => implode(separator: "\n", array: $emailLines),
                     'pushoverMessage' => implode(separator: "\n", array: $pushoverLines),
                     'actionUrl' => null,

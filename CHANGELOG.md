@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.4.8 - 2026-04-23
+
+### Fixes
+
+- [BUG FIX] `Jobs/Atomic/Position/VerifyOrderNotionalForMarketOrderJob::computeApiable()` — simulate the full DCA limit ladder via `Kraite::calculateLimitOrdersData()` BEFORE `PlaceMarketOrderJob` runs. USELESS #64 incident: market entry filled, then rung #1 notional came in at $3.71 on `[2,2,2,2]` multipliers against `min_notional=5`, cascading into the cancel workflow which closed the orphaned entry at a realized loss. Detecting the infeasible ladder up-front aborts the workflow before any exchange-side state exists to unwind.
+- [BUG FIX] `Models/Order::removeTrailingZeros()` — stopped round-tripping through `(float)` inside the price/quantity accessors. IEEE-754 exposed residues on large integer quantities (`692672.00000000` surfaced as `692672.0000000001`), which leaked into the UI as a phantom drift between our DB and the exchange. Now a pure string-level trim.
+
+### Features
+
+- [NEW FEATURE] `Concerns/Position/HasStatuses::updateToFailed()` — on the transition into `failed` (guarded so re-entries are idempotent), fires the new `position_opening_failed` canonical via `NotificationService` AND flips `exchange_symbol.is_manually_enabled=false` so the opening scheduler stops picking the same broken token. Notification carries token/pair/direction/position id/reason/whether the token was blocked.
+- [NEW FEATURE] New canonical `position_opening_failed` seeded in the `notifications` table (priority 1 / high) with a multi-line Pushover template rendered in `NotificationMessageBuilder`.
+- [NEW FEATURE] New command `kraite:disable-volatile-tokens` (`Commands/Cronjobs/DisableVolatileTokensCommand`) — sweeps `exchange_symbols` across every api_system and flips `is_manually_enabled=false` on any row whose token is on the curated deny-list. Three class-level constants split by reason (MEMES / SPECULATIVE / STRUCTURAL-BRITTLE). Strictly additive — never re-enables. Supports `--dry-run` and `--output`. Wired via `CoreServiceProvider` and scheduled hourly at `:45` in `routes/console.php`.
+
+### Improvements
+
+- [IMPROVED] `Concerns/Order/InteractsWithApis::resolveSyncedPrice()` — positive incoming prices now pass through `api_format_price()` so the DB value is tick-aligned against the symbol's current precision, matching the contract enforced on the outbound (place/modify) path. Zero/null fallback behaviour preserved.
+- [IMPROVED] New sibling helper `Concerns/Order/InteractsWithApis::resolveSyncedQuantity()` — same contract for quantity via `api_format_quantity()`. Preserves the DB value when the exchange omits the field, honours legitimate zero (Binance algo `executedQty` for unfilled STOP-MARKET with `closePosition=true`), and lot-aligns otherwise.
+- [IMPROVED] All four sync sites — `apiSyncDefault`, `apiSyncAlgo`, `apiSyncStopOrder`, `apiSyncPlanOrder` — now route the incoming quantity through `resolveSyncedQuantity()` instead of writing the exchange's raw value unchecked.
+
 ## 1.4.7 - 2026-04-23
 
 ### Fixes

@@ -78,19 +78,30 @@ final class Order extends BaseModel
 
     public function getPriceAttribute($value): ?string
     {
-        return $value === null ? null : $this->removeTrailingZeros((float) $value);
+        return $value === null ? null : $this->removeTrailingZeros($value);
     }
 
     public function getQuantityAttribute($value): ?string
     {
-        return $value === null ? null : $this->removeTrailingZeros((float) $value);
+        return $value === null ? null : $this->removeTrailingZeros($value);
     }
 
-    private function removeTrailingZeros(float $number): string
+    /**
+     * Trim the decimal tail of a DECIMAL(20,8) string coming off the DB.
+     *
+     * Kept as a pure string operation: casting through `(float)` introduces
+     * IEEE-754 round-trip artifacts on large integer-ish quantities (e.g.
+     * `692672.00000000` printed back as `692672.0000000001`), which leaks
+     * into the UI as a phantom drift between our DB and the exchange.
+     */
+    private function removeTrailingZeros(mixed $value): string
     {
-        // Ensure the number is normalized as a string, no scientific notation.
-        $normalized = number_format($number, 10, '.', '');  // Force a fixed decimal string
+        $str = (string) $value;
 
-        return mb_rtrim(mb_rtrim($normalized, '0'), '.');  // Remove trailing zeros and the dot
+        if (! str_contains($str, '.')) {
+            return $str;
+        }
+
+        return mb_rtrim(mb_rtrim($str, '0'), '.');
     }
 }

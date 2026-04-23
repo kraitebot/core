@@ -6,19 +6,20 @@ namespace Kraite\Core\Jobs\Atomic\Position;
 
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
-use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
+use Kraite\Core\Trading\Kraite;
 use RuntimeException;
 use Throwable;
 
 /**
  * VerifyOrderNotionalForMarketOrderJob (Atomic)
  *
- * Fetches current mark price from exchange and validates
- * that the market order notional meets minimum requirements.
+ * Fetches current mark price from exchange and validates that the FULL trade
+ * plan (market order + DCA limit ladder) is feasible before any order is
+ * placed on the exchange.
  *
  * Must run AFTER PreparePositionDataJob (margin, leverage, total_limit_orders must be set).
  * Must run BEFORE PlaceMarketOrderJob (sets mark_price on exchange symbol).
@@ -27,7 +28,12 @@ use Throwable;
  * 1. Fetch mark price from exchange API
  * 2. Update exchange symbol with latest mark_price
  * 3. Calculate market order notional using divider formula
- * 4. Validate notional meets symbol minimum
+ * 4. Validate market-order notional meets symbol minimum
+ * 5. Simulate the full limit ladder against mark_price + market_order_quantity
+ *    and reject if any rung would violate min_notional. Catching this HERE is
+ *    what prevents the "market filled, ladder rejected, cancel workflow eats
+ *    a realized loss" failure mode (observed on low-price tokens like USELESS
+ *    where the chained quantities quantize down below min_notional).
  */
 final class VerifyOrderNotionalForMarketOrderJob extends BaseApiableJob
 {
@@ -120,6 +126,19 @@ final class VerifyOrderNotionalForMarketOrderJob extends BaseApiableJob
                 "Market order notional ({$marketOrderNotional}) below minimum ({$effectiveMinNotional})"
             );
         }
+
+        // 7. Ladder-feasibility pre-gate: running the simulation here (BEFORE
+        // PlaceMarketOrderJob) is the whole point — if it throws at the
+        // downstream DispatchLimitOrdersJob instead, we've already filled the
+        // market and have to unwind an orphaned entry at a realized loss.
+        Kraite::calculateLimitOrdersData(
+            totalLimitOrders: $this->position->total_limit_orders,
+            direction: (string) $this->position->direction,
+            referencePrice: $markPrice,
+            marketOrderQty: $marketOrderQuantity,
+            exchangeSymbol: $exchangeSymbol,
+            limitQuantityMultipliers: $exchangeSymbol->limit_quantity_multipliers,
+        );
 
         return [
             'position_id' => $this->position->id,

@@ -9,9 +9,9 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSystem;
-use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Indicator;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Models\Subscription;
 use Kraite\Core\Models\Symbol;
@@ -388,6 +388,14 @@ final class KraiteSeeder extends Seeder
                 'password' => bcrypt(config('kraite.admin_user_password', 'password')),
                 'is_active' => true,
                 'is_admin' => true,
+                // Wire notification routing so user-scoped pushovers
+                // (position_opened / position_closed / position_wap_applied
+                // / position_high_profit_closed) actually deliver.
+                // Without these, AlertNotification::via() returns [] and
+                // every trading-event push silently drops.
+                'pushover_key' => config('kraite.admin_user_pushover_key')
+                    ?? config('kraite.admin_user_pushover_user_key'),
+                'notification_channels' => ['pushover', 'mail'],
             ]
         );
 
@@ -803,6 +811,17 @@ final class KraiteSeeder extends Seeder
                 'cache_key' => ['exchange_symbol'],
             ],
             [
+                'canonical' => 'position_opening_failed',
+                'title' => 'Position Opening Failed',
+                'description' => 'Emitted when a create-position workflow fails and the position transitions to status=failed. Also auto-disables the symbol (is_manually_enabled=false) so the scheduler stops picking it.',
+                'detailed_description' => 'Any exception that escapes the opening step chain (market place, limit ladder, TP/SL placement) cascades into CancelPositionJob and ultimately sets the position to failed. This ping flags the event so the operator can investigate the root cause, manually reconcile any partial exchange state, and re-enable the token after the issue is understood.',
+                'usage_reference' => 'Concerns/Position/HasStatuses::updateToFailed',
+                'default_severity' => 'high',
+                'verified' => 1,
+                'cache_duration' => 60,
+                'cache_key' => ['position'],
+            ],
+            [
                 'canonical' => 'position_residual_detected',
                 'title' => 'Residual Position Detected After Close',
                 'description' => 'Emitted when VerifyPositionResidualAmountJob finds a non-zero positionAmt on the exchange AFTER a close workflow completed. Manual reconciliation required.',
@@ -832,30 +851,6 @@ final class KraiteSeeder extends Seeder
                 ]
             );
         }
-    }
-
-    /**
-     * Run all seeding operations with observers disabled.
-     */
-    private function runSeeding(): void
-    {
-        $this->seedIndicators();
-        $apiSystems = $this->seedApiSystems();
-        $this->seedAdminUser();
-        $this->seedTradeConfiguration();
-        $this->seedSymbols();
-        $this->seedStepsDispatchers();
-        $this->seedKraite();
-        $this->seedAdditionalSymbols();
-        $this->updateExchangeSymbols();
-        $this->migrateKraiteCredentials();
-        $this->addNotificationChannels();
-        $this->moveAdminPushoverKey();
-        $this->seedServers();
-        $this->seedNotifications();
-        $this->seedTokenMappers($apiSystems);
-        $this->seedCoreSymbolData();
-        $this->seedSubscriptions();
     }
 
     /**
@@ -933,6 +928,30 @@ final class KraiteSeeder extends Seeder
                 ]
             );
         }
+    }
+
+    /**
+     * Run all seeding operations with observers disabled.
+     */
+    private function runSeeding(): void
+    {
+        $this->seedIndicators();
+        $apiSystems = $this->seedApiSystems();
+        $this->seedAdminUser();
+        $this->seedTradeConfiguration();
+        $this->seedSymbols();
+        $this->seedStepsDispatchers();
+        $this->seedKraite();
+        $this->seedAdditionalSymbols();
+        $this->updateExchangeSymbols();
+        $this->migrateKraiteCredentials();
+        $this->addNotificationChannels();
+        $this->moveAdminPushoverKey();
+        $this->seedServers();
+        $this->seedNotifications();
+        $this->seedTokenMappers($apiSystems);
+        $this->seedCoreSymbolData();
+        $this->seedSubscriptions();
     }
 
     /**

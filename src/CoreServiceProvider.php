@@ -15,6 +15,7 @@ use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
 use Kraite\Core\Commands\Cronjobs\ConcludeSymbolsDirectionCommand;
 use Kraite\Core\Commands\Cronjobs\CreatePositionsCommand;
+use Kraite\Core\Commands\Cronjobs\DisableVolatileTokensCommand;
 use Kraite\Core\Commands\Cronjobs\FetchKlinesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeCandlesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeModelLogsCommand;
@@ -33,10 +34,10 @@ use Kraite\Core\Models\AccountBalanceHistory;
 use Kraite\Core\Models\ApiRequestLog;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\ApiSystem;
-use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\ForbiddenHostname;
 use Kraite\Core\Models\Indicator;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\ModelLog;
 use Kraite\Core\Models\NotificationLog;
 use Kraite\Core\Models\Order;
@@ -58,6 +59,7 @@ use Kraite\Core\Observers\PositionObserver;
 use Kraite\Core\Observers\SymbolObserver;
 use Kraite\Core\Observers\UserObserver;
 use Kraite\Core\Support\NotificationService;
+use Schema;
 use StepDispatcher\Events\StaleStepsDetected;
 
 final class CoreServiceProvider extends ServiceProvider
@@ -69,6 +71,7 @@ final class CoreServiceProvider extends ServiceProvider
             UpdateRecvwindowSafetyDurationCommand::class,
             ConcludeSymbolsDirectionCommand::class,
             CreatePositionsCommand::class,
+            DisableVolatileTokensCommand::class,
             FetchKlinesCommand::class,
             PurgeCandlesCommand::class,
             PurgeModelLogsCommand::class,
@@ -169,7 +172,7 @@ final class CoreServiceProvider extends ServiceProvider
             }
 
             // Skip during migrations when slow_queries table may not exist yet
-            if (! \Schema::hasTable('slow_queries')) {
+            if (! Schema::hasTable('slow_queries')) {
                 return;
             }
 
