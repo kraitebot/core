@@ -165,9 +165,11 @@ abstract class BaseIndicator
         if (is_array($this->data) && array_key_exists(key: 0, array: $this->data) && is_array($this->data[0])) {
             $timestamps = [];
             foreach ($this->data as $row) {
-                if (!(isset($row['timestamp']))) { continue; }
+                if (! (isset($row['timestamp']))) {
+                    continue;
+                }
 
-$timestamps[] = (int) $row['timestamp'];
+                $timestamps[] = (int) $row['timestamp'];
             }
 
             if (! empty($timestamps)) {
@@ -200,6 +202,15 @@ $timestamps[] = (int) $row['timestamp'];
         $values = $this->data[$dataKey] ?? null;
 
         if (! $values || ! is_array($values) || count($values) < 2) {
+            return null;
+        }
+
+        // Equality → null (no signal / abstain from the direction vote),
+        // not an implicit LONG or SHORT. Matches CandleComparisonIndicator
+        // and EMAsSameDirection so the tie-break is consistent across
+        // every DirectionIndicator feeding the unanimous-agreement gate
+        // in ConcludeSymbolDirectionAtTimeframeJob.
+        if ($values[1] === $values[0]) {
             return null;
         }
 

@@ -44,6 +44,11 @@ final class CandleComparisonIndicator extends BaseIndicator implements Direction
 
         // Compare: if newer > older = LONG (price increased)
         //          if newer < older = SHORT (price decreased)
+        //          if newer = older = null (no signal — abstain from vote)
+        if ($newerPrice === $olderPrice) {
+            return null;
+        }
+
         return $newerPrice > $olderPrice ? 'LONG' : 'SHORT';
     }
 }

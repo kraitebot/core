@@ -46,8 +46,14 @@ final class EMAsSameDirection extends BaseIndicator implements DirectionIndicato
                 return null;
             }
 
-            // Determine the current trend for this EMA
-            $currentTrend = $values[1] >= $values[0] ? 'LONG' : 'SHORT';
+            // Equality → null (no signal) to match the tie-break used
+            // by every other DirectionIndicator. A flat EMA is genuine
+            // absence of slope, not an implicit LONG.
+            if ($values[1] === $values[0]) {
+                return null;
+            }
+
+            $currentTrend = $values[1] > $values[0] ? 'LONG' : 'SHORT';
 
             if (is_null($trend)) {
                 $trend = $currentTrend; // Initialize the trend

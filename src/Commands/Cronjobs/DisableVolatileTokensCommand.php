@@ -11,115 +11,77 @@ use StepDispatcher\Support\BaseCommand;
 /**
  * DisableVolatileTokensCommand
  *
- * Sweeps the exchange_symbols table every hour and flips
- * is_manually_enabled=false on any row whose token is on the curated
- * "don't trade" list below — across every exchange, not just Binance —
- * so the token-discovery + position-opening pipelines never pick them.
+ * Allow-list sweep. Every hour, this command flips
+ * is_manually_enabled=false on any exchange_symbols row whose token is
+ * NOT on the curated ALLOWED_TOKENS list below — across every exchange,
+ * not just Binance. If we haven't explicitly vouched for a token, it
+ * doesn't trade.
  *
- * Why a periodic sweep instead of a one-shot patch:
- * - Token discovery re-ingests symbols as exchanges list them, so a row
- *   for e.g. TRUMP on a newly-enabled exchange will appear with
- *   is_manually_enabled defaulted to true. The hourly sweep catches it
- *   the same hour.
- * - Operators who flip a row back to enabled by accident will be
- *   auto-corrected on the next tick.
+ * Why the allow-list model (rather than the old deny-list of memes /
+ * speculative / structural-brittle buckets):
+ *   - Deny-lists are always a step behind the market. New volatile
+ *     listings (GIGGLE, USELESS, VELVET, SYN, ...) showed up on an
+ *     exchange, ran into the ladder-math / fast-trade / min_notional
+ *     class of failures, and only got added to the deny-list after an
+ *     incident. The allow-list inverts this: unknown = disabled.
+ *   - The base list is sourced from "CMC top 75 × Binance availability"
+ *     (snapshot 2026-04-23). These are liquid, large-cap, well-book'd
+ *     pairs where the ladder pre-gate and fast-trade guards are unlikely
+ *     to fire. Operators extend the list by adding tickers explicitly.
+ *   - Periodic (hourly) rather than one-shot because token-discovery
+ *     keeps re-ingesting new listings; any row for a non-allow-listed
+ *     token will be caught within the hour.
  *
  * The command is strictly additive: it only ever flips TRUE → FALSE on
- * listed tokens. It never re-enables anything. A token has to fall off
- * the static list below before it is trade-eligible again, which keeps
- * the decision explicit and source-controlled.
- *
- * Categories (all merged into one disable pass):
- *
- *   1. MEMES: pump-dump tokens driven by social sentiment with no
- *      fundamental price floor. Routinely show 30–90% swings that
- *      break the ladder math and blow up the cancel workflow.
- *
- *   2. SPECULATIVE/NARRATIVE: new or politically-charged listings with
- *      volume cliffs, thin order books, and regulatory tail risk.
- *
- *   3. STRUCTURAL-BRITTLE: low-price tokens where the chained limit
- *      ladder collapses below min_notional at typical margin tiers,
- *      producing realized losses from the unwind path (USELESS #64
- *      incident on 2026-04-23).
+ * non-allow-listed tokens. It never re-enables anything. Bringing a
+ * token back into trade-eligibility requires adding it to the list
+ * below AND an operator flipping `is_manually_enabled` back to true
+ * (the hourly sweep won't do that on its own).
  */
 final class DisableVolatileTokensCommand extends BaseCommand
 {
     /**
-     * Memes / pump-dump tokens. Extend by adding the ticker (uppercase,
-     * without the quote suffix) — applies across every api_system row.
+     * Curated trade-eligibility allow-list. Tokens that are NOT on this
+     * list get disabled across every api_system row.
+     *
+     * Seed source: CoinMarketCap top-75 by market cap (2026-04-23)
+     * intersected with what Binance actually offers as a USDT perp.
+     * Stablecoins and non-traded assets from the CMC list dropped out
+     * of the intersection naturally. Extend by adding the ticker
+     * (uppercase, no quote suffix) — applies across every api_system row.
      *
      * @var list<string>
      */
-    private const MEME_TOKENS = [
-        '1000SATS', 'ACT', 'APU', 'BANANA', 'BASED', 'BOME', 'BONK', 'BRETT',
-        'CATI', 'CHEEMS', 'DOGE', 'DOGS', 'FARTCOIN', 'FLOKI', 'GOAT', 'HIPPO',
-        'HMSTR', 'MANEKI', 'MEME', 'MEMEFI', 'MEW', 'MICHI', 'MOODENG', 'MOTHER',
-        'MYRO', 'NEIRO', 'NEIROETH', 'PEPE', 'PNUT', 'POPCAT', 'SHIB', 'SLERF',
-        'SUNDOG', 'TRUMP', 'TURBO', 'WIF',
-    ];
-
-    /**
-     * Narrative-driven / speculative / thin-book listings.
-     *
-     * @var list<string>
-     */
-    private const SPECULATIVE_TOKENS = [
-        'BIO', 'DUEL', 'FTT', 'MON', 'NIGHT', 'ORDI', 'SAFE', 'SOON', 'ULTIMA',
-        'VVV', 'WLFI', 'XPL',
-    ];
-
-    /**
-     * Tokens blocked for structural reasons (ladder / min_notional
-     * brittleness). The limit-ladder pre-gate in
-     * VerifyOrderNotionalForMarketOrderJob catches these at runtime, but
-     * we also keep them off the selection list to avoid wasting the
-     * scheduler's attention on them.
-     *
-     * @var list<string>
-     */
-    private const STRUCTURAL_BRITTLE_TOKENS = [
-        'ATA', 'AZTEC', 'BAS', 'BSB', 'CHILLGUY', 'IR', 'IRYS', 'MYX', 'ON',
-        'PRL', 'SYN', 'USELESS', 'VELVET',
-    ];
-
-    /**
-     * Tokens excluded by operator judgement — behavioural patterns that
-     * don't necessarily fit the automated buckets above (excessive
-     * exceptions, repeated fast-trade races, unclean fills, etc.).
-     * Moved here rather than MEMES/SPECULATIVE so the reasoning stays
-     * honest; these are calls on the trading desk, not algorithmic
-     * categorisations.
-     *
-     * @var list<string>
-     */
-    private const OPERATOR_EXCLUDED_TOKENS = [
-        'BEAT', 'CYS', 'GENIUS', 'PARTI', 'SKYAI', 'XPIN',
+    private const ALLOWED_TOKENS = [
+        'AAVE', 'ADA', 'AERO', 'ALGO', 'APT', 'ARB', 'ASTER', 'ATOM', 'AVAX', 'AXS',
+        'BAT', 'BCH', 'BNB', 'BSV', 'CC', 'CFX', 'CHIP', 'CHZ', 'COMP', 'CRV',
+        'CVX', 'DASH', 'DEEP', 'DEXE', 'DOT', 'ENS', 'ETC', 'ETH', 'FET', 'FF',
+        'FIL', 'GALA', 'GRT', 'HBAR', 'ICP', 'IMX', 'INJ', 'IP', 'JASMY', 'JST',
+        'JTO', 'JUP', 'KAS', 'LDO', 'LINK', 'LIT', 'LTC', 'M', 'MANA', 'NEAR',
+        'NEO', 'ONDO', 'OP', 'PAXG', 'PENDLE', 'POL', 'QNT', 'RAVE', 'RENDER', 'RUNE',
+        'SAND', 'SEI', 'SENT', 'SFP', 'SOL', 'STRK', 'STX', 'SUI', 'TAO', 'THETA',
+        'TIA', 'TON', 'TRX', 'TWT', 'UNI', 'VET', 'WAL', 'XEC', 'XLM', 'XMR',
+        'XRP', 'XTZ', 'ZK', 'ZRO',
     ];
 
     protected $signature = 'kraite:disable-volatile-tokens
                             {--dry-run : Report what would be disabled without writing}
                             {--output : Display command output (silent by default)}';
 
-    protected $description = 'Sweep exchange_symbols and disable tokens on the volatility deny-list across all exchanges.';
+    protected $description = 'Sweep exchange_symbols and disable every token NOT on the curated allow-list, across all exchanges.';
 
     public function handle(): int
     {
-        $denyList = array_values(array_unique(array_merge(
-            self::MEME_TOKENS,
-            self::SPECULATIVE_TOKENS,
-            self::STRUCTURAL_BRITTLE_TOKENS,
-            self::OPERATOR_EXCLUDED_TOKENS,
-        )));
+        $allowList = array_values(array_unique(self::ALLOWED_TOKENS));
 
         $dryRun = (bool) $this->option('dry-run');
 
-        $matches = ExchangeSymbol::whereIn('token', $denyList)
+        $matches = ExchangeSymbol::whereNotIn('token', $allowList)
             ->where('is_manually_enabled', true)
             ->get();
 
         if ($matches->isEmpty()) {
-            $this->verboseInfo('All deny-listed tokens are already disabled. Nothing to do.');
+            $this->verboseInfo('Every enabled exchange_symbol row is already on the allow-list. Nothing to do.');
 
             return self::SUCCESS;
         }
@@ -139,7 +101,7 @@ final class DisableVolatileTokensCommand extends BaseCommand
             $exchangeSymbol->updateSaving(['is_manually_enabled' => false]);
         }
 
-        $this->verboseInfo("Disabled {$rowCount} exchange_symbol row(s) across {$tokenCount} token(s).");
+        $this->verboseInfo("Disabled {$rowCount} exchange_symbol row(s) across {$tokenCount} token(s) (non-allow-listed).");
         $this->logTokenGroups($groupedByToken);
 
         return self::SUCCESS;

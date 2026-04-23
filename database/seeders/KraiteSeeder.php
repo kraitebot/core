@@ -91,7 +91,7 @@ final class KraiteSeeder extends Seeder
             ['canonical' => 'macd'],
             [
                 'type' => 'conclude-indicators',
-                'is_active' => true,
+                'is_active' => false,
                 'is_computed' => false,
                 'class' => "Kraite\Core\Indicators\RefreshData\MACDIndicator",
                 'parameters' => [
@@ -109,7 +109,7 @@ final class KraiteSeeder extends Seeder
             ['canonical' => 'supertrend'],
             [
                 'type' => 'conclude-indicators',
-                'is_active' => true,
+                'is_active' => false,
                 'is_computed' => false,
                 'class' => "Kraite\Core\Indicators\RefreshData\SupertrendIndicator",
                 'parameters' => [
@@ -125,7 +125,7 @@ final class KraiteSeeder extends Seeder
             ['canonical' => 'stochrsi'],
             [
                 'type' => 'conclude-indicators',
-                'is_active' => true,
+                'is_active' => false,
                 'is_computed' => false,
                 'class' => "Kraite\Core\Indicators\RefreshData\StochRSIIndicator",
                 'parameters' => [
@@ -143,11 +143,33 @@ final class KraiteSeeder extends Seeder
             ['canonical' => 'adx'],
             [
                 'type' => 'conclude-indicators',
-                'is_active' => true,
+                'is_active' => false,
                 'is_computed' => false,
                 'class' => "Kraite\Core\Indicators\RefreshData\ADXIndicator",
                 'parameters' => [
                     'results' => 1,
+                ],
+            ]
+        );
+
+        // Choppiness Index — ValidationIndicator that rejects a
+        // timeframe as "too choppy to vote on direction". Invalidates
+        // BEFORE the unanimous direction gate runs, so the walker moves
+        // up a timeframe instead of burning five direction indicators
+        // only to end at has_invalid_indicator_direction=1. Period 14
+        // is the canonical default; backtrack=1 reads the last CLOSED
+        // candle (matches our other direction reads).
+        Indicator::updateOrCreate(
+            ['canonical' => 'chop'],
+            [
+                'type' => 'conclude-indicators',
+                'is_active' => true,
+                'is_computed' => false,
+                'class' => "Kraite\Core\Indicators\RefreshData\ChoppinessIndexIndicator",
+                'parameters' => [
+                    'period' => 14,
+                    'results' => 1,
+                    'backtrack' => 1,
                 ],
             ]
         );
@@ -260,7 +282,7 @@ final class KraiteSeeder extends Seeder
             ['canonical' => 'rsi'],
             [
                 'type' => 'conclude-indicators',
-                'is_active' => true,
+                'is_active' => false,
                 'is_computed' => false,
                 'class' => "Kraite\Core\Indicators\RefreshData\RSIIndicator",
                 'parameters' => [
@@ -275,7 +297,7 @@ final class KraiteSeeder extends Seeder
             ['canonical' => 'bbands'],
             [
                 'type' => 'conclude-indicators',
-                'is_active' => true,
+                'is_active' => false,
                 'is_computed' => false,
                 'class' => "Kraite\Core\Indicators\RefreshData\BollingerBandsIndicator",
                 'parameters' => [
@@ -291,7 +313,7 @@ final class KraiteSeeder extends Seeder
             ['canonical' => 'atr'],
             [
                 'type' => 'conclude-indicators',
-                'is_active' => true,
+                'is_active' => false,
                 'is_computed' => false,
                 'class' => "Kraite\Core\Indicators\RefreshData\ATRIndicator",
                 'parameters' => [
@@ -305,7 +327,7 @@ final class KraiteSeeder extends Seeder
             ['canonical' => 'obv'],
             [
                 'type' => 'conclude-indicators',
-                'is_active' => true,
+                'is_active' => false,
                 'is_computed' => false,
                 'class' => "Kraite\Core\Indicators\RefreshData\OBVIndicator",
                 'parameters' => [
