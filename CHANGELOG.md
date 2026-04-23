@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.0 - 2026-04-23
+
+### Features
+
+- [NEW FEATURE] Binance WebSocket price daemon. `kraite:stream-binance-prices` is a long-running process (supervisor-managed, NOT a cron) that subscribes to `!markPrice@arr@1s` and keeps `exchange_symbols.mark_price` + `mark_price_synced_at` fresh at 1 Hz for every Binance-listed symbol. Cross-exchange replication: one Binance tick also writes the same price to every matching (token+quote) row on Bybit / KuCoin / Bitget, using `token_mappers` overrides for naming divergence (BTC→XBT, 1000SATS→10000SATS, etc.). Architecture: `Abstracts/BaseWebsocketClient` (Ratchet/Pawl + React\\EventLoop, auto-pong, exponential-backoff reconnect, max 5 attempts), `Support/ApiClients/Websocket/BinanceApiClient`, `Support/Apis/Websocket/BinanceApi`, `Support/Proxies/ApiWebsocketProxy`. Raw chunked 500-row CASE/WHEN UPDATE bypasses Eloquent on the 1 Hz hot path. `gc_collect_cycles()` per batch for long-uptime stability.
+- [NEW FEATURE] Pivot-based selection-phase S/R gate. Every candidate in `HasTokenDiscovery::selectBestTokenByBtcBias` + `selectBestTokenFallback` gets its base score multiplied by an S/R proximity factor computed from the symbol's stored pivot_r1/pivot_r3/pivot_s1/pivot_s3 columns, its live mark_price, and its concluded direction. Safe-zone candidates retain full score, penalty-band candidates fade linearly to zero (LONG approaching R1 / SHORT approaching S1), breakouts through R3 (LONG) or S3 (SHORT) are direction-aware (1.0 for continuation, 0.0 for against-direction). Soft by construction — a penalised candidate isn't filtered, it's just sorted to the bottom; if every candidate is penalised, the least-penalised wins. `Kraite\\Core\\Support\\SupportResistanceProximity::computeMultiplier()` holds the pure math; graceful-degrade to 1.0 on any missing input.
+- [NEW FEATURE] `Indicators/RefreshData/PivotPointsIndicator` — `ValidationIndicator` that always returns true. Targets TAAPI's `pivotpoints` endpoint so the payload (r3/r2/r1/p/s1/s2/s3) lands in `indicator_histories` + mirrors into `exchange_symbols.indicators_values['pivotpoints']`. Always-true contract keeps pivot data from ever contributing to a direction vote or invalidating a timeframe. Seeded into `indicators` table by `KraiteSeeder::seedIndicators()`.
+- [NEW FEATURE] `Jobs/Atomic/ExchangeSymbol/QueryAndStoreSupportAndResistanceJob` — runs at index 4 of `ConcludeSymbolDirectionAtTimeframeJob::createFinalizationSteps()`, parallel with `CopyDirectionToOtherExchangesJob`. Reads pivotpoints payload from `indicators_values` and copies the seven levels into dedicated DECIMAL(20,8) columns on `exchange_symbols`. Guards against direction having been cleared between scheduling and execution (e.g. `ConfirmPriceAlignmentWithDirectionJob` at index 3 detecting price trend misalignment).
+- [NEW FEATURE] Migration `add_pivot_columns_to_exchange_symbols` — adds `pivot_r3`, `pivot_r2`, `pivot_r1`, `pivot_p`, `pivot_s1`, `pivot_s2`, `pivot_s3` DECIMAL(20,8) columns + `pivot_synced_at` timestamp.
+- [NEW FEATURE] Migration `add_mark_price_synced_at_to_exchange_symbols` — nullable timestamp stamped by the WebSocket daemon for staleness detection.
+- [NEW FEATURE] `Commands/Daemons/StreamBinancePricesCommand` — the daemon command itself, registered in `CoreServiceProvider`.
+- [NEW FEATURE] Config knob `kraite.token_discovery.sr_safe_zone` (env `TOKEN_DISCOVERY_SR_SAFE_ZONE`, default 0.20) — width of the proximity penalty band as a fraction of the R1-S1 range. Tuneable without code changes.
+
+### Improvements
+
+- [IMPROVED] `ConcludeSymbolDirectionAtTimeframeJob` direction-invalidation paths now null the seven pivot columns + `pivot_synced_at` alongside `direction / indicators_values / indicators_timeframe / indicators_synced_at`. Applies to `handleInconclusiveTimeframe` (all-timeframes exhausted) and `handleDirectionChange` (path-invalid rejection). Stale pivots never survive a direction invalidation.
+- [IMPROVED] `ConcludeSymbolsDirectionCommand --reset` flag also nulls the pivot columns for completeness.
+
 ## 1.4.9 - 2026-04-23
 
 ### Fixes

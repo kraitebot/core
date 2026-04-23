@@ -90,6 +90,14 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
                 'indicators_values' => null,
                 'indicators_timeframe' => null,
                 'indicators_synced_at' => null,
+                'pivot_r3' => null,
+                'pivot_r2' => null,
+                'pivot_r1' => null,
+                'pivot_p' => null,
+                'pivot_s1' => null,
+                'pivot_s2' => null,
+                'pivot_s3' => null,
+                'pivot_synced_at' => null,
             ]);
 
             $this->verboseInfo("✓ Reset {$resetCount} exchange symbols");

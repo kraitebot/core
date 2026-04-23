@@ -22,6 +22,7 @@ use Kraite\Core\Commands\Cronjobs\PurgeModelLogsCommand;
 use Kraite\Core\Commands\Cronjobs\RefreshExchangeSymbolsCommand;
 use Kraite\Core\Commands\Cronjobs\StoreAccountsBalancesCommand;
 use Kraite\Core\Commands\Cronjobs\SyncOrdersCommand;
+use Kraite\Core\Commands\Daemons\StreamBinancePricesCommand;
 use Kraite\Core\Commands\Ingestion\IsEligibleCommand;
 use Kraite\Core\Commands\SafeToRestartCommand;
 use Kraite\Core\Commands\Tests\TestNotificationCommand;
@@ -77,6 +78,7 @@ final class CoreServiceProvider extends ServiceProvider
             PurgeModelLogsCommand::class,
             RefreshExchangeSymbolsCommand::class,
             StoreAccountsBalancesCommand::class,
+            StreamBinancePricesCommand::class,
             SyncOrdersCommand::class,
             IsEligibleCommand::class,
             TestNotificationCommand::class,

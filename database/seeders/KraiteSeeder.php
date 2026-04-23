@@ -152,6 +152,26 @@ final class KraiteSeeder extends Seeder
             ]
         );
 
+        // Pivot points — ValidationIndicator that always passes. Exists
+        // in the pipeline purely so its payload (r3/r2/r1/p/s1/s2/s3)
+        // lands in indicator_histories + indicators_values, ready for
+        // QueryAndStoreSupportAndResistanceJob to copy into dedicated
+        // columns during the direction-finalization phase. Never
+        // influences direction conclusion — see the indicator class
+        // docblock for rationale.
+        Indicator::updateOrCreate(
+            ['canonical' => 'pivotpoints'],
+            [
+                'type' => 'conclude-indicators',
+                'is_active' => true,
+                'is_computed' => false,
+                'class' => "Kraite\Core\Indicators\RefreshData\PivotPointsIndicator",
+                'parameters' => [
+                    'results' => 1,
+                ],
+            ]
+        );
+
         Indicator::updateOrCreate(
             ['canonical' => 'emas-convergence'],
             [

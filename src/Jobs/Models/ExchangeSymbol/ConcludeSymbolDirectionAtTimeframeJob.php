@@ -9,6 +9,7 @@ use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Jobs\Atomic\ExchangeSymbol\ConfirmPriceAlignmentWithDirectionJob;
 use Kraite\Core\Jobs\Atomic\ExchangeSymbol\CopyDirectionToOtherExchangesJob;
+use Kraite\Core\Jobs\Atomic\ExchangeSymbol\QueryAndStoreSupportAndResistanceJob;
 use Kraite\Core\Jobs\Models\Indicator\QuerySymbolIndicatorsJob;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\IndicatorHistory;
@@ -252,6 +253,14 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
                 'indicators_timeframe' => null,
                 'indicators_synced_at' => null,
                 'has_invalid_indicator_direction' => true,
+                'pivot_r3' => null,
+                'pivot_r2' => null,
+                'pivot_r1' => null,
+                'pivot_p' => null,
+                'pivot_s1' => null,
+                'pivot_s2' => null,
+                'pivot_s3' => null,
+                'pivot_synced_at' => null,
             ]);
 
             // Notify admin when direction is invalidated after exhausting all timeframes
@@ -331,6 +340,14 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
                 'indicators_timeframe' => null,
                 'indicators_synced_at' => null,
                 'has_early_direction_change' => true,
+                'pivot_r3' => null,
+                'pivot_r2' => null,
+                'pivot_r1' => null,
+                'pivot_p' => null,
+                'pivot_s1' => null,
+                'pivot_s2' => null,
+                'pivot_s3' => null,
+                'pivot_synced_at' => null,
             ]);
 
             // Notify admin when direction is invalidated due to path inconsistency
@@ -483,6 +500,23 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
             'index' => 4,
             'arguments' => [
                 'sourceExchangeSymbolId' => $symbolId,
+            ],
+        ]);
+
+        // INDEX 4 (parallel): Copy pivot levels from indicators_values
+        // JSON into the dedicated pivot_* columns so the selection-phase
+        // S/R gate can read them without touching JSON. Runs only after
+        // a direction has been concluded; the atomic itself no-ops if
+        // direction gets cleared between this step being created and
+        // actually running.
+        Step::create([
+            'class' => QueryAndStoreSupportAndResistanceJob::class,
+            'queue' => 'indicators',
+            'block_uuid' => $blockUuid,
+            'group' => $group,
+            'index' => 4,
+            'arguments' => [
+                'exchangeSymbolId' => $symbolId,
             ],
         ]);
 

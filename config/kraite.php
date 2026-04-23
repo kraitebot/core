@@ -110,6 +110,26 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Token Discovery
+    |--------------------------------------------------------------------------
+    |
+    | sr_safe_zone: width of the S/R proximity penalty band as a fraction
+    |               of the R1-S1 range. 0.20 = "reject / penalise candidates
+    |               whose mark_price is in the outer 20 % toward the
+    |               wrong-side level for their concluded direction".
+    |               LONG gets penalised as position_in_range → 1.0 (near R1);
+    |               SHORT gets penalised as position_in_range → 0.0 (near S1).
+    |               Breakouts past R3 / S3 are handled direction-aware and
+    |               bypass this band.
+    |               Default: 0.20.
+    */
+    'token_discovery' => [
+        'sr_safe_zone' => (float) env('TOKEN_DISCOVERY_SR_SAFE_ZONE', 0.20),
+        'correlation_type' => env('TOKEN_DISCOVERY_CORRELATION_TYPE', 'rolling'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Default Throttle Seconds
     |--------------------------------------------------------------------------
     |

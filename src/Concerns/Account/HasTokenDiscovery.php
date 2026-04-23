@@ -6,13 +6,14 @@ namespace Kraite\Core\Concerns\Account;
 
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
-use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Models\Symbol;
 use Kraite\Core\Models\TokenMapper;
+use Kraite\Core\Support\SupportResistanceProximity;
+use Kraite\Core\Trading\Kraite;
 
 /*
  * Trait HasTokenDiscovery
@@ -558,7 +559,9 @@ trait HasTokenDiscovery
         /*
          * Score Each Candidate Using SYMBOL'S OWN Timeframe
          */
-        $scoredSymbols = $candidates->map(static function ($symbol) use (
+        // Non-static closure: we need $this available inside so the
+        // proximity multiplier helper can be called.
+        $scoredSymbols = $candidates->map(function ($symbol) use (
             $positionDirection,
             $correlationField,
             $requireMatchingSign,
@@ -615,6 +618,17 @@ trait HasTokenDiscovery
             } else {
                 $score = $elasticityLong * abs($correlation);
             }
+
+            /*
+             * Apply the S/R proximity multiplier. Deprioritises candidates
+             * whose live mark_price sits near the wrong-side pivot level
+             * for the concluded direction (LONG close to R1, SHORT close
+             * to S1). Soft — a 0.30-multiplier candidate still wins if
+             * nothing else beats its reduced score. Missing pivot data or
+             * missing mark_price returns 1.0 (graceful degrade — don't
+             * penalise for absent information).
+             */
+            $score *= $this->supportResistanceMultiplierFor($symbol, $positionDirection);
 
             return [
                 'symbol' => $symbol,
@@ -697,6 +711,10 @@ trait HasTokenDiscovery
                 }
             }
 
+            // S/R proximity multiplier — see selectBestTokenByBtcBias()
+            // for rationale.
+            $bestScore *= $this->supportResistanceMultiplierFor($symbol, $direction);
+
             return [
                 'symbol' => $symbol,
                 'score' => $bestScore,
@@ -769,5 +787,30 @@ trait HasTokenDiscovery
             ->merge($fromOther)
             ->unique()
             ->values();
+    }
+
+    /**
+     * Compute the S/R proximity multiplier for a candidate during selection.
+     *
+     * Reads the symbol's stored pivot columns (R1/R3/S1/S3) and its live
+     * mark_price (refreshed by StreamBinancePricesCommand at ~1Hz), then
+     * delegates to SupportResistanceProximity for the pure math. Returns
+     * 1.0 when any required input is missing so missing pivot data never
+     * unintentionally filters a symbol — the gate is additive and
+     * opt-in, not a hard requirement.
+     */
+    protected function supportResistanceMultiplierFor(ExchangeSymbol $symbol, string $direction): float
+    {
+        $safeZone = (float) config('kraite.token_discovery.sr_safe_zone', 0.20);
+
+        return SupportResistanceProximity::computeMultiplier(
+            direction: $direction,
+            markPrice: $symbol->mark_price,
+            r1: $symbol->pivot_r1,
+            r3: $symbol->pivot_r3,
+            s1: $symbol->pivot_s1,
+            s3: $symbol->pivot_s3,
+            safeZone: $safeZone,
+        );
     }
 }
