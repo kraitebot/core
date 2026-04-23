@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\Position;
 
+use Illuminate\Support\Facades\Log;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
@@ -112,6 +114,8 @@ final class VerifyOrderNotionalForMarketOrderJob extends BaseApiableJob
         $effectiveMinNotional = Kraite::getEffectiveMinNotional($exchangeSymbol);
 
         if ($marketOrderQuantity === '0') {
+            $this->logFailureContext($exchangeSymbol, $markPrice, $divider, $margin, $leverage, $notional, $marketOrderQuantity, null, 'unusable_quantity');
+
             throw new RuntimeException(
                 "Order size ({$notional}) results in unusable quantity (fails minimum notional of {$effectiveMinNotional})"
             );
@@ -122,6 +126,8 @@ final class VerifyOrderNotionalForMarketOrderJob extends BaseApiableJob
 
         // 6. Verify notional meets exchange-specific minimum (handles KuCoin differences)
         if (! Kraite::meetsMinNotional($exchangeSymbol, $marketOrderNotional)) {
+            $this->logFailureContext($exchangeSymbol, $markPrice, $divider, $margin, $leverage, $notional, $marketOrderQuantity, $marketOrderNotional, 'market_notional_below_minimum');
+
             throw new RuntimeException(
                 "Market order notional ({$marketOrderNotional}) below minimum ({$effectiveMinNotional})"
             );
@@ -131,14 +137,27 @@ final class VerifyOrderNotionalForMarketOrderJob extends BaseApiableJob
         // PlaceMarketOrderJob) is the whole point — if it throws at the
         // downstream DispatchLimitOrdersJob instead, we've already filled the
         // market and have to unwind an orphaned entry at a realized loss.
-        Kraite::calculateLimitOrdersData(
-            totalLimitOrders: $this->position->total_limit_orders,
-            direction: (string) $this->position->direction,
-            referencePrice: $markPrice,
-            marketOrderQty: $marketOrderQuantity,
-            exchangeSymbol: $exchangeSymbol,
-            limitQuantityMultipliers: $exchangeSymbol->limit_quantity_multipliers,
-        );
+        try {
+            Kraite::calculateLimitOrdersData(
+                totalLimitOrders: $this->position->total_limit_orders,
+                direction: (string) $this->position->direction,
+                referencePrice: $markPrice,
+                marketOrderQty: $marketOrderQuantity,
+                exchangeSymbol: $exchangeSymbol,
+                limitQuantityMultipliers: $exchangeSymbol->limit_quantity_multipliers,
+            );
+        } catch (Throwable $ladderError) {
+            // Ladder simulation rejected the projected chain — most
+            // commonly a rung-notional breach. Capture the full input
+            // vector that produced the rejection so we can forensically
+            // reconstruct anomalies like TAKE #146 (where the same
+            // inputs reproduced minutes later produced a healthy
+            // ladder — suggesting a transient calc race we couldn't
+            // pin from logs alone).
+            $this->logFailureContext($exchangeSymbol, $markPrice, $divider, $margin, $leverage, $notional, $marketOrderQuantity, $marketOrderNotional, 'ladder_infeasible', $ladderError->getMessage());
+
+            throw $ladderError;
+        }
 
         return [
             'position_id' => $this->position->id,
@@ -158,6 +177,50 @@ final class VerifyOrderNotionalForMarketOrderJob extends BaseApiableJob
     {
         $this->position->updateSaving([
             'error_message' => $e->getMessage(),
+        ]);
+    }
+
+    /**
+     * Write the full input vector to the jobs log channel whenever a
+     * pre-gate check fails. Lets us forensically reconstruct transient
+     * anomalies (e.g. TAKE #146 on 2026-04-23 where identical inputs
+     * reproduced minutes later produced a healthy ladder). The step's
+     * error_message only captures the final `RuntimeException` string;
+     * this log line captures what went INTO the math that produced it.
+     */
+    private function logFailureContext(
+        ExchangeSymbol $exchangeSymbol,
+        string $markPrice,
+        int $divider,
+        string $margin,
+        string $leverage,
+        string $notional,
+        string $marketOrderQuantity,
+        ?string $marketOrderNotional,
+        string $reason,
+        ?string $ladderError = null,
+    ): void {
+        Log::channel('jobs')->warning('[VERIFY-NOTIONAL] Pre-gate rejected a trade — capturing inputs', [
+            'reason' => $reason,
+            'position_id' => $this->position->id,
+            'symbol' => $exchangeSymbol->parsed_trading_pair,
+            'direction' => $this->position->direction,
+            'margin' => $margin,
+            'leverage' => $leverage,
+            'divider' => $divider,
+            'notional' => $notional,
+            'mark_price_fetched' => $markPrice,
+            'mark_price_in_memory' => $exchangeSymbol->mark_price,
+            'quantity_precision' => $exchangeSymbol->quantity_precision,
+            'tick_size' => $exchangeSymbol->tick_size,
+            'min_notional' => $exchangeSymbol->min_notional,
+            'percentage_gap_long' => $exchangeSymbol->percentage_gap_long,
+            'percentage_gap_short' => $exchangeSymbol->percentage_gap_short,
+            'total_limit_orders' => $exchangeSymbol->total_limit_orders,
+            'limit_quantity_multipliers' => $exchangeSymbol->limit_quantity_multipliers,
+            'market_order_quantity' => $marketOrderQuantity,
+            'market_order_notional' => $marketOrderNotional,
+            'ladder_error' => $ladderError,
         ]);
     }
 }

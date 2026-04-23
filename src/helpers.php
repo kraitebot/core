@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\File;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Support\Math;
 
@@ -176,7 +177,18 @@ function truncate_decimal_string(string $value, int $precision): string
         $truncated = "{$integerPart}.{$truncatedFraction}";
     }
 
-    $truncated = mb_rtrim(mb_rtrim($truncated, '0'), '.');
+    // Only strip trailing zeros when there is a fractional part. Running
+    // rtrim('0') on a pure integer corrupts significant digits — "1310"
+    // collapses to "131", silently dividing quantities by 10x. That was
+    // the root cause of the TAKE #151 / TAKE #146 / TURTLE #149 ladder-
+    // rejection class of bugs: integer market_order_quantity values like
+    // "1310" or "460" got mangled before being fed into the rung-notional
+    // simulation, producing below-min-notional projections on symbols
+    // whose real qty was perfectly valid.
+    if (str_contains($truncated, '.')) {
+        $truncated = mb_rtrim(mb_rtrim($truncated, '0'), '.');
+    }
+
     if ($truncated === '') {
         $truncated = '0';
     }
@@ -197,20 +209,20 @@ function cleanLogsFolder(): void
 {
     $logsPath = storage_path('logs');
 
-    if (! \Illuminate\Support\Facades\File::isDirectory($logsPath)) {
+    if (! File::isDirectory($logsPath)) {
         return;
     }
 
     /** @var array<int, string> $directories */
-    $directories = \Illuminate\Support\Facades\File::directories($logsPath);
+    $directories = File::directories($logsPath);
     foreach ($directories as $directory) {
-        \Illuminate\Support\Facades\File::deleteDirectory($directory);
+        File::deleteDirectory($directory);
     }
 
     /** @var array<int, string> $logFiles */
-    $logFiles = \Illuminate\Support\Facades\File::glob($logsPath.'/*.log');
+    $logFiles = File::glob($logsPath.'/*.log');
     foreach ($logFiles as $logFile) {
-        \Illuminate\Support\Facades\File::delete($logFile);
+        File::delete($logFile);
     }
 }
 

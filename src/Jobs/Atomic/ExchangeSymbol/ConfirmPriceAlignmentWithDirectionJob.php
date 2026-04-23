@@ -59,6 +59,14 @@ final class ConfirmPriceAlignmentWithDirectionJob extends BaseQueueableJob
                 'indicators_timeframe' => null,
                 'indicators_synced_at' => null,
                 'has_no_indicator_data' => true,
+                'pivot_r3' => null,
+                'pivot_r2' => null,
+                'pivot_r1' => null,
+                'pivot_p' => null,
+                'pivot_s1' => null,
+                'pivot_s2' => null,
+                'pivot_s3' => null,
+                'pivot_synced_at' => null,
             ]);
 
             return ['response' => "Price alignment for {$this->exchangeSymbol->parsed_trading_pair} REMOVED due to missing indicator history"];
@@ -87,6 +95,14 @@ final class ConfirmPriceAlignmentWithDirectionJob extends BaseQueueableJob
                 'indicators_timeframe' => null,
                 'indicators_synced_at' => null,
                 'has_price_trend_misalignment' => true,
+                'pivot_r3' => null,
+                'pivot_r2' => null,
+                'pivot_r1' => null,
+                'pivot_p' => null,
+                'pivot_s1' => null,
+                'pivot_s2' => null,
+                'pivot_s3' => null,
+                'pivot_synced_at' => null,
             ]);
 
             return ['response' => "Price alignment for {$this->exchangeSymbol->parsed_trading_pair}-{$direction} REMOVED due to price misalignment (Open: {$currentOpen}, Close: {$currentClose}, timeframe: {$timeframe})"];

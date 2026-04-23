@@ -8,6 +8,8 @@ use Illuminate\Support\Facades\Log;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Position;
+use RuntimeException;
+use Throwable;
 
 /**
  * SyncPositionOrdersJob
@@ -23,7 +25,7 @@ use Kraite\Core\Models\Position;
  * The Order Observer detects changes and triggers appropriate workflows
  * (e.g., ClosePositionJob when profit/stop order is FILLED).
  */
-class SyncPositionOrdersJob extends BaseApiableJob
+final class SyncPositionOrdersJob extends BaseApiableJob
 {
     public Position $position;
 
@@ -49,32 +51,17 @@ class SyncPositionOrdersJob extends BaseApiableJob
      */
     public function startOrFail(): bool
     {
-        Log::channel('jobs')->info('[SYNC-DEBUG] startOrFail() called', [
-            'position_id' => $this->position->id,
-            'status' => $this->position->status,
-            'opened_statuses' => $this->position->openedStatuses(),
-        ]);
-
         // Position must be in an "opened" status
         if (! in_array($this->position->status, $this->position->openedStatuses(), true)) {
-            Log::channel('jobs')->info('[SYNC-DEBUG] startOrFail() → false (status not in openedStatuses)');
-
             return false;
         }
 
-        $hasSyncable = $this->position->orders()->syncable()->exists();
-        Log::channel('jobs')->info('[SYNC-DEBUG] startOrFail() → syncable exists: '.($hasSyncable ? 'yes' : 'no'));
-
         // Must have at least one syncable order
-        return $hasSyncable;
+        return $this->position->orders()->syncable()->exists();
     }
 
     public function computeApiable()
     {
-        Log::channel('jobs')->info('[SYNC-DEBUG] computeApiable() START', [
-            'position_id' => $this->position->id,
-        ]);
-
         // The flip to 'syncing' lives inside the atomic (not in the parent
         // orchestrator) so that the flip and the flip-back share a single
         // owner. If startOrFail rejected us upstream, this line never runs
@@ -93,29 +80,19 @@ class SyncPositionOrdersJob extends BaseApiableJob
 
         // Get all syncable orders (non-MARKET with exchange_order_id)
         $orders = $this->position->orders()->syncable()->get();
-        Log::channel('jobs')->info('[SYNC-DEBUG] Found '.count($orders).' syncable orders');
 
         foreach ($orders as $order) {
-            Log::channel('jobs')->info('[SYNC-DEBUG] Syncing order', [
-                'order_id' => $order->id,
-                'type' => $order->type,
-                'status_before' => $order->status,
-            ]);
-
             try {
                 $order->apiSync();
-                Log::channel('jobs')->info('[SYNC-DEBUG] Order synced OK', [
-                    'order_id' => $order->id,
-                    'status_after' => $order->status,
-                ]);
                 $syncedOrders[] = [
                     'id' => $order->id,
                     'type' => $order->type,
                     'status' => $order->status,
                 ];
-            } catch (\Throwable $e) {
-                Log::channel('jobs')->error('[SYNC-DEBUG] Order sync FAILED', [
+            } catch (Throwable $e) {
+                Log::channel('jobs')->error('[SYNC] order sync failed', [
                     'order_id' => $order->id,
+                    'position_id' => $this->position->id,
                     'error' => $e->getMessage(),
                 ]);
                 $failedOrders[] = [
@@ -126,11 +103,6 @@ class SyncPositionOrdersJob extends BaseApiableJob
             }
         }
 
-        Log::channel('jobs')->info('[SYNC-DEBUG] computeApiable() END', [
-            'synced' => count($syncedOrders),
-            'failed' => count($failedOrders),
-        ]);
-
         // If every order failed, surface the failure so the job-level retry
         // kicks in. Partial failures still pass — individual stuck orders
         // get picked up by the next sync tick. A total failure almost always
@@ -139,7 +111,7 @@ class SyncPositionOrdersJob extends BaseApiableJob
         if (count($orders) > 0 && count($syncedOrders) === 0 && count($failedOrders) > 0) {
             $firstError = $failedOrders[0]['error'] ?? 'unknown error';
             $failureCount = count($failedOrders);
-            throw new \RuntimeException(
+            throw new RuntimeException(
                 "All {$failureCount} orders failed to sync for position {$this->position->id}: {$firstError}"
             );
         }

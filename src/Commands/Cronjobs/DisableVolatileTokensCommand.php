@@ -79,7 +79,8 @@ final class DisableVolatileTokensCommand extends BaseCommand
      * @var list<string>
      */
     private const STRUCTURAL_BRITTLE_TOKENS = [
-        'ATA', 'AZTEC', 'BSB', 'CHILLGUY', 'IR', 'IRYS', 'MYX', 'PRL', 'USELESS',
+        'ATA', 'AZTEC', 'BAS', 'BSB', 'CHILLGUY', 'IR', 'IRYS', 'MYX', 'ON',
+        'PRL', 'SYN', 'USELESS', 'VELVET',
     ];
 
     /**

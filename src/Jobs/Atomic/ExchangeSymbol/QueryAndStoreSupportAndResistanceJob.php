@@ -65,14 +65,29 @@ final class QueryAndStoreSupportAndResistanceJob extends BaseQueueableJob
             ];
         }
 
+        // TAAPI wraps indicator results in a numerically-indexed array
+        // when `results>=1` (one candle window). The levels live at
+        // index 0 as `{r3,r2,r1,p,s1,s2,s3}`. If the shape is already
+        // flat (future TAAPI contract change or a direct-query shape),
+        // accept that too.
+        $levels = isset($pivots[0]) && is_array($pivots[0]) ? $pivots[0] : $pivots;
+
+        if (! isset($levels['r1']) && ! isset($levels['s1'])) {
+            return [
+                'exchange_symbol_id' => $exchangeSymbol->id,
+                'status' => 'skipped',
+                'reason' => 'pivotpoints_payload_shape_unrecognised',
+            ];
+        }
+
         $payload = [
-            'pivot_r3' => $this->asDecimal($pivots['r3'] ?? null),
-            'pivot_r2' => $this->asDecimal($pivots['r2'] ?? null),
-            'pivot_r1' => $this->asDecimal($pivots['r1'] ?? null),
-            'pivot_p' => $this->asDecimal($pivots['p'] ?? null),
-            'pivot_s1' => $this->asDecimal($pivots['s1'] ?? null),
-            'pivot_s2' => $this->asDecimal($pivots['s2'] ?? null),
-            'pivot_s3' => $this->asDecimal($pivots['s3'] ?? null),
+            'pivot_r3' => $this->asDecimal($levels['r3'] ?? null),
+            'pivot_r2' => $this->asDecimal($levels['r2'] ?? null),
+            'pivot_r1' => $this->asDecimal($levels['r1'] ?? null),
+            'pivot_p' => $this->asDecimal($levels['p'] ?? null),
+            'pivot_s1' => $this->asDecimal($levels['s1'] ?? null),
+            'pivot_s2' => $this->asDecimal($levels['s2'] ?? null),
+            'pivot_s3' => $this->asDecimal($levels['s3'] ?? null),
             'pivot_synced_at' => Carbon::now(),
         ];
 

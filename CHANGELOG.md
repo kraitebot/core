@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.1 - 2026-04-23
+
+### Fixes
+
+- [BUG FIX] `src/helpers.php::truncate_decimal_string` — stopped stripping trailing zeros from pure-integer inputs. The unconditional `rtrim('0')` collapsed "1310" → "131" when precision was 0, silently dividing quantities by 10x and producing below-min-notional projections in the limit-ladder pre-gate. Root cause of the TAKE #151 / TAKE #146 / TURTLE #149 / USELESS #64 ladder-rejection failure class. Fix guards the rtrim with `str_contains($truncated, '.')` so only fractional tails get trimmed; integer values round-trip untouched.
+- [BUG FIX] `Jobs/Atomic/ExchangeSymbol/QueryAndStoreSupportAndResistanceJob` — handles TAAPI's wrapped-array payload shape (`[{r1:..., s1:...}]`) in addition to the hypothetical flat shape; skips with a named `pivotpoints_payload_shape_unrecognised` reason when the payload can't be matched; no longer stamps `pivot_synced_at` on skip paths so half-populated zombie-state rows stop happening.
+- [BUG FIX] `Jobs/Atomic/ExchangeSymbol/ConfirmPriceAlignmentWithDirectionJob` — both invalidation paths (missing indicator history, price-trend misalignment) now null the seven `pivot_*` columns + `pivot_synced_at` alongside `direction / indicators_values / indicators_timeframe`. Stale pivots never survive a direction clear.
+
+### Improvements
+
+- [IMPROVED] `Jobs/Atomic/Position/VerifyOrderNotionalForMarketOrderJob` — added `logFailureContext()` capturing the full input vector (margin, leverage, divider, notional, mark_price_fetched vs mark_price_in_memory, quantity_precision, tick_size, min_notional, percentage_gap_long/short, total_limit_orders, limit_quantity_multipliers, market_order_quantity, market_order_notional, ladder_error) on all three pre-gate throw paths (`unusable_quantity`, `market_notional_below_minimum`, `ladder_infeasible`). Forensic trail for transient reproducibility anomalies.
+- [IMPROVED] `Jobs/Atomic/Order/SyncPositionOrdersJob` — removed SYNC-DEBUG info-level logging noise from `startOrFail` / `computeApiable`; kept only the error-level `[SYNC] order sync failed` log.
+- [IMPROVED] `Jobs/Lifecycles/Order/PrepareSyncOrdersJob` — removed the `[PREPARE-SYNC-PROFILE]` timing-profile log and its unused `Log` facade import.
+- [IMPROVED] `Commands/Cronjobs/DisableVolatileTokensCommand` — added BAS, ON, SYN, VELVET to `STRUCTURAL_BRITTLE_TOKENS` following 2026-04-23 ladder-rejection incidents.
+- [IMPROVED] `src/helpers.php` — imported `Illuminate\Support\Facades\File` via a `use` statement so the procedural body reads `File::` instead of the FQCN.
+
 ## 1.5.0 - 2026-04-23
 
 ### Features
