@@ -21,9 +21,14 @@ use RuntimeException;
  * - active, watching, waping
  *
  * Optional $onlyFromStatus guard: when provided, the transition only fires
- * if the current status matches. Prevents concurrent workflows (e.g. a WAP
- * revert-to-active racing a close workflow's transition to 'closing') from
- * clobbering each other's state. When guard mismatches, the job no-ops.
+ * if the current status matches one of the allowed values. Accepts either a
+ * single string (strict guard) or an array of acceptable prior statuses
+ * (broader guard — used e.g. by ApplyWapJob to accept both 'active' and
+ * 'syncing' as valid starting points when a LIMIT fill detected mid-sync
+ * would otherwise race against the sync's own complete()-path flip back
+ * to 'active'). Prevents concurrent workflows (e.g. a WAP revert-to-active
+ * racing a close workflow's transition to 'closing') from clobbering each
+ * other's state. When the guard mismatches, the job no-ops.
  */
 final class UpdatePositionStatusJob extends BaseQueueableJob
 {
@@ -33,13 +38,17 @@ final class UpdatePositionStatusJob extends BaseQueueableJob
 
     public ?string $message;
 
-    public ?string $onlyFromStatus;
+    /** @var string|array<int, string>|null */
+    public string|array|null $onlyFromStatus;
 
+    /**
+     * @param  string|array<int, string>|null  $onlyFromStatus
+     */
     public function __construct(
         int $positionId,
         string $status,
         ?string $message = null,
-        ?string $onlyFromStatus = null,
+        string|array|null $onlyFromStatus = null,
     ) {
         $this->position = Position::findOrFail($positionId);
         $this->status = $status;
@@ -57,18 +66,28 @@ final class UpdatePositionStatusJob extends BaseQueueableJob
         $position = $this->position;
         $previousStatus = $position->status;
 
-        // Conditional guard: only flip when current status matches the
-        // declared precondition. Lets WAP / sync / similar workflows revert
-        // without stomping over a later workflow that has already advanced
-        // the position into a different non-terminal state (e.g. 'closing').
-        if ($this->onlyFromStatus !== null && $previousStatus !== $this->onlyFromStatus) {
-            return [
-                'position_id' => $position->id,
-                'previous_status' => $previousStatus,
-                'requested_status' => $this->status,
-                'skipped' => true,
-                'reason' => "guard requires status='{$this->onlyFromStatus}', got '{$previousStatus}'",
-            ];
+        // Conditional guard: only flip when current status matches one of
+        // the declared preconditions. Lets WAP / sync / similar workflows
+        // revert without stomping over a later workflow that has already
+        // advanced the position into a different non-terminal state (e.g.
+        // 'closing'). Accepts a string or an array of acceptable prior
+        // statuses.
+        if ($this->onlyFromStatus !== null) {
+            $allowed = is_array($this->onlyFromStatus)
+                ? $this->onlyFromStatus
+                : [$this->onlyFromStatus];
+
+            if (! in_array($previousStatus, $allowed, true)) {
+                $expectation = implode(separator: "','", array: $allowed);
+
+                return [
+                    'position_id' => $position->id,
+                    'previous_status' => $previousStatus,
+                    'requested_status' => $this->status,
+                    'skipped' => true,
+                    'reason' => "guard requires status in ['{$expectation}'], got '{$previousStatus}'",
+                ];
+            }
         }
 
         switch ($this->status) {

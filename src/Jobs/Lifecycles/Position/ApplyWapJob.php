@@ -83,9 +83,16 @@ final class ApplyWapJob extends BaseApiableJob
         $blockUuid = $this->uuid();
 
         // Step 1: Update position status to 'waping'.
-        // Guarded with onlyFromStatus='active': if a concurrent close workflow
-        // has already transitioned the position to 'closing' between our
-        // orchestrator's startOrFail and this step, skip rather than revive it.
+        // Guarded with onlyFromStatus=['active', 'syncing']: if a concurrent
+        // close workflow has already transitioned the position to 'closing'
+        // or 'cancelling' between our orchestrator's startOrFail and this
+        // step, skip rather than revive it. `syncing` is accepted because
+        // LIMIT fills are detected inside the sync loop — by the time this
+        // step runs, the position may still be `syncing` (sync's own
+        // complete() flip back to `active` hasn't fired yet). Blocking
+        // that case would leave the WAP sub-chain running against a stale
+        // status and make the downstream `CalculateWap::startOrFail`
+        // (which requires `waping`) fail with no recovery.
         Step::create([
             'class' => $resolver->resolve(AtomicUpdatePositionStatusJob::class),
             'queue' => 'positions',
@@ -93,7 +100,7 @@ final class ApplyWapJob extends BaseApiableJob
                 'positionId' => $this->position->id,
                 'status' => 'waping',
                 'message' => $this->message,
-                'onlyFromStatus' => 'active',
+                'onlyFromStatus' => ['active', 'syncing'],
             ],
             'block_uuid' => $blockUuid,
             'index' => 1,

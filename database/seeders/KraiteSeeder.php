@@ -743,6 +743,76 @@ final class KraiteSeeder extends Seeder
                 'cache_duration' => 3600,
                 'cache_key' => ['account_id', 'api_system'],
             ],
+            // Trading-lifecycle notifications — emitted from the position
+            // workflow at key state transitions. Most ship at Pushover
+            // priority -1 (low / silent) so day-to-day flow doesn't
+            // interrupt the device. WAP specifically ships at priority 1
+            // (high) because it's the signal that DCA rungs are filling
+            // and the strategy's exit is being repositioned based on the
+            // exchange's breakEvenPrice.
+            [
+                'canonical' => 'position_opened',
+                'title' => 'Position Opened',
+                'description' => 'Emitted when a new position transitions to active — market entry filled, TP/SL/LIMITs placed.',
+                'usage_reference' => 'Jobs/Atomic/Position/ActivatePositionJob',
+                'default_severity' => 'info',
+                'verified' => 1,
+                'cache_duration' => 60,
+                'cache_key' => ['position'],
+            ],
+            [
+                'canonical' => 'position_closed',
+                'title' => 'Position Closed',
+                'description' => 'Emitted when a position transitions to closed — via organic TP/SL fill, manual close, or workflow close.',
+                'usage_reference' => 'Jobs/Atomic/Position/UpdateRemainingClosingDataJob',
+                'default_severity' => 'info',
+                'verified' => 1,
+                'cache_duration' => 60,
+                'cache_key' => ['position'],
+            ],
+            [
+                'canonical' => 'position_wap_applied',
+                'title' => 'Position WAP Applied',
+                'description' => 'Emitted when the weighted-average-price workflow successfully modifies the profit order after one or more DCA fills.',
+                'detailed_description' => 'Delivered at Pushover priority 1 (high) so it bypasses the device\'s quiet hours — a WAP is a meaningful strategy signal that DCA rungs are filling and the exit is being repositioned based on the exchange\'s breakEvenPrice.',
+                'usage_reference' => 'Jobs/Atomic/Order/CalculateWapAndModifyProfitOrderJob',
+                'default_severity' => 'high',
+                'verified' => 1,
+                'cache_duration' => 30,
+                'cache_key' => ['position'],
+            ],
+            [
+                'canonical' => 'position_high_profit_closed',
+                'title' => 'High-Profit Position Closed',
+                'description' => 'Celebratory ping when a position closes after filling >= total_limit_orders_filled_to_notify (full ladder took).',
+                'usage_reference' => 'Jobs/Atomic/Position/UpdateRemainingClosingDataJob',
+                'default_severity' => 'info',
+                'verified' => 1,
+                'cache_duration' => 60,
+                'cache_key' => ['position'],
+            ],
+            [
+                'canonical' => 'position_pump_cooldown_triggered',
+                'title' => 'Pump Cooldown Triggered',
+                'description' => 'Emitted when a position close detects a price spike against the exchange_symbol\'s disable_on_price_spike_percentage threshold and sets a tradeable_at cooldown on the symbol.',
+                'detailed_description' => 'The symbol is prevented from being retradeable for price_spike_cooldown_hours. The system already reacted — this ping exists so the operator can investigate whether the spike was a news-driven move (keep cooled) vs a noise spike (manually re-enable).',
+                'usage_reference' => 'Jobs/Atomic/Position/ClosePositionAtomicallyJob',
+                'default_severity' => 'high',
+                'verified' => 1,
+                'cache_duration' => 600,
+                'cache_key' => ['exchange_symbol'],
+            ],
+            [
+                'canonical' => 'position_residual_detected',
+                'title' => 'Residual Position Detected After Close',
+                'description' => 'Emitted when VerifyPositionResidualAmountJob finds a non-zero positionAmt on the exchange AFTER a close workflow completed. Manual reconciliation required.',
+                'detailed_description' => 'Close-on-exchange reported success but the exchange still carries a position. Possible causes: partial fill race, reduceOnly rejection, or exchange-side ledger lag. Inspect the position on the exchange UI and reconcile manually.',
+                'usage_reference' => 'Jobs/Atomic/Position/VerifyPositionResidualAmountJob',
+                'default_severity' => 'critical',
+                'verified' => 1,
+                'cache_duration' => 60,
+                'cache_key' => ['position'],
+            ],
         ];
 
         foreach ($notifications as $notification) {

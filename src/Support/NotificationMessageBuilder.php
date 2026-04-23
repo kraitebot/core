@@ -28,7 +28,16 @@ final class NotificationMessageBuilder
      * @param  string|Notification  $canonical  The base message canonical or Notification model instance
      * @param  array<string, mixed>  $context  Additional context data (exchange, ip, hostname, account, amount, etc.)
      * @param  User|null  $user  The user receiving the notification (for personalization)
-     * @return array{severity: NotificationSeverity, title: string, emailMessage: string, pushoverMessage: string, actionUrl: string|null, actionLabel: string|null}
+     * @return array{severity: NotificationSeverity, title: string, emailMessage: string, pushoverMessage: string, actionUrl: string|null, actionLabel: string|null, priority?: int}
+     *
+     * The optional `priority` key (int in range -2..2) is piped straight
+     * through to AlertNotification's additionalParameters and overrides
+     * the default severity-based mapping. Useful when a canonical wants a
+     * specific Pushover priority that doesn't match the severity bucket
+     * (e.g. a trading-event notification whose severity is Info but which
+     * should ping the device silently with priority = -1, or a WAP event
+     * whose High severity should specifically get priority = 1 to bypass
+     * quiet hours on the user's device).
      */
     public static function build(string|Notification $canonical, array $context = [], ?User $user = null): array
     {
@@ -435,6 +444,290 @@ final class NotificationMessageBuilder
                         "• Once you fix the API key, update your credentials in Settings\n".
                         '• The system will automatically resume operations',
                     'pushoverMessage' => "🚨 {$exchangeTitle} API BLOCKED\nAccount: {$accountName}\nCheck API key permissions",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                ];
+            })(),
+
+            // Trading-lifecycle notifications. Context keys:
+            //   token        — e.g. "GMX"
+            //   pair         — e.g. "GMXUSDT"
+            //   direction    — "LONG" or "SHORT"
+            //   position_id  — DB id (optional but useful in the body)
+            //   account_name — e.g. "Main Binance Account"
+            // Priority override per canonical: most are -1 (low / silent),
+            // the WAP event is 1 (high / bypass quiet hours).
+            'position_opened' => (static function () use ($context) {
+                $token = is_string($context['token'] ?? null) ? $context['token'] : 'symbol';
+                $pair = is_string($context['pair'] ?? null) ? $context['pair'] : $token;
+                $direction = is_string($context['direction'] ?? null) ? $context['direction'] : '';
+                $positionId = is_int($context['position_id'] ?? null) ? (int) $context['position_id'] : null;
+                $accountName = is_string($context['account_name'] ?? null) ? $context['account_name'] : 'account';
+                $entry = is_string($context['entry_price'] ?? null) ? $context['entry_price'] : null;
+                $qty = is_string($context['quantity'] ?? null) ? $context['quantity'] : null;
+
+                $posRef = $positionId !== null ? "#{$positionId}" : '';
+
+                $pushoverLines = ["📈 {$direction} {$pair} opened · {$posRef}"];
+                if ($entry !== null && $qty !== null) {
+                    $pushoverLines[] = "Entry: {$entry} × {$qty}";
+                } elseif ($entry !== null) {
+                    $pushoverLines[] = "Entry: {$entry}";
+                } elseif ($qty !== null) {
+                    $pushoverLines[] = "Quantity: {$qty}";
+                }
+                $pushoverLines[] = "Account: {$accountName}";
+
+                $emailLines = [
+                    "📈 Position {$posRef} opened",
+                    '',
+                    "• Pair: {$pair}",
+                    "• Direction: {$direction}",
+                    "• Account: {$accountName}",
+                ];
+                if ($entry !== null) {
+                    $emailLines[] = "• Entry price: {$entry}";
+                }
+                if ($qty !== null) {
+                    $emailLines[] = "• Quantity: {$qty}";
+                }
+                $emailLines[] = '';
+                $emailLines[] = 'Market entry filled; TP / SL / LIMITs placed.';
+
+                return [
+                    'severity' => NotificationSeverity::Info,
+                    'priority' => -1,
+                    'title' => "Position Opened — {$direction} {$pair}",
+                    'emailMessage' => implode(separator: "\n", array: $emailLines),
+                    'pushoverMessage' => implode(separator: "\n", array: $pushoverLines),
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                ];
+            })(),
+
+            'position_closed' => (static function () use ($context) {
+                $token = is_string($context['token'] ?? null) ? $context['token'] : 'symbol';
+                $pair = is_string($context['pair'] ?? null) ? $context['pair'] : $token;
+                $direction = is_string($context['direction'] ?? null) ? $context['direction'] : '';
+                $positionId = is_int($context['position_id'] ?? null) ? (int) $context['position_id'] : null;
+                $accountName = is_string($context['account_name'] ?? null) ? $context['account_name'] : 'account';
+                $closingPrice = is_string($context['closing_price'] ?? null) ? $context['closing_price'] : null;
+                $filledLimits = is_int($context['filled_limits'] ?? null) ? (int) $context['filled_limits'] : null;
+                $wasFastTraded = ! empty($context['was_fast_traded']);
+
+                $posRef = $positionId !== null ? "#{$positionId}" : '';
+                $fastLabel = $wasFastTraded ? ' · fast trade' : '';
+
+                $pushoverLines = ["🏁 {$direction} {$pair} closed · {$posRef}{$fastLabel}"];
+                if ($closingPrice !== null) {
+                    $pushoverLines[] = "Exit: {$closingPrice}";
+                }
+                if ($filledLimits !== null) {
+                    $pushoverLines[] = "DCA rungs filled: {$filledLimits}";
+                }
+                $pushoverLines[] = "Account: {$accountName}";
+
+                $emailLines = [
+                    "🏁 Position {$posRef} closed".($wasFastTraded ? ' (fast trade)' : ''),
+                    '',
+                    "• Pair: {$pair}",
+                    "• Direction: {$direction}",
+                    "• Account: {$accountName}",
+                ];
+                if ($closingPrice !== null) {
+                    $emailLines[] = "• Closing price: {$closingPrice}";
+                }
+                if ($filledLimits !== null) {
+                    $emailLines[] = "• DCA rungs filled: {$filledLimits}";
+                }
+
+                return [
+                    'severity' => NotificationSeverity::Info,
+                    'priority' => -1,
+                    'title' => "Position Closed — {$direction} {$pair}",
+                    'emailMessage' => implode(separator: "\n", array: $emailLines),
+                    'pushoverMessage' => implode(separator: "\n", array: $pushoverLines),
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                ];
+            })(),
+
+            'position_wap_applied' => (static function () use ($context) {
+                $token = is_string($context['token'] ?? null) ? $context['token'] : 'symbol';
+                $pair = is_string($context['pair'] ?? null) ? $context['pair'] : $token;
+                $direction = is_string($context['direction'] ?? null) ? $context['direction'] : '';
+                $positionId = is_int($context['position_id'] ?? null) ? (int) $context['position_id'] : null;
+                $oldTp = is_string($context['old_tp_price'] ?? null) ? $context['old_tp_price'] : null;
+                $newTp = is_string($context['new_tp_price'] ?? null) ? $context['new_tp_price'] : null;
+                $oldQty = is_string($context['old_tp_quantity'] ?? null) ? $context['old_tp_quantity'] : null;
+                $newQty = is_string($context['new_tp_quantity'] ?? null) ? $context['new_tp_quantity'] : null;
+                $breakEven = is_string($context['break_even_price'] ?? null) ? $context['break_even_price'] : null;
+
+                $posRef = $positionId !== null ? "#{$positionId}" : '';
+
+                // Show the before/after on both price AND qty — this is the
+                // signal the operator wants to see at a glance on Pushover.
+                $pushoverLines = ["🧮 WAP · {$direction} {$pair} · {$posRef}"];
+                if ($oldTp !== null && $newTp !== null) {
+                    $pushoverLines[] = "TP price: {$oldTp} → {$newTp}";
+                } elseif ($newTp !== null) {
+                    $pushoverLines[] = "TP price: {$newTp}";
+                }
+                if ($oldQty !== null && $newQty !== null) {
+                    $pushoverLines[] = "TP qty: {$oldQty} → {$newQty}";
+                } elseif ($newQty !== null) {
+                    $pushoverLines[] = "TP qty: {$newQty}";
+                }
+                if ($breakEven !== null) {
+                    $pushoverLines[] = "Break-even: {$breakEven}";
+                }
+
+                $emailLines = [
+                    "🧮 WAP applied on position {$posRef}",
+                    '',
+                    "• Pair: {$pair}",
+                    "• Direction: {$direction}",
+                ];
+                if ($breakEven !== null) {
+                    $emailLines[] = "• Break-even (exchange): {$breakEven}";
+                }
+                if ($oldTp !== null && $newTp !== null) {
+                    $emailLines[] = "• TP price: {$oldTp} → {$newTp}";
+                }
+                if ($oldQty !== null && $newQty !== null) {
+                    $emailLines[] = "• TP quantity: {$oldQty} → {$newQty}";
+                }
+                $emailLines[] = '';
+                $emailLines[] = "DCA rungs filled; TP repositioned against the exchange's breakEvenPrice.";
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'priority' => 1,
+                    'title' => "WAP Applied — {$direction} {$pair}",
+                    'emailMessage' => implode(separator: "\n", array: $emailLines),
+                    'pushoverMessage' => implode(separator: "\n", array: $pushoverLines),
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                ];
+            })(),
+
+            'position_high_profit_closed' => (static function () use ($context) {
+                $token = is_string($context['token'] ?? null) ? $context['token'] : 'symbol';
+                $pair = is_string($context['pair'] ?? null) ? $context['pair'] : $token;
+                $direction = is_string($context['direction'] ?? null) ? $context['direction'] : '';
+                $positionId = is_int($context['position_id'] ?? null) ? (int) $context['position_id'] : null;
+                $filledLimits = is_int($context['filled_limits'] ?? null) ? (int) $context['filled_limits'] : 0;
+                $closingPrice = is_string($context['closing_price'] ?? null) ? $context['closing_price'] : null;
+
+                $posRef = $positionId !== null ? "#{$positionId}" : '';
+
+                $pushoverLines = ["🎉 Nice one! · {$direction} {$pair} · {$posRef}"];
+                if ($closingPrice !== null) {
+                    $pushoverLines[] = "Exit: {$closingPrice}";
+                }
+                $pushoverLines[] = "DCA rungs filled: {$filledLimits}";
+
+                $emailLines = [
+                    "🎉 High-profit position {$posRef} closed",
+                    '',
+                    "• Pair: {$pair}",
+                    "• Direction: {$direction}",
+                    "• DCA rungs filled: {$filledLimits}",
+                ];
+                if ($closingPrice !== null) {
+                    $emailLines[] = "• Closing price: {$closingPrice}";
+                }
+                $emailLines[] = '';
+                $emailLines[] = 'The strategy ran the ladder down/up before reversing. Nice.';
+
+                return [
+                    'severity' => NotificationSeverity::Info,
+                    'priority' => -1,
+                    'title' => "🎉 High-Profit Close — {$direction} {$pair}",
+                    'emailMessage' => implode(separator: "\n", array: $emailLines),
+                    'pushoverMessage' => implode(separator: "\n", array: $pushoverLines),
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                ];
+            })(),
+
+            'position_pump_cooldown_triggered' => (static function () use ($context) {
+                $token = is_string($context['token'] ?? null) ? $context['token'] : 'symbol';
+                $pair = is_string($context['pair'] ?? null) ? $context['pair'] : $token;
+                $changePercent = is_string($context['change_percent'] ?? null) ? $context['change_percent'] : 'N/A';
+                $threshold = is_string($context['threshold'] ?? null) ? $context['threshold'] : 'N/A';
+                $tradeableAt = is_string($context['tradeable_at'] ?? null) ? $context['tradeable_at'] : 'soon';
+                $currentPrice = is_string($context['current_price'] ?? null) ? $context['current_price'] : null;
+                $dailyClose = is_string($context['daily_close'] ?? null) ? $context['daily_close'] : null;
+
+                $pushoverLines = [
+                    "⚠️ Pump cooldown · {$pair}",
+                    "Move: {$changePercent}% (threshold {$threshold}%)",
+                ];
+                if ($currentPrice !== null && $dailyClose !== null) {
+                    $pushoverLines[] = "Price: {$currentPrice} vs daily {$dailyClose}";
+                }
+                $pushoverLines[] = "Tradeable again: {$tradeableAt}";
+
+                $emailLines = [
+                    "⚠️ Pump cooldown triggered for {$pair}",
+                    '',
+                    "• Price change: {$changePercent}% (threshold {$threshold}%)",
+                ];
+                if ($currentPrice !== null && $dailyClose !== null) {
+                    $emailLines[] = "• Current vs daily close: {$currentPrice} vs {$dailyClose}";
+                }
+                $emailLines[] = "• Tradeable again: {$tradeableAt}";
+                $emailLines[] = '';
+                $emailLines[] = 'Symbol auto-disabled from new-position selection until the cooldown expires. Review whether this was a news-driven move (leave cooled) or noise (manually re-enable).';
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'priority' => 1,
+                    'title' => "Pump Cooldown — {$pair}",
+                    'emailMessage' => implode(separator: "\n", array: $emailLines),
+                    'pushoverMessage' => implode(separator: "\n", array: $pushoverLines),
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                ];
+            })(),
+
+            'position_residual_detected' => (static function () use ($context) {
+                $token = is_string($context['token'] ?? null) ? $context['token'] : 'symbol';
+                $pair = is_string($context['pair'] ?? null) ? $context['pair'] : $token;
+                $direction = is_string($context['direction'] ?? null) ? $context['direction'] : '';
+                $positionId = is_int($context['position_id'] ?? null) ? (int) $context['position_id'] : null;
+                $residual = is_string($context['residual_amount'] ?? null) ? $context['residual_amount'] : 'N/A';
+
+                $posRef = $positionId !== null ? "#{$positionId}" : '';
+
+                $pushoverLines = [
+                    "🚨 Residual position · {$direction} {$pair} · {$posRef}",
+                    "Amount on exchange: {$residual}",
+                    'Reconcile manually on the exchange.',
+                ];
+
+                $emailLines = [
+                    "🚨 Residual position {$posRef} on {$pair}",
+                    '',
+                    "• Direction: {$direction}",
+                    "• Residual amount: {$residual}",
+                    '',
+                    'Close-on-exchange reported success but the exchange still carries a position. Possible causes:',
+                    '• Partial fill race',
+                    '• reduceOnly rejection',
+                    '• Exchange-side ledger lag',
+                    '',
+                    'Inspect on the exchange UI and reconcile manually.',
+                ];
+
+                return [
+                    'severity' => NotificationSeverity::Critical,
+                    // Critical → default mapping (priority 2 emergency) is
+                    // correct here — this is a genuine wake-up-now event.
+                    'title' => "Residual Position — {$pair}",
+                    'emailMessage' => implode(separator: "\n", array: $emailLines),
+                    'pushoverMessage' => implode(separator: "\n", array: $pushoverLines),
                     'actionUrl' => null,
                     'actionLabel' => null,
                 ];

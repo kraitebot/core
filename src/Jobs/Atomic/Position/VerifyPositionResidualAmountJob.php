@@ -6,10 +6,10 @@ namespace Kraite\Core\Jobs\Atomic\Position;
 
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\ApiSnapshot;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
-use Kraite\Core\Models\User;
-use Kraite\Core\Notifications\AlertNotification;
 use Kraite\Core\Support\Math;
+use Kraite\Core\Support\NotificationService;
 
 /**
  * VerifyPositionResidualAmountJob (Atomic)
@@ -92,29 +92,25 @@ final class VerifyPositionResidualAmountJob extends BaseQueueableJob
     }
 
     /**
-     * Notify admins about residual position.
+     * Fire the `position_residual_detected` notification (severity=Critical,
+     * so it maps to Pushover priority 2 / emergency) via NotificationService
+     * so the throttling + logging pipeline is consistent with every other
+     * canonical.
      */
     private function notifyResidualPosition(Position $position, string $amount): void
     {
-        $message = sprintf(
-            '⚠️ Residual position detected for %s (Position ID: %d). Amount: %s. Manual intervention may be required.',
-            $position->parsed_trading_pair,
-            $position->id,
-            $amount
+        NotificationService::send(
+            user: Kraite::admin(),
+            canonical: 'position_residual_detected',
+            referenceData: [
+                'token' => $position->exchangeSymbol?->token,
+                'pair' => $position->parsed_trading_pair,
+                'direction' => mb_strtoupper((string) $position->direction),
+                'position_id' => (int) $position->id,
+                'residual_amount' => $amount,
+            ],
+            relatable: $position,
+            cacheKeys: ['position' => $position->id],
         );
-
-        // Notify all admin users via exceptions delivery group
-        User::query()
-            ->where('is_admin', true)
-            ->where('is_active', true)
-            ->get()
-            ->each(function (User $user) use ($message) {
-                $user->notify(new AlertNotification(
-                    message: $message,
-                    title: 'Residual Position Warning',
-                    canonical: 'residual_position_detected',
-                    deliveryGroup: 'exceptions'
-                ));
-            });
     }
 }

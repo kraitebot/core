@@ -13,6 +13,7 @@ use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
+use Kraite\Core\Support\NotificationService;
 use RuntimeException;
 use StepDispatcher\Models\Step;
 use Throwable;
@@ -35,7 +36,7 @@ use Throwable;
  * - Profit order must exist
  * - profit_percentage must be configured
  */
-final class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
+class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
 {
     public Position $position;
 
@@ -208,16 +209,33 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
                 // Sync itself failed too — fall through with the original error
             }
 
-            throw new RuntimeException(sprintf(
-                'apiModify failed for profit order #%d (intended price=%s qty=%s; actual DB after sync: price=%s qty=%s status=%s). Original: %s',
-                $this->profitOrder->id,
-                $formattedPrice,
-                $formattedQty,
-                $this->profitOrder->price,
-                $this->profitOrder->quantity,
-                $this->profitOrder->status,
-                $e->getMessage()
-            ), 0, $e);
+            // Treat ignorable exchange responses as success. Binance's -5027
+            // ("No need to modify the order") fires when the intended
+            // price/qty match what's already on exchange — either because
+            // this is a retry of a modify that actually landed, or because
+            // the formatter rounded to the exchange's current values. Either
+            // way the exchange state is exactly what we want, so fall
+            // through to the normal success path so complete() can bump
+            // reference values and dispatch the follow-up WAP. Without this
+            // shortcut, we'd wrap the exception in RuntimeException, which
+            // hides the -5027 from the framework's ignore-classifier (see
+            // ApiExceptionHelpers::firstRequestExceptionIn chain walk) and
+            // the step would fail for an outcome that is actually healthy.
+            if ($this->externalIgnoreException($e)) {
+                // Fall through — the catch block exits and the rest of
+                // computeApiable continues as if the modify had succeeded.
+            } else {
+                throw new RuntimeException(sprintf(
+                    'apiModify failed for profit order #%d (intended price=%s qty=%s; actual DB after sync: price=%s qty=%s status=%s). Original: %s',
+                    $this->profitOrder->id,
+                    $formattedPrice,
+                    $formattedQty,
+                    $this->profitOrder->price,
+                    $this->profitOrder->quantity,
+                    $this->profitOrder->status,
+                    $e->getMessage()
+                ), 0, $e);
+            }
         }
 
         $this->profitOrder->apiSync();
@@ -289,6 +307,13 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
             return;
         }
 
+        // Capture the pre-update reference values so the WAP notification
+        // can report the before/after transition. After this method's
+        // updateSaving() runs, reference_* is aligned to the new values
+        // and the "old" side of the transition would be lost.
+        $oldTpPrice = (string) ($this->profitOrder->reference_price ?? '0');
+        $oldTpQuantity = (string) ($this->profitOrder->reference_quantity ?? '0');
+
         // CRITICAL: Update reference values to prevent OrderObserver from
         // detecting a modification and dispatching PrepareOrderCorrectionJob
         $this->profitOrder->updateSaving([
@@ -302,6 +327,8 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
             'was_waped' => true,
             'waped_at' => now(),
         ]);
+
+        $this->dispatchWapAppliedNotification($oldTpPrice, $oldTpQuantity);
 
         // Re-entry for sequential fills: any LIMIT with status=FILLED but
         // reference_status still != FILLED was skipped by observer dedup
@@ -352,6 +379,45 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
         $this->position->updateSaving([
             'error_message' => 'WAP calculation failed: '.$e->getMessage(),
         ]);
+    }
+
+    /**
+     * Fire the `position_wap_applied` Pushover notification (priority 1 /
+     * high — bypasses quiet hours) so the owner sees that DCA fills have
+     * aggregated and the TP has been repositioned. Cache-throttled at 30s
+     * per position so rapid successive fills in the same tick don't
+     * double-ping, but the follow-up-WAP mechanism will still surface a
+     * second notification if it fires outside the 30s window.
+     */
+    private function dispatchWapAppliedNotification(string $oldTpPrice, string $oldTpQuantity): void
+    {
+        if ($this->profitOrder === null) {
+            return;
+        }
+
+        $user = $this->position->account->user ?? null;
+
+        if (! $user) {
+            return;
+        }
+
+        NotificationService::send(
+            user: $user,
+            canonical: 'position_wap_applied',
+            referenceData: [
+                'token' => $this->position->exchangeSymbol?->token,
+                'pair' => $this->position->parsed_trading_pair,
+                'direction' => mb_strtoupper((string) $this->position->direction),
+                'position_id' => (int) $this->position->id,
+                'old_tp_price' => $oldTpPrice,
+                'new_tp_price' => (string) $this->profitOrder->price,
+                'old_tp_quantity' => $oldTpQuantity,
+                'new_tp_quantity' => (string) $this->profitOrder->quantity,
+                'break_even_price' => $this->breakEvenPrice,
+            ],
+            relatable: $this->position,
+            cacheKeys: ['position' => $this->position->id],
+        );
     }
 
     /**

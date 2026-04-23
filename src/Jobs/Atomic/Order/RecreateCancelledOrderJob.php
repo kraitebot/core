@@ -77,13 +77,41 @@ class RecreateCancelledOrderJob extends BaseApiableJob
             return false;
         }
 
-        // Calculate remaining quantity - must be positive
-        $remainingQty = $this->calculateRemainingQuantity();
-        if (Math::lte($remainingQty, '0')) {
-            return false;
+        // Remaining-quantity gate protects LIMIT-style orders where a
+        // fully-consumed position has nothing left to recreate. It must
+        // NOT fire for closePosition-style algo orders (STOP-MARKET on
+        // Binance with closePosition=true and peers on other exchanges)
+        // where reference_quantity=0 is the canonical valid value — the
+        // order closes whatever is open at trigger time, quantity is
+        // irrelevant at placement.
+        if (! $this->isCloseAllAlgoOrder()) {
+            $remainingQty = $this->calculateRemainingQuantity();
+            if (Math::lte($remainingQty, '0')) {
+                return false;
+            }
         }
 
         return true;
+    }
+
+    /**
+     * Detect closePosition-style algo orders where quantity=0 is the
+     * canonical valid placement value (Binance STOP-MARKET with
+     * closePosition=true, and equivalent patterns on Bitget / Kucoin /
+     * Bybit). For these, the remaining-quantity gate in startOrFail
+     * must not apply.
+     */
+    private function isCloseAllAlgoOrder(): bool
+    {
+        if (! $this->cancelledOrder->is_algo) {
+            return false;
+        }
+
+        $referenceQty = (string) ($this->cancelledOrder->reference_quantity
+            ?? $this->cancelledOrder->quantity
+            ?? '0');
+
+        return Math::equal($referenceQty, '0');
     }
 
     public function computeApiable()

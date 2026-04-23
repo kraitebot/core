@@ -9,8 +9,8 @@ use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
-use Kraite\Core\Notifications\AlertNotification;
 use Kraite\Core\Support\Math;
+use Kraite\Core\Support\NotificationService;
 
 /**
  * UpdateRemainingClosingDataJob (Atomic)
@@ -96,13 +96,23 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
             }
         }
 
-        // 3. High-profit notification
+        // 3. Notifications (unified dispatch — position_closed always,
+        // position_high_profit_closed when the account-level threshold is
+        // crossed). Both route through NotificationService so they share
+        // the throttling / logging / delivery pipeline used by every
+        // other canonical in the system.
         $filledLimitCount = $position->totalLimitOrdersFilled();
         $notifyThreshold = $account->total_limit_orders_filled_to_notify ?? 0;
+        $highProfitNotificationSent = false;
+
+        $this->dispatchClosedNotification($position, $closingPrice, $filledLimitCount, $wasFastTraded);
 
         if ($notifyThreshold > 0 && $filledLimitCount >= $notifyThreshold) {
-            $this->sendHighProfitNotification($position, $filledLimitCount);
-            $highProfitNotificationSent = true;
+            $highProfitNotificationSent = $this->dispatchHighProfitNotification(
+                $position,
+                $closingPrice,
+                $filledLimitCount
+            );
         }
 
         // 4. Sync reference_status = status for all orders on this position.
@@ -172,27 +182,70 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
     }
 
     /**
-     * Send high-profit notification to the account owner.
+     * Fire the `position_closed` notification (priority -1 / low — silent
+     * on the user's device). Cache-throttled at 60s per position, so a
+     * re-run of the close workflow doesn't double-ping.
      */
-    private function sendHighProfitNotification(Position $position, int $filledLimitCount): void
-    {
-        $user = $position->account->user;
+    private function dispatchClosedNotification(
+        Position $position,
+        ?string $closingPrice,
+        int $filledLimitCount,
+        bool $wasFastTraded,
+    ): void {
+        $user = $position->account->user ?? null;
 
         if (! $user || ! $user->is_active) {
             return;
         }
 
-        $message = sprintf(
-            '🎉 High profit position closed! %s filled %d limit orders.',
-            $position->parsed_trading_pair,
-            $filledLimitCount
+        NotificationService::send(
+            user: $user,
+            canonical: 'position_closed',
+            referenceData: [
+                'token' => $position->exchangeSymbol?->token,
+                'pair' => $position->parsed_trading_pair,
+                'direction' => mb_strtoupper((string) $position->direction),
+                'position_id' => (int) $position->id,
+                'account_name' => $position->account?->name,
+                'closing_price' => $closingPrice,
+                'filled_limits' => $filledLimitCount,
+                'was_fast_traded' => $wasFastTraded,
+            ],
+            relatable: $position,
+            cacheKeys: ['position' => $position->id],
         );
+    }
 
-        $user->notify(new AlertNotification(
-            message: $message,
-            title: 'High Profit Position',
-            canonical: 'high_profit_position_closed',
-            deliveryGroup: 'default'
-        ));
+    /**
+     * Fire the celebratory `position_high_profit_closed` notification when
+     * the account-level `total_limit_orders_filled_to_notify` threshold
+     * has been crossed — i.e. the ladder was ridden far enough before the
+     * reversal to deserve a special ping.
+     */
+    private function dispatchHighProfitNotification(
+        Position $position,
+        ?string $closingPrice,
+        int $filledLimitCount,
+    ): bool {
+        $user = $position->account->user ?? null;
+
+        if (! $user || ! $user->is_active) {
+            return false;
+        }
+
+        return NotificationService::send(
+            user: $user,
+            canonical: 'position_high_profit_closed',
+            referenceData: [
+                'token' => $position->exchangeSymbol?->token,
+                'pair' => $position->parsed_trading_pair,
+                'direction' => mb_strtoupper((string) $position->direction),
+                'position_id' => (int) $position->id,
+                'closing_price' => $closingPrice,
+                'filled_limits' => $filledLimitCount,
+            ],
+            relatable: $position,
+            cacheKeys: ['position' => $position->id],
+        );
     }
 }

@@ -10,10 +10,10 @@ use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Models\IndicatorHistory;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
-use Kraite\Core\Models\User;
-use Kraite\Core\Notifications\AlertNotification;
 use Kraite\Core\Support\Math;
+use Kraite\Core\Support\NotificationService;
 
 /**
  * ClosePositionAtomicallyJob (Atomic)
@@ -93,7 +93,14 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
                         ];
 
                         // Notify admins about pump cooldown
-                        $this->notifyPumpCooldown($exchangeSymbol->token, $changePercent, $tradeableAt);
+                        $this->notifyPumpCooldown(
+                            $exchangeSymbol,
+                            $changePercent,
+                            (string) $spikeThreshold,
+                            $currentPrice,
+                            (string) $closePrice,
+                            $tradeableAt
+                        );
                     }
                 }
             }
@@ -161,29 +168,33 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
     }
 
     /**
-     * Notify admins about pump cooldown trigger.
+     * Fire the `position_pump_cooldown_triggered` notification (priority 1
+     * / high) via NotificationService so throttling and logging go
+     * through the unified pipeline. Cache-throttled at 600s per
+     * exchange_symbol.
      */
-    private function notifyPumpCooldown(string $token, string $changePercent, Carbon $tradeableAt): void
-    {
-        $message = sprintf(
-            '⚠️ Pump cooldown triggered for %s. Price change: %s%%. Tradeable again at: %s',
-            $token,
-            $changePercent,
-            $tradeableAt->format('Y-m-d H:i:s')
+    private function notifyPumpCooldown(
+        \Kraite\Core\Models\ExchangeSymbol $exchangeSymbol,
+        string $changePercent,
+        string $threshold,
+        string $currentPrice,
+        string $dailyClose,
+        Carbon $tradeableAt,
+    ): void {
+        NotificationService::send(
+            user: Kraite::admin(),
+            canonical: 'position_pump_cooldown_triggered',
+            referenceData: [
+                'token' => $exchangeSymbol->token,
+                'pair' => $exchangeSymbol->parsed_trading_pair,
+                'change_percent' => $changePercent,
+                'threshold' => $threshold,
+                'current_price' => $currentPrice,
+                'daily_close' => $dailyClose,
+                'tradeable_at' => $tradeableAt->format('Y-m-d H:i:s'),
+            ],
+            relatable: $exchangeSymbol,
+            cacheKeys: ['exchange_symbol' => $exchangeSymbol->id],
         );
-
-        // Notify all admin users via exceptions delivery group
-        User::query()
-            ->where('is_admin', true)
-            ->where('is_active', true)
-            ->get()
-            ->each(function (User $user) use ($message) {
-                $user->notify(new AlertNotification(
-                    message: $message,
-                    title: 'Pump Cooldown Triggered',
-                    canonical: 'pump_cooldown_triggered',
-                    deliveryGroup: 'exceptions'
-                ));
-            });
     }
 }

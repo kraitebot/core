@@ -17,6 +17,7 @@ use Kraite\Core\Commands\Cronjobs\ConcludeSymbolsDirectionCommand;
 use Kraite\Core\Commands\Cronjobs\CreatePositionsCommand;
 use Kraite\Core\Commands\Cronjobs\FetchKlinesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeCandlesCommand;
+use Kraite\Core\Commands\Cronjobs\PurgeModelLogsCommand;
 use Kraite\Core\Commands\Cronjobs\RefreshExchangeSymbolsCommand;
 use Kraite\Core\Commands\Cronjobs\StoreAccountsBalancesCommand;
 use Kraite\Core\Commands\Cronjobs\SyncOrdersCommand;
@@ -70,6 +71,7 @@ final class CoreServiceProvider extends ServiceProvider
             CreatePositionsCommand::class,
             FetchKlinesCommand::class,
             PurgeCandlesCommand::class,
+            PurgeModelLogsCommand::class,
             RefreshExchangeSymbolsCommand::class,
             StoreAccountsBalancesCommand::class,
             SyncOrdersCommand::class,

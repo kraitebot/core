@@ -357,14 +357,23 @@ trait ApiExceptionHelpers
      * $statusCodes can be:
      *  • flat list: [429, 418]
      *  • map: [400 => [-1021, -5028], 401 => [-2015]]
+     *
+     * Walks the $exception->getPrevious() chain until it finds a
+     * RequestException. Some atomic jobs wrap the raw Guzzle ClientException
+     * in a RuntimeException to attach post-mortem diagnostics (intended vs
+     * actual values after sync, etc.) — without this walk, the ignore /
+     * retry classifier would lose sight of the underlying vendor code and
+     * every wrapped API failure would end up in the generic fail path.
      */
     protected function containsHttpExceptionIn(Throwable $exception, array $statusCodes): bool
     {
-        if (! $exception instanceof RequestException) {
+        $requestException = $this->firstRequestExceptionIn($exception);
+
+        if ($requestException === null) {
             return false;
         }
 
-        $data = $this->extractHttpErrorCodes($exception);
+        $data = $this->extractHttpErrorCodes($requestException);
         $httpCode = $data['http_code'];
         $statusCode = $data['status_code'];
 
@@ -377,6 +386,28 @@ trait ApiExceptionHelpers
         }
 
         return in_array($httpCode, $statusCodes, strict: true);
+    }
+
+    /**
+     * Walk a Throwable and its $previous chain, returning the first
+     * RequestException found or null. Depth-bounded to avoid pathological
+     * loops in maliciously-constructed exceptions.
+     */
+    private function firstRequestExceptionIn(Throwable $exception): ?RequestException
+    {
+        $current = $exception;
+        $depth = 0;
+
+        while ($current !== null && $depth < 10) {
+            if ($current instanceof RequestException) {
+                return $current;
+            }
+
+            $current = $current->getPrevious();
+            $depth++;
+        }
+
+        return null;
     }
 
     /**

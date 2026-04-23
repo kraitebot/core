@@ -9,6 +9,7 @@ use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
+use Kraite\Core\Support\NotificationService;
 
 /**
  * ActivatePositionJob (Atomic)
@@ -97,6 +98,45 @@ final class ActivatePositionJob extends BaseQueueableJob
         $this->position->appLog(
             event: 'position_activated',
             message: 'Position activated — all orders confirmed',
+        );
+
+        $this->dispatchOpenedNotification();
+    }
+
+    /**
+     * Fire the `position_opened` Pushover notification (priority -1 / low)
+     * so the owner sees the new position appear without being interrupted.
+     * Cache-throttled per position, so a retry or a re-entrant activation
+     * won't double-ping.
+     */
+    private function dispatchOpenedNotification(): void
+    {
+        $position = $this->position;
+        $user = $position->account->user;
+
+        if (! $user) {
+            return;
+        }
+
+        $marketEntry = $position->orders()
+            ->where('type', 'MARKET')
+            ->where('status', 'FILLED')
+            ->first();
+
+        NotificationService::send(
+            user: $user,
+            canonical: 'position_opened',
+            referenceData: [
+                'token' => $position->exchangeSymbol?->token,
+                'pair' => $position->parsed_trading_pair,
+                'direction' => mb_strtoupper((string) $position->direction),
+                'position_id' => (int) $position->id,
+                'account_name' => $position->account?->name,
+                'entry_price' => $marketEntry?->price,
+                'quantity' => $marketEntry?->quantity,
+            ],
+            relatable: $position,
+            cacheKeys: ['position' => $position->id],
         );
     }
 

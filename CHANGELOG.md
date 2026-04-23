@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.4.7 - 2026-04-23
+
+### Fixes
+
+- [BUG FIX] `Jobs/Atomic/Order/CalculateWapAndModifyProfitOrderJob` — removed `final` from the base class. Exchange-specific override `Binance\CalculateWapAndModifyProfitOrderJob` extends it; with `final` in place, JobProxy's `class_exists` check blew up with a `FatalError: cannot extend final class` mid-tick, killing the WAP chain after step 3 and leaving positions wedged in `waping`.
+- [BUG FIX] `Jobs/Atomic/Order/CalculateWapAndModifyProfitOrderJob::computeApiable()` — short-circuit ignorable Binance responses. `apiModify` can legitimately return `400 -5027 "No need to modify the order"` on the follow-up WAP pass (values already match exchange state); we were wrapping the ClientException in a RuntimeException, which hid the vendor code from the framework's ignore-classifier and marked the step Failed. Now detects ignorable exceptions via `externalIgnoreException()` and falls through to the normal success path so `complete()` runs and reference values / position quantity / was_waped flags are all updated correctly.
+- [BUG FIX] `Jobs/Atomic/Order/RecreateCancelledOrderJob::startOrFail()` — new `isCloseAllAlgoOrder()` helper exempts closePosition-style algo orders (is_algo + reference_quantity=0) from the remaining-quantity gate. Previously, Binance STOP-MARKET orders with `closePosition=true` (valid `quantity=0`) were rejected as "nothing to recreate" and the SmartReplace chain cascaded to Failed.
+- [BUG FIX] `Jobs/Lifecycles/Position/ApplyWapJob` — widened the `UpdatePositionStatusJob → waping` guard from `onlyFromStatus='active'` to `['active', 'syncing']`. LIMIT fills detected mid-sync race against sync's own `complete()` flip-back; blocking `syncing` here left the WAP sub-chain running against stale status and downstream `CalculateWap::startOrFail` (requires `waping`) to fail with no recovery.
+
+### Features
+
+- [NEW FEATURE] New command `kraite:purge-model-logs --duration=X` — chunked deletes of `model_logs` rows older than X days (default 30), used to keep the per-model attribute-change audit table bounded over time. Wired to the scheduler daily at 03:30.
+- [NEW FEATURE] `Jobs/Atomic/Order/CancelOrphanAlgoOrdersJob` (base) + `Jobs/Atomic/Order/Binance/CancelOrphanAlgoOrdersJob` (exchange-specific) — scrub unknown algo orders on a symbol before recreating our reference SL/TP. Binance's UI "Edit" on an algo order cancels the original and places a new algoId we've never seen; without this scrub, `SmartReplaceOrdersJob` would leave the user's ghost order live alongside our recreation. Wired as step 1 of `SmartReplaceOrdersJob::compute()` via `JobProxy`.
+- [NEW FEATURE] `ApiExceptionHelpers::containsHttpExceptionIn()` now walks the `$exception->getPrevious()` chain (up to 10 levels) so wrapped `RuntimeException`s carrying a Guzzle `ClientException` underneath still route to the correct ignore/retry/recv-window/forbidden classifier. Prior to this, any atomic that wrapped a Guzzle exception for richer diagnostics lost its vendor-code classification.
+- [NEW FEATURE] Six trading-lifecycle notification canonicals seeded in `notifications` table with `NotificationMessageBuilder::build()` templates: `position_opened`, `position_closed`, `position_wap_applied`, `position_high_profit_closed`, `position_pump_cooldown_triggered`, `position_residual_detected`. Each ships multi-line Pushover content (direction, pair, pos id, price/qty deltas, break-even, etc.) with per-canonical Pushover priority (low for informational, high for WAP + pump-cooldown, emergency for residual).
+- [NEW FEATURE] `NotificationMessageBuilder` return shape now supports an optional `priority` key (int -2..2) that overrides `AlertNotification`'s default severity-based mapping. Let trading events pick specific Pushover device behaviour — e.g. Info severity delivered silently at priority -1, or a High-severity WAP event delivered at priority 1 to bypass quiet hours.
+- [NEW FEATURE] `NotificationService::send()` reads the optional `priority` key and forwards it through `additionalParameters['priority']` to `AlertNotification`.
+
+### Improvements
+
+- [IMPROVED] Three ad-hoc `$user->notify(new AlertNotification(...))` call sites unified onto `NotificationService::send()` with proper canonicals + cache-throttling + `notification_logs` entries: `UpdateRemainingClosingDataJob::dispatchClosedNotification()` + `dispatchHighProfitNotification()`, `ClosePositionAtomicallyJob::notifyPumpCooldown()`, `VerifyPositionResidualAmountJob::notifyResidualPosition()`. All three now share the pipeline used by every other canonical in the system.
+- [IMPROVED] `ActivatePositionJob::complete()` + `UpdateRemainingClosingDataJob::computeApiable()` + `CalculateWapAndModifyProfitOrderJob::complete()` now dispatch the new trading-lifecycle notifications to the position's account owner (falling back to admin when null). Recipients receive a clear audit trail on their phone without blocking on terminal log-diving.
+- [IMPROVED] `Jobs/Atomic/Position/UpdatePositionStatusJob::$onlyFromStatus` widened from `?string` to `string|array|null`. Single-status strings still work unchanged; arrays let callers specify multiple acceptable prior statuses (used by `ApplyWapJob` to accept both `active` and `syncing` for the initial WAP flip).
+
 ## 1.4.6 - 2026-04-23
 
 ### Fixes

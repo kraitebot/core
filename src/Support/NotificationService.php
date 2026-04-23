@@ -154,6 +154,17 @@ final class NotificationService
             $additionalParameters['url_title'] = $messageData['actionLabel'] ?? 'View Details';
         }
 
+        // Optional Pushover priority override: the canonical's template may
+        // specify a priority (int in -2..2) that doesn't match the default
+        // severity-derived mapping in AlertNotification (Critical → 2, else
+        // 0). Trading-event canonicals use this to pick the right device
+        // behaviour — e.g. Info severity delivered at priority -1 (silent),
+        // or a WAP event at priority 1 (bypass quiet hours) even though
+        // its severity is High.
+        if (isset($messageData['priority']) && is_int($messageData['priority'])) {
+            $additionalParameters['priority'] = $messageData['priority'];
+        }
+
         // Send notification using Laravel's notification system
         $user->notify(
             new AlertNotification(

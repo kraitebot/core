@@ -17,6 +17,37 @@ use StepDispatcher\States\Dispatched;
 use StepDispatcher\States\Pending;
 use StepDispatcher\States\Running;
 
+/**
+ * Two detection routes handle a user-side modification of our orders on
+ * the exchange. Which route fires depends on whether the exchange
+ * supports in-place modify for the order's type.
+ *
+ * 1) Drift route (supports in-place modify — Binance LIMIT, etc.):
+ *    - The order keeps its exchange_order_id.
+ *    - apiSync pulls the new price/quantity into the DB.
+ *    - `checkForOrderModification` compares price/quantity against
+ *      reference_* and — if diverged — dispatches
+ *      PrepareOrderCorrectionJob, whose LIMIT branch restores the
+ *      reference values via apiModify().
+ *
+ * 2) Replacement route (no in-place modify — Binance algo orders: the
+ *    UI "Edit" action cancels the original and places a new algo order
+ *    at the new trigger, leaving a ghost we never saw):
+ *    - Our original order reports status=CANCELLED on the next sync.
+ *    - `updated()` routes CANCELLED PROFIT/STOP through
+ *      `dispatchPositionReplacement` →
+ *      PreparePositionReplacementJob → VerifyPositionExistsOnExchange
+ *      → SmartReplaceOrdersJob.
+ *    - SmartReplaceOrdersJob first runs CancelOrphanAlgoOrdersJob
+ *      (exchange-specific; Binance cancels any algo on our symbol
+ *      whose algoId isn't in our known set — scrubs the ghost) and
+ *      then RecreateCancelledOrderJob recreates our reference order.
+ *
+ * Other exchanges resolve the orphan-scrub step to a no-op via
+ * JobProxy; if a new exchange is added where the algo modify flow
+ * also leaves ghosts, implement a variant under
+ * `Jobs/Atomic/Order/{Exchange}/CancelOrphanAlgoOrdersJob`.
+ */
 final class OrderObserver
 {
     private const array INACTIVE_STATUSES = ['CANCELLED', 'EXPIRED'];
@@ -253,22 +284,26 @@ final class OrderObserver
      * accessors normalize trailing zeros (e.g., "26500") while reference values
      * may retain them (e.g., "26500.00000000"). String comparison would false-positive.
      *
-     * Drift detection only runs when the position is in a stable 'active' state.
-     * During transitional states (opening / waping / syncing) our own workflows
-     * are intentionally mutating order price/quantity — the reference-vs-actual
-     * window is expected to diverge momentarily and will re-align by the time
-     * the state settles back to 'active'. Evaluating drift here would false-fire
-     * a correction against our own in-flight WAP / opening / sync.
+     * Skip windows:
+     *   - `opening`: reference values are not yet set during order placement.
+     *   - `waping`: ApplyWapJob modifies TP price on the exchange and writes
+     *     the new price back to the DB before reference_price is bumped —
+     *     evaluating drift here would false-fire against our own WAP.
+     *
+     * Crucially NOT skipped:
+     *   - `syncing`: the sync loop is the ONLY window where drift from a
+     *     third-party modification (user editing qty/price on the exchange
+     *     UI) is observable. apiSync() only reads from the exchange and
+     *     mirrors the values locally — it never touches reference_*. If
+     *     after apiSync the DB's price != reference_price, an external
+     *     modification happened and correction must be dispatched from
+     *     right here. Skipping during syncing closes the only window this
+     *     can be caught: once the DB has been written, subsequent syncs
+     *     see no dirty fields and the observer never fires again.
      */
     private function checkForOrderModification(Order $model, mixed $position): void
     {
-        // Skip drift detection while a workflow we own is intentionally
-        // mutating orders — the reference-vs-actual window diverges during
-        // opening (placement + formatting), waping (TP modify + sync), and
-        // syncing (reconciliation rewrites price/qty). Any "drift" observed
-        // in those phases is our own, not a third-party modification. Drift
-        // checking resumes once the position settles back into active/new.
-        if (in_array($position->status, ['opening', 'waping', 'syncing'], true)) {
+        if (in_array($position->status, ['opening', 'waping'], true)) {
             return;
         }
 
