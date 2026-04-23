@@ -105,7 +105,9 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
         $notifyThreshold = $account->total_limit_orders_filled_to_notify ?? 0;
         $highProfitNotificationSent = false;
 
-        $this->dispatchClosedNotification($position, $closingPrice, $filledLimitCount, $wasFastTraded);
+        // TEMP: position_closed pushover muted on Bruno's call — too chatty on a
+        // 12-slot book. high_profit_closed still fires because it's a real event.
+        // $this->dispatchClosedNotification($position, $closingPrice, $filledLimitCount, $wasFastTraded);
 
         if ($notifyThreshold > 0 && $filledLimitCount >= $notifyThreshold) {
             $highProfitNotificationSent = $this->dispatchHighProfitNotification(

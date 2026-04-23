@@ -79,7 +79,21 @@ final class DisableVolatileTokensCommand extends BaseCommand
      * @var list<string>
      */
     private const STRUCTURAL_BRITTLE_TOKENS = [
-        'ATA', 'AZTEC', 'CHILLGUY', 'MYX', 'PRL', 'USELESS',
+        'ATA', 'AZTEC', 'BSB', 'CHILLGUY', 'IR', 'IRYS', 'MYX', 'PRL', 'USELESS',
+    ];
+
+    /**
+     * Tokens excluded by operator judgement — behavioural patterns that
+     * don't necessarily fit the automated buckets above (excessive
+     * exceptions, repeated fast-trade races, unclean fills, etc.).
+     * Moved here rather than MEMES/SPECULATIVE so the reasoning stays
+     * honest; these are calls on the trading desk, not algorithmic
+     * categorisations.
+     *
+     * @var list<string>
+     */
+    private const OPERATOR_EXCLUDED_TOKENS = [
+        'BEAT', 'CYS', 'GENIUS', 'PARTI', 'SKYAI', 'XPIN',
     ];
 
     protected $signature = 'kraite:disable-volatile-tokens
@@ -94,6 +108,7 @@ final class DisableVolatileTokensCommand extends BaseCommand
             self::MEME_TOKENS,
             self::SPECULATIVE_TOKENS,
             self::STRUCTURAL_BRITTLE_TOKENS,
+            self::OPERATOR_EXCLUDED_TOKENS,
         )));
 
         $dryRun = (bool) $this->option('dry-run');

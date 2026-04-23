@@ -43,9 +43,17 @@ final class CancelAlgoOpenOrdersJob extends BaseApiableJob
 
     public function computeApiable()
     {
+        // Ghost guard: an algo order row without an exchange_order_id was
+        // never placed on the exchange (typically: PlaceStopLossOrderJob
+        // created the local row, then apiPlace() failed — LAB #121 hit
+        // this path). Cancelling it via apiCancel() would throw
+        // "options.algo id field is required" and mask the real
+        // upstream error in the step log. These rows are dropped from
+        // the cancellation query; they have nothing to cancel remotely.
         $algoOrders = $this->position->orders()
             ->where('is_algo', true)
             ->whereNotIn('status', self::INACTIVE_STATUSES)
+            ->whereNotNull('exchange_order_id')
             ->get();
 
         // Pre-update reference_status to 'CANCELLED' on algo orders.
@@ -55,6 +63,7 @@ final class CancelAlgoOpenOrdersJob extends BaseApiableJob
             $this->position->orders()
                 ->where('is_algo', true)
                 ->whereNotIn('status', self::INACTIVE_STATUSES)
+                ->whereNotNull('exchange_order_id')
                 ->update(['reference_status' => 'CANCELLED']);
         }
 

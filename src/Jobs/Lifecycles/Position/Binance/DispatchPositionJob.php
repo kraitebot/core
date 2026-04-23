@@ -34,8 +34,8 @@ use StepDispatcher\Models\Step;
  * • Step 6: VerifyOrderNotionalJob - Fetch mark price, validate notional
  * • Step 7: PlaceMarketOrderJob - Place market entry order
  * • Step 8: PlaceLimitOrdersJob - Place limit ladder orders (parallel)
- * • Step 9: PlaceProfitOrderJob - Place take-profit order
- * • Step 10: PlaceStopLossOrderJob - Place stop-loss order
+ * • Step 9: PlaceStopLossOrderJob - Place stop-loss FIRST (protects position before TP can fire)
+ * • Step 10: PlaceProfitOrderJob - Place take-profit order
  * • Step 11: ActivatePositionJob - Validate orders, set status='active'
  */
 final class DispatchPositionJob extends BaseDispatchPositionJob
@@ -116,19 +116,32 @@ final class DispatchPositionJob extends BaseDispatchPositionJob
             workflowId: null
         );
 
-        // Step 9: Place take-profit order
-        $placeProfitOrderLifecycleClass = $resolver->resolve(PlaceProfitOrderLifecycle::class);
-        $placeProfitOrderLifecycle = new $placeProfitOrderLifecycleClass($this->position);
-        $nextIndex = $placeProfitOrderLifecycle->dispatch(
+        // Step 9: Place stop-loss order FIRST.
+        //
+        // Placing SL before TP turns a TOCTOU race into an invariant:
+        // SL is a conditional algo that does not fire at placement
+        // (trigger threshold is typically 15–20% away from entry), so
+        // putting it on the book first costs nothing and guarantees
+        // the position is protected before the TP limit order gets a
+        // chance to fill. If TP fires the instant it is placed in the
+        // next step, that is a clean close with the SL already in the
+        // book (it simply becomes an orphan algo that the cancel /
+        // close workflow cleans up). Prior ordering (TP→SL) opened a
+        // window where a fast-trade TP fill produced Binance -4509
+        // "Time in Force GTE can only be used with open positions" on
+        // the follow-up SL call (LAB #121, BSB #109).
+        $placeStopLossOrderLifecycleClass = $resolver->resolve(PlaceStopLossOrderLifecycle::class);
+        $placeStopLossOrderLifecycle = new $placeStopLossOrderLifecycleClass($this->position);
+        $nextIndex = $placeStopLossOrderLifecycle->dispatch(
             blockUuid: $this->uuid(),
             startIndex: $nextIndex,
             workflowId: null
         );
 
-        // Step 10: Place stop-loss order
-        $placeStopLossOrderLifecycleClass = $resolver->resolve(PlaceStopLossOrderLifecycle::class);
-        $placeStopLossOrderLifecycle = new $placeStopLossOrderLifecycleClass($this->position);
-        $nextIndex = $placeStopLossOrderLifecycle->dispatch(
+        // Step 10: Place take-profit order
+        $placeProfitOrderLifecycleClass = $resolver->resolve(PlaceProfitOrderLifecycle::class);
+        $placeProfitOrderLifecycle = new $placeProfitOrderLifecycleClass($this->position);
+        $nextIndex = $placeProfitOrderLifecycle->dispatch(
             blockUuid: $this->uuid(),
             startIndex: $nextIndex,
             workflowId: null

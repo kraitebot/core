@@ -18,6 +18,18 @@ use StepDispatcher\Models\Step;
  */
 final class SyncLeverageBracketsJob extends BaseQueueableJob
 {
+    /**
+     * Symbols are chunked into sequential step batches so StepDispatcher
+     * only promotes ~N peers to Pending at a time instead of the full
+     * fan-out. Without this, 500+ steps become eligible on the same tick
+     * and Horizon's `indicators` pool (30 workers) races `canDispatch`
+     * past the exchange cap — the observed 14:15 burst pattern. A batch
+     * of 5 caps the concurrent-worker-vs-throttler race to 5 and keeps
+     * each rolled-back 429 contained to a single step's dispatch_after
+     * rather than synchronising the whole fleet.
+     */
+    private const BATCH_SIZE = 5;
+
     public ApiSystem $apiSystem;
 
     public function __construct(int $apiSystemId)
@@ -51,14 +63,15 @@ final class SyncLeverageBracketsJob extends BaseQueueableJob
             ];
         }
 
-        // Create a child step for each symbol (all at index 1 for parallel execution)
-        foreach ($symbols as $symbol) {
+        $blockUuid = $this->uuid();
+
+        foreach ($symbols->values() as $position => $symbol) {
             Step::create([
                 'class' => SyncLeverageBracketJob::class,
                 'queue' => 'indicators',
                 'arguments' => ['exchangeSymbolId' => $symbol->id],
-                'block_uuid' => $this->uuid(),
-                'index' => 1,
+                'block_uuid' => $blockUuid,
+                'index' => intdiv($position, self::BATCH_SIZE) + 1,
             ]);
         }
 

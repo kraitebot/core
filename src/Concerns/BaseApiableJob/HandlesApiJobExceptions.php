@@ -7,7 +7,6 @@ namespace Kraite\Core\Concerns\BaseApiableJob;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Facades\Artisan;
-
 use Throwable;
 
 /*
@@ -112,20 +111,26 @@ trait HandlesApiJobExceptions
          */
         $retryAt = $this->exceptionHandler->rateLimitUntil($e);
 
-        // Record IP ban in throttler for coordination across workers when applicable
-        if ($e instanceof RequestException && $e->hasResponse()) {
-            $statusCode = $e->getResponse()->getStatusCode();
+        // Record a fleet-wide IP ban ONLY when the exchange has given us an
+        // explicit ban signal. Plain 429s without a Retry-After header are
+        // per-request probes — the exchange is pushing back on THIS call, not
+        // banning the IP. Writing a global ban on every such 429 converts the
+        // per-step backoff into a synchronized fleet halt; when the ban lifts,
+        // every queued worker stampedes at once, trips the rate limit again,
+        // and the cycle oscillates (observed on KuCoin/Bitget leverage-bracket
+        // bursts). TAAPI, which defines no `recordIpBan` method, doesn't have
+        // this amplifier and drains at its cap with smooth per-step retries —
+        // that's the behaviour we want here too.
+        if ($e instanceof RequestException
+            && $e->hasResponse()
+            && $this->isExplicitIpBanSignal($e)
+        ) {
+            $retryAfterSeconds = (int) max(0, now()->diffInSeconds($retryAt, false));
 
-            // Check if this is an IP ban scenario (418/429 for Binance, 403 for Bybit)
-            if (in_array($statusCode, [418, 429, 403], strict: true)) {
-                $retryAfterSeconds = (int) max(0, now()->diffInSeconds($retryAt, false));
-
-                if ($retryAfterSeconds > 0) {
-                    // Record ban in the appropriate throttler
-                    $throttler = $this->getThrottlerForApiSystem();
-                    if ($throttler && method_exists($throttler, 'recordIpBan')) {
-                        $throttler::recordIpBan($retryAfterSeconds);
-                    }
+            if ($retryAfterSeconds > 0) {
+                $throttler = $this->getThrottlerForApiSystem();
+                if ($throttler && method_exists($throttler, 'recordIpBan')) {
+                    $throttler::recordIpBan($retryAfterSeconds);
                 }
             }
         }
@@ -134,6 +139,31 @@ trait HandlesApiJobExceptions
         // Rate limits and recvWindow issues are throttling conditions, not failures
         // This prevents retry counter increment and eventual max retries exhaustion
         $this->rescheduleWithoutRetry($retryAt);
+    }
+
+    /**
+     * Identify responses that warrant a fleet-wide IP ban in the cache.
+     *
+     * - 418 / 403: exchanges (Binance / Bybit) use these as hard IP-level
+     *   bans with a documented recovery window — a fleet halt is correct.
+     * - 429 WITH Retry-After: the exchange is telling us the IP is banned
+     *   for N seconds. Honour it globally.
+     * - 429 WITHOUT Retry-After: soft per-request rate-limit probe. Backing
+     *   off only the failing step is the right shape.
+     */
+    protected function isExplicitIpBanSignal(RequestException $e): bool
+    {
+        $statusCode = $e->getResponse()->getStatusCode();
+
+        if (in_array($statusCode, [418, 403], strict: true)) {
+            return true;
+        }
+
+        if ($statusCode === 429) {
+            return $e->getResponse()->getHeaderLine('Retry-After') !== '';
+        }
+
+        return false;
     }
 
     protected function retryDueToNetworkGlitch(): void

@@ -100,7 +100,9 @@ final class ActivatePositionJob extends BaseQueueableJob
             message: 'Position activated — all orders confirmed',
         );
 
-        $this->dispatchOpenedNotification();
+        // TEMP: position_opened pushover muted on Bruno's call — too chatty on a
+        // 12-slot book. Revisit with a digest / quiet-hours filter before re-enabling.
+        // $this->dispatchOpenedNotification();
     }
 
     /**

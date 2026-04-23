@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.4.9 - 2026-04-23
+
+### Fixes
+
+- [BUG FIX] `Jobs/Lifecycles/Position/{Binance,Bybit,Kucoin}/DispatchPositionJob` — swapped the opening-chain order so stop-loss is placed BEFORE take-profit. Prior ordering (TP → VerifyStillOpen → SL) opened a TOCTOU window on fast-moving tokens: the TP LIMIT could fill within milliseconds of the market entry, then the SL placement arrived at Binance after the position was already closed and was rejected with `-4509 "Time in Force GTE can only be used with open positions"`. The cascade unwound via cancel workflow and realized a loss (LAB #121, LAB #107 shared the race window, BSB #109 earlier). Placing the SL first turns the race into an invariant — SL is a conditional algo that doesn't fire at placement, so the position is protected before the TP ever has a chance to fill. Bitget is unaffected (single-call `PlacePositionTpslJob`).
+- [BUG FIX] `Jobs/Atomic/Order/PlaceLimitOrderJob` — `startOrFail()` no longer rejects a retry that carries an `exchange_order_id`. Previously, a step that placed the order successfully on the first attempt then retried (stale recovery, doubleCheck blip, worker restart) bailed with "already placed" semantics → cascade → forced MARKET-CANCEL close at a worse price (LAB #107 realized loss). Now matches the idempotent-resume pattern `PlaceMarketOrderJob` already uses: `computeApiable()` short-circuits the `apiPlace()` call when the order already carries an `exchange_order_id` and lets `doubleCheck()` + `complete()` verify against the confirmed exchange state.
+- [BUG FIX] `Jobs/Atomic/Position/CancelAlgoOpenOrdersJob` — both the select query and the pre-update query now filter `whereNotNull('exchange_order_id')`. A STOP-MARKET ghost row created before a failed `apiPlace()` (the `-4509` race on fast-trade tokens) was being picked up by the cancel loop, which then threw a secondary `ValidationException: options.algo id field is required` because there was nothing to cancel on the exchange. That secondary error masked the real upstream failure in the step log (LAB #121).
+
+### Improvements
+
+- [IMPROVED] `Jobs/Lifecycles/Position/{Binance,Bybit,Kucoin}/DispatchPositionJob` — dropped the `VerifyPositionStillOpenJob` pre-gate step that was guarding the TP→SL race. The SL-first reorder above makes the check structurally unnecessary. The `VerifyPositionStillOpenJob` classes remain in the tree as unreferenced orphans for now (no delete) in case we want them as defense-in-depth elsewhere.
+- [IMPROVED] `Commands/Cronjobs/DisableVolatileTokensCommand` — added `OPERATOR_EXCLUDED_TOKENS` constant for tokens excluded by operator judgement (distinct from algorithm-detected brittles). Initial list: BEAT, CYS, GENIUS, PARTI, SKYAI, XPIN. Added BSB, IR, IRYS to `STRUCTURAL_BRITTLE_TOKENS` following the LAB-family fast-trade failures. Hourly sweep picks them up on every api_system.
+
+### New atomic + lifecycle steps (orphaned by the SL-first reorder, kept for potential reuse)
+
+- [NEW FEATURE] `Jobs/Atomic/Position/VerifyPositionStillOpenJob` + `Jobs/Lifecycles/Position/VerifyPositionStillOpenJob` — queries the exchange for the position's snapshot and throws if the position is no longer open. Originally designed as a TP→SL race pre-gate; no longer referenced by any exchange's `DispatchPositionJob` after the reorder. Left in the tree as a building block for future workflows that need the check.
+
 ## 1.4.8 - 2026-04-23
 
 ### Fixes

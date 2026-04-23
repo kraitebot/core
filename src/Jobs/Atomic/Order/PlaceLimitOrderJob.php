@@ -21,7 +21,7 @@ use Throwable;
  * 3. doubleCheck() verifies order was accepted (status=NEW)
  * 4. complete() sets reference_* fields from first sync
  */
-class PlaceLimitOrderJob extends BaseApiableJob
+final class PlaceLimitOrderJob extends BaseApiableJob
 {
     public Order $limitOrder;
 
@@ -46,21 +46,24 @@ class PlaceLimitOrderJob extends BaseApiableJob
     }
 
     /**
-     * Verify order is ready to be placed.
+     * Verify the step can start.
+     *
+     * Idempotent-resume contract: a step may reach here either on its
+     * first attempt (no exchange_order_id yet) OR on a retry after the
+     * place succeeded but a later hook failed or the worker died
+     * (exchange_order_id is already set). Both paths are valid starts —
+     * the only genuine refusal is a terminal status (FILLED, CANCELLED,
+     * EXPIRED, PARTIALLY_FILLED) where the step should never have been
+     * picked up again.
+     *
+     * LAB #107 (2026-04-23 14:07) burned on the naive version of this
+     * method: rung 3 placed, a retry triggered, startOrFail saw the
+     * exchange_order_id and bailed → cascade → forced close at a worse
+     * price than entry.
      */
     public function startOrFail(): bool
     {
-        // Order must exist and be in NEW status (not yet placed)
-        if ($this->limitOrder->status !== 'NEW') {
-            return false;
-        }
-
-        // Order must not have an exchange_order_id yet
-        if ($this->limitOrder->exchange_order_id !== null) {
-            return false;
-        }
-
-        return true;
+        return in_array($this->limitOrder->status, ['NEW', 'PARTIALLY_FILLED'], true);
     }
 
     public function computeApiable()
@@ -68,8 +71,13 @@ class PlaceLimitOrderJob extends BaseApiableJob
         $position = $this->limitOrder->position;
         $exchangeSymbol = $position->exchangeSymbol;
 
-        // Place order on exchange
-        $this->limitOrder->apiPlace();
+        // Idempotent resume: if the order already carries an exchange_order_id
+        // the first attempt already placed it. Skip apiPlace so we don't
+        // double-place on the exchange; doubleCheck() and complete() will
+        // run against the confirmed exchange state.
+        if ($this->limitOrder->exchange_order_id === null) {
+            $this->limitOrder->apiPlace();
+        }
 
         return [
             'position_id' => $position->id,
@@ -120,7 +128,7 @@ class PlaceLimitOrderJob extends BaseApiableJob
 
         // Log error to position
         $position->updateSaving([
-            'error_message' => "Limit order L{$this->rungIndex} failed: " . $e->getMessage(),
+            'error_message' => "Limit order L{$this->rungIndex} failed: ".$e->getMessage(),
         ]);
     }
 }
