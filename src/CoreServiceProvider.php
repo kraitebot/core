@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
 use Kraite\Core\Commands\Cronjobs\ConcludeSymbolsDirectionCommand;
@@ -35,6 +36,7 @@ use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\ForbiddenHostname;
 use Kraite\Core\Models\Indicator;
+use Kraite\Core\Models\ModelLog;
 use Kraite\Core\Models\NotificationLog;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
@@ -116,6 +118,20 @@ final class CoreServiceProvider extends ServiceProvider
 
         // Register slow query listener
         $this->registerSlowQueryListener();
+
+        // Clear the per-job Step context once each queued job finishes, so
+        // the next job (or a subsequent HTTP/CLI cycle sharing this worker
+        // process) starts with no stale relatable stamp on attribute-change
+        // logs. Both success (JobProcessed) and failure (JobFailed) paths
+        // fire — covers every handle() exit regardless of the internal
+        // shouldExitEarly branch taken.
+        Queue::after(static function (): void {
+            ModelLog::setCurrentStep(null);
+        });
+
+        Queue::failing(static function (): void {
+            ModelLog::setCurrentStep(null);
+        });
     }
 
     public function register(): void

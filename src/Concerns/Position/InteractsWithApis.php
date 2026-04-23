@@ -66,12 +66,16 @@ trait InteractsWithApis
         );
     }
 
-    // Queries the trade data for this position.
+    /**
+     * Query the exchange's user-trade history for this position's symbol.
+     *
+     * Scoped to the symbol only (no orderId filter) so a manual close on the
+     * exchange — where our TP is CANCELLED/EXPIRED and therefore
+     * `profitOrder()` returns null — still returns the closing fill. The
+     * caller picks the correct trade from the returned list.
+     */
     public function apiQueryTokenTrades()
     {
-        $parsedSymbol = $this->parsed_trading_pair;
-        $orderId = $this->profitOrder()->exchange_order_id;
-
         $this->apiProperties = $this->apiMapper()->prepareQueryTokenTradesProperties($this);
         $this->apiProperties->set('account', $this->account);
 

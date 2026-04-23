@@ -48,6 +48,8 @@ final class ModelLogObserver
             return;
         }
 
+        $step = ModelLog::currentStep();
+
         // Use getAttributes() to get RAW database values (no casts)
         foreach ($model->getAttributes() as $attribute => $value) {
             // Check if should skip this attribute
@@ -58,6 +60,8 @@ final class ModelLogObserver
             ModelLog::create([
                 'loggable_type' => get_class($model),
                 'loggable_id' => $model->getKey(),
+                'relatable_type' => $step ? get_class($step) : null,
+                'relatable_id' => $step?->getKey(),
                 'event_type' => 'attribute_created',
                 'attribute_name' => $attribute,
                 'previous_value' => null,
@@ -136,6 +140,8 @@ final class ModelLogObserver
         $rawAfterSave = $model->getAttributes();
         $rawBeforeSave = self::$attributesCache[$objectId];
 
+        $step = ModelLog::currentStep();
+
         // Compare each attribute for changes (RAW vs RAW)
         foreach ($rawAfterSave as $attribute => $newRawValue) {
             $oldRawValue = $rawBeforeSave[$attribute] ?? null;
@@ -153,6 +159,8 @@ final class ModelLogObserver
             ModelLog::create([
                 'loggable_type' => get_class($model),
                 'loggable_id' => $model->getKey(),
+                'relatable_type' => $step ? get_class($step) : null,
+                'relatable_id' => $step?->getKey(),
                 'event_type' => 'attribute_changed',
                 'attribute_name' => $attribute,
                 'previous_value' => $this->convertValueForStorage($oldRawValue),

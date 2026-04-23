@@ -244,6 +244,36 @@ final class Math
     }
 
     /**
+     * Null-safe "strictly positive" predicate.
+     *
+     * Accepts `mixed` so callers can pass raw API payload values without
+     * pre-guarding: null and any non-numeric type return false. Empty or
+     * whitespace-only strings and sign-only tokens ("+", "-") normalize to
+     * "0" via `toDecimalString` and also return false. Everything else
+     * delegates to `gt($value, '0')`.
+     *
+     * @param  int|null  $scale  Optional decimal scale; defaults to DEFAULT_SCALE.
+     *
+     * @example
+     * Math::isPositive('0.00000001');   // true.
+     * Math::isPositive('0');            // false.
+     * Math::isPositive(null);           // false.
+     * Math::isPositive('');             // false.
+     */
+    public static function isPositive(mixed $value, ?int $scale = null): bool
+    {
+        if (! is_string($value) && ! is_int($value) && ! is_float($value)) {
+            return false;
+        }
+
+        try {
+            return self::gt($value, '0', $scale);
+        } catch (InvalidArgumentException) {
+            return false;
+        }
+    }
+
+    /**
      * Approximate equality with an absolute epsilon tolerance at the given scale.
      *
      * This checks: |a - b| <= epsilon. Use this when values should be "close enough."

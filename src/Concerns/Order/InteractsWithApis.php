@@ -6,6 +6,7 @@ namespace Kraite\Core\Concerns\Order;
 
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Support\Facades\Log;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 use Kraite\Core\Support\ValueObjects\ApiResponse;
@@ -125,6 +126,24 @@ trait InteractsWithApis
     }
 
     /**
+     * Resolve the price to write on sync, preserving the stored value when
+     * the exchange returns null/empty/zero.
+     *
+     * Cancelled algo orders on some exchanges (notably Binance) echo back
+     * `price=0` because the exchange no longer carries the trigger on a
+     * cancelled record. Writing that 0 erases the original trigger price
+     * from our DB and destroys the audit trail. Since no legitimately
+     * synced order on our workflow ever resolves to a 0 price (LIMIT / TP
+     * / SL all have a real price; MARKET is excluded from syncable), a
+     * zero incoming value is always a "exchange-dropped" signal — keep
+     * what we had.
+     */
+    protected function resolveSyncedPrice(mixed $incoming): mixed
+    {
+        return Math::isPositive($incoming) ? $incoming : $this->price;
+    }
+
+    /**
      * Sync an order (query and update local record).
      */
     public function apiSync(): ApiResponse
@@ -170,7 +189,7 @@ trait InteractsWithApis
         $this->updateSaving([
             'status' => $apiResponse->result['status'],
             'quantity' => $apiResponse->result['quantity'] ?? $apiResponse->result['original_quantity'] ?? $this->quantity,
-            'price' => $apiResponse->result['price'],
+            'price' => $this->resolveSyncedPrice($apiResponse->result['price'] ?? null),
         ]);
 
         return $apiResponse;
@@ -266,7 +285,7 @@ trait InteractsWithApis
         $this->updateSaving([
             'status' => $apiResponse->result['status'],
             'quantity' => $apiResponse->result['quantity'],
-            'price' => $apiResponse->result['price'],
+            'price' => $this->resolveSyncedPrice($apiResponse->result['price'] ?? null),
         ]);
 
         return $apiResponse;
@@ -301,7 +320,7 @@ trait InteractsWithApis
         $this->updateSaving([
             'status' => $apiResponse->result['status'],
             'quantity' => $apiResponse->result['original_quantity'] ?? $this->quantity,
-            'price' => $apiResponse->result['price'],
+            'price' => $this->resolveSyncedPrice($apiResponse->result['price'] ?? null),
         ]);
 
         return $apiResponse;
@@ -447,7 +466,7 @@ trait InteractsWithApis
         $this->updateSaving([
             'status' => $apiResponse->result['status'],
             'quantity' => $apiResponse->result['quantity'] ?? $this->quantity,
-            'price' => $apiResponse->result['price'] ?? $this->price,
+            'price' => $this->resolveSyncedPrice($apiResponse->result['price'] ?? null),
         ]);
 
         return $apiResponse;

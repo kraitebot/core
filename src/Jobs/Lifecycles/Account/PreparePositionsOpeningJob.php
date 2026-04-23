@@ -108,12 +108,14 @@ final class PreparePositionsOpeningJob extends BaseQueueableJob
         $nextIndex++;
 
         // Step 4: Dispatch positions for trading
+        // No child_block_uuid — each position is dispatched in its own isolated
+        // block_uuid (see DispatchPositionSlotsJob), so this step has no
+        // children of its own and must self-complete once compute() returns.
         Step::create([
             'class' => DispatchPositionSlotsJob::class,
             'queue' => 'cronjobs',
             'arguments' => ['accountId' => $this->account->id],
             'block_uuid' => $this->uuid(),
-            'child_block_uuid' => (string) Str::uuid(),
             'workflow_id' => $workflowId,
             'index' => $nextIndex,
         ]);

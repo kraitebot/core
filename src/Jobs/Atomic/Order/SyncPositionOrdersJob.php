@@ -75,6 +75,19 @@ class SyncPositionOrdersJob extends BaseApiableJob
             'position_id' => $this->position->id,
         ]);
 
+        // The flip to 'syncing' lives inside the atomic (not in the parent
+        // orchestrator) so that the flip and the flip-back share a single
+        // owner. If startOrFail rejected us upstream, this line never runs
+        // and no transition needs unwinding. The framework's complete()
+        // hook (see below) owns the flip-back on success; retry / ignore /
+        // fail paths are handled by the framework's handleException chain
+        // and intentionally leave the position in 'syncing' so a wedged
+        // sync is visible instead of silently rolled back.
+        $this->position->refresh();
+        if ($this->position->status === 'active') {
+            $this->position->updateToSyncing();
+        }
+
         $syncedOrders = [];
         $failedOrders = [];
 
@@ -118,23 +131,16 @@ class SyncPositionOrdersJob extends BaseApiableJob
             'failed' => count($failedOrders),
         ]);
 
-        // Set position back to 'active' after syncing completes.
-        // If an observer dispatched another workflow (close/cancel/replace),
-        // that workflow's first step will override this status.
-        $this->position->refresh();
-        if ($this->position->status === 'syncing') {
-            $this->position->updateToActive();
-        }
-
         // If every order failed, surface the failure so the job-level retry
-        // kicks in. Partial failures still pass — individual stuck orders get
-        // picked up by the next sync tick. A total failure almost always
+        // kicks in. Partial failures still pass — individual stuck orders
+        // get picked up by the next sync tick. A total failure almost always
         // signals a broader issue (rate limit, exchange outage, auth) that
         // deserves explicit retry/alerting instead of silent skip.
         if (count($orders) > 0 && count($syncedOrders) === 0 && count($failedOrders) > 0) {
             $firstError = $failedOrders[0]['error'] ?? 'unknown error';
+            $failureCount = count($failedOrders);
             throw new \RuntimeException(
-                "All {$failedOrders[0]['id']}+ orders failed to sync for position {$this->position->id}: {$firstError}"
+                "All {$failureCount} orders failed to sync for position {$this->position->id}: {$firstError}"
             );
         }
 
@@ -146,5 +152,25 @@ class SyncPositionOrdersJob extends BaseApiableJob
             'failed_orders' => $failedOrders,
             'message' => 'Position orders synced',
         ];
+    }
+
+    /**
+     * Success-path flip-back.
+     *
+     * The framework invokes complete() only after compute() returns cleanly
+     * (see HandlesStepLifecycle::shouldComplete). Exception paths
+     * (retry / ignore / resolve / fail) are routed by handleException and do
+     * not call complete(), so a wedged sync intentionally leaves the
+     * position in 'syncing'. The `=== 'syncing'` gate guards against an
+     * observer-dispatched workflow (Close / Wap / Replace) that claimed the
+     * position mid-compute — we must not overwrite 'closing' / 'waping'.
+     */
+    public function complete(): void
+    {
+        $this->position->refresh();
+
+        if ($this->position->status === 'syncing') {
+            $this->position->updateToActive();
+        }
     }
 }

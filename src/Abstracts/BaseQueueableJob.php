@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Abstracts;
 
 use Kraite\Core\Exceptions\NonNotifiableException;
+use Kraite\Core\Models\ModelLog;
 use StepDispatcher\Abstracts\BaseStepJob;
 use StepDispatcher\Support\ExceptionParser;
 use Throwable;
@@ -26,6 +27,24 @@ abstract class BaseQueueableJob extends BaseStepJob
     // Set to 0 to rely on Horizon's supervisor timeout instead of job-level timeout.
     // This ensures Laravel properly recognizes Horizon timeouts and calls failed() method.
     public $timeout = 0;
+
+    /**
+     * Register the active Step on ModelLog as soon as the framework hands us
+     * a prepared step. Any model change that happens from here until the
+     * queue worker clears the context (see CoreServiceProvider's
+     * JobProcessed / JobFailed listeners) is stamped with this step via
+     * ModelLogObserver, so audit rows carry causality.
+     */
+    protected function prepareJobExecution(): bool
+    {
+        $prepared = parent::prepareJobExecution();
+
+        if ($prepared) {
+            ModelLog::setCurrentStep($this->step);
+        }
+
+        return $prepared;
+    }
 
     /**
      * Override to throw NonNotifiableException instead of RuntimeException
@@ -59,6 +78,32 @@ abstract class BaseQueueableJob extends BaseStepJob
         $this->checkMaxRetries();
 
         return false;
+    }
+
+    /**
+     * Belt-and-suspenders clear for the process-scoped step context.
+     *
+     * The primary clear runs via Queue::after / Queue::failing listeners
+     * registered in CoreServiceProvider — those fire once per queued job
+     * and cover 100% of real Horizon / worker paths. This destructor
+     * handles synchronous execution paths where queue events never fire
+     * (unit tests invoking handle() directly, future dispatchSync uses,
+     * Queue::fake interactions). The identity guard ensures we only null
+     * the static when THIS job's step is the registered one — without
+     * it, a destructor fired late during GC could wipe out a subsequent
+     * job's context.
+     */
+    public function __destruct()
+    {
+        if (! isset($this->step)) {
+            return;
+        }
+
+        $current = ModelLog::currentStep();
+
+        if ($current !== null && $current->getKey() === $this->step->getKey()) {
+            ModelLog::setCurrentStep(null);
+        }
     }
 
     /**

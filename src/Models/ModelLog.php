@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Models;
 
 use Kraite\Core\Abstracts\BaseModel;
+use StepDispatcher\Models\Step;
 
 /**
  * @property int $id
@@ -28,6 +29,18 @@ final class ModelLog extends BaseModel
      * Set to false to disable logging (useful during seeding/migrations).
      */
     protected static bool $enabled = true;
+
+    /**
+     * The Step currently executing in this process, if any.
+     *
+     * Set by BaseQueueableJob::prepareJobExecution() when a step-backed job
+     * starts handling, cleared via queue lifecycle events (JobProcessed /
+     * JobFailed) registered in CoreServiceProvider. ModelLogObserver reads
+     * this to stamp attribute-change rows with the step that caused them,
+     * so the `relatable_*` columns finally carry causality context instead
+     * of staying NULL.
+     */
+    protected static ?Step $currentStep = null;
 
     /**
      * Models that should have their changes automatically logged (allowlist).
@@ -67,6 +80,24 @@ final class ModelLog extends BaseModel
     public static function isEnabled(): bool
     {
         return self::$enabled;
+    }
+
+    /**
+     * Register the Step currently driving execution so downstream model
+     * changes can be attributed to it. Null clears the context.
+     */
+    public static function setCurrentStep(?Step $step): void
+    {
+        self::$currentStep = $step;
+    }
+
+    /**
+     * Return the currently-executing Step, or null when outside a step
+     * context (e.g. artisan commands, tinker, HTTP requests).
+     */
+    public static function currentStep(): ?Step
+    {
+        return self::$currentStep;
     }
 
     /**

@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.4.6 - 2026-04-23
+
+### Fixes
+
+- [BUG FIX] `Jobs/Lifecycles/Account/PreparePositionsOpeningJob` — dropped the spurious `child_block_uuid` on the `DispatchPositionSlotsJob` step. The slots-job spawns each position in its own isolated block (intentional fan-out design), so declaring a child block that never receives children left the parent step wedged in `Running` forever and blocked `PreparePositionsOpeningJob` from ever completing.
+- [BUG FIX] `Observers/OrderObserver::updating()` — guarded `filled_at` assignment behind `status === 'FILLED' && filled_at === null`. Without the null guard, every subsequent save that kept `status=FILLED` (e.g. the close workflow's re-sync) overwrote the original fill timestamp with `now()`, losing the real moment Binance reported the fill.
+- [BUG FIX] `Concerns/Order/InteractsWithApis::resolveSyncedPrice()` + all four `apiSync*` methods — preserve the stored DB price when the exchange echoes `null` / `''` / `0` on sync. Cancelled Binance algo orders respond with `price=0` on the cancelled record; the old code blindly wrote that `0` into the DB and destroyed the STOP-MARKET trigger-price audit trail.
+- [BUG FIX] `Jobs/Atomic/Position/UpdateRemainingClosingDataJob::computeApiable()` — removed the `profitOrder()` gate on the trade-query path. `profitOrder()` excludes CANCELLED/EXPIRED, so a manual close (which leaves the TP `EXPIRED` on Binance) returned null and the whole closing-price extraction was skipped. Also removed the dead `$orderId = $this->profitOrder()->exchange_order_id;` line in `Concerns/Position/InteractsWithApis::apiQueryTokenTrades()` that threw warnings when `profitOrder()` was null.
+- [BUG FIX] `Jobs/Atomic/Order/SyncPositionOrdersJob` — the "all failed" exception message was interpolating a failed order's `id` into the count slot (`"All {$failedOrders[0]['id']}+ orders failed..."`) instead of `count($failedOrders)`. Logs read like `"All 6575995185+ orders failed..."` on a single-order failure — now correctly reports `"All N orders failed..."`.
+
+### Features
+
+- [NEW FEATURE] `Models/ModelLog::setCurrentStep(?Step)` / `currentStep(): ?Step` — process-scoped context tracker so attribute-change audit rows carry causality. `BaseQueueableJob::prepareJobExecution()` sets it when a step-backed job starts; `Queue::after` / `Queue::failing` listeners (registered in `CoreServiceProvider::boot()`) clear it for queued paths; a `__destruct` on `BaseQueueableJob` covers synchronous / test execution paths. `ModelLogObserver::created()` / `saved()` stamp `relatable_type` / `relatable_id` from the current step — those two columns used to be 100% NULL on attribute-change rows.
+- [NEW FEATURE] `Support/Math::isPositive(mixed $value, ?int $scale = null): bool` — null-safe "strictly positive" predicate. Accepts mixed (non-numeric types return false), delegates empty/whitespace/sign-only handling to `toDecimalString` ("0"), catches `InvalidArgumentException` from malformed numeric strings. Used by `resolveSyncedPrice()` and `UpdateRemainingClosingDataJob::extractClosingPriceFromTrades()` so both sites collapse to one-liners instead of duplicated null+empty+Math::gt/lte guards.
+- [NEW FEATURE] `Jobs/Atomic/Position/UpdateRemainingClosingDataJob::extractClosingPriceFromTrades(array $trades, string $direction): ?string` — picks the closing trade's price from a user-trades response. Reducing-side (`SELL` for LONG, `BUY` for SHORT) with optional `positionSide` match for hedge-mode exchanges; scans newest-first and short-circuits on first match, with a "last trade" fallback when positionSide is absent.
+
+### Improvements
+
+- [IMPROVED] `Jobs/Atomic/Order/SyncPositionOrdersJob` + `Jobs/Lifecycles/Order/PrepareSyncOrdersJob` — split-ownership refactor for the `active ↔ syncing` transitions. `PrepareSyncOrdersJob` no longer flips to `syncing` (previously left the position wedged if the atomic child never reached `computeApiable`, e.g. `startOrFail` → `NonNotifiableException`, a dispatcher crash, or a worker OOM). `SyncPositionOrdersJob::computeApiable()` now owns `active → syncing` at its top, and the framework's `complete()` hook owns `syncing → active` on success — exception / retry / ignore paths intentionally leave the position in `syncing` so a wedged sync surfaces instead of silently rolling back. The `complete()` gate on `status === 'syncing'` guarantees observer-dispatched workflows (Close / Wap / Replace) that claimed the position mid-compute are never overwritten.
+- [IMPROVED] `Support/ApiDataMappers/Binance/ApiRequests/MapsAccountQueryTrades::prepareQueryTokenTradesProperties()` — added `options.limit = '5'`. Binance's `/fapi/v1/userTrades` defaults to returning up to 500 trades; the closing-price extractor scans newest-first and short-circuits, so the cap cuts response payload ~99% with zero behavioural change. `Support/Apis/REST/BinanceApi::accountTrades()` validator now whitelists `options.limit`.
+
 ## 1.4.5 - 2026-04-22
 
 ### Features

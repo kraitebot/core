@@ -257,6 +257,7 @@ final class BinanceApi
         $this->validate($properties, [
             'options.symbol' => 'required|string',
             'options.orderId' => 'string',
+            'options.limit' => 'string',
         ]);
 
         $apiRequest = ApiRequest::make('GET', '/fapi/v1/userTrades', $properties);

@@ -47,7 +47,12 @@ final class OrderObserver
 
     public function updating(Order $model): void
     {
-        if ($model->status === 'FILLED') {
+        // Only stamp filled_at on the *first* transition into FILLED. Without
+        // the null guard every subsequent save (e.g. a later sync tick that
+        // re-writes status=FILLED, or the close workflow's re-sync) would
+        // overwrite the original fill timestamp with now(), losing the actual
+        // moment the exchange reported the fill.
+        if ($model->status === 'FILLED' && $model->filled_at === null) {
             $model->filled_at = now();
         }
     }

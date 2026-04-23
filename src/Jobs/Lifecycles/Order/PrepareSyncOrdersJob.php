@@ -42,12 +42,15 @@ final class PrepareSyncOrdersJob extends BaseQueueableJob
         $timings = [];
         $t0 = microtime(true);
 
-        // Only flip to 'syncing' when the position is in steady-state 'active'.
-        // Other opened statuses (opening, syncing, closing, cancelling) are
-        // owned by their respective workflows — clobbering them here races
-        // with in-flight dispatches (e.g. ActivatePositionJob still placing
-        // SL/TP) and can promote a half-opened position to 'active'
-        // prematurely via SyncPositionOrdersJob's end-of-job flip.
+        // Only dispatch the atomic sync when the position is in steady-state
+        // 'active'. Other opened statuses (opening, syncing, closing,
+        // cancelling, waping) belong to their respective workflows — firing a
+        // sync on top of them races with in-flight dispatches. Crucially, this
+        // job no longer flips the position to 'syncing'; that transition and
+        // its matching flip-back are both owned by SyncPositionOrdersJob
+        // (via the framework's complete() hook), so a crash between here
+        // and the child step can no longer leave a position wedged in
+        // 'syncing'.
         $this->position->refresh();
         $timings['refresh_ms'] = (int) round((microtime(true) - $t0) * 1000);
 
@@ -66,10 +69,6 @@ final class PrepareSyncOrdersJob extends BaseQueueableJob
                 'message' => 'Skipped — position not in active state, another workflow owns it',
             ];
         }
-
-        $t1 = microtime(true);
-        $this->position->updateToSyncing();
-        $timings['update_to_syncing_ms'] = (int) round((microtime(true) - $t1) * 1000);
 
         $t2 = microtime(true);
         $resolver = JobProxy::with($this->position->account);

@@ -21,6 +21,12 @@ trait MapsAccountQueryTrades
 
         $properties->set('options.symbol', (string) $position->exchangeSymbol->parsed_trading_pair);
 
+        // Binance defaults to returning up to 500 trades. All we need is the
+        // last reducing fill — a small cap drops payload size ~99% with no
+        // behavioural change. `extractClosingPriceFromTrades` scans
+        // newest-first and short-circuits on the first match.
+        $properties->set('options.limit', '5');
+
         return $properties;
     }
 

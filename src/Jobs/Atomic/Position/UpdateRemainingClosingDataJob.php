@@ -10,6 +10,7 @@ use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Notifications\AlertNotification;
+use Kraite\Core\Support\Math;
 
 /**
  * UpdateRemainingClosingDataJob (Atomic)
@@ -49,31 +50,32 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
         $wasFastTraded = false;
         $highProfitNotificationSent = false;
 
-        // 1. Get closing price from trades (if profit order exists)
-        $profitOrder = $position->profitOrder();
-        if ($profitOrder && $profitOrder->exchange_order_id) {
-            try {
-                $tradesResponse = $position->apiQueryTokenTrades();
+        // 1. Primary: pull the closing price from the exchange's trade
+        // history. Works for all close flavours — our own workflow AND a
+        // manual close done directly on the exchange — because every
+        // reducing fill lands in userTrades regardless of the order that
+        // produced it. Previously this path was gated behind a non-null
+        // `profitOrder()`, which excludes CANCELLED/EXPIRED rows and so
+        // returned null whenever the user manual-closed (which leaves the
+        // TP as EXPIRED on Binance), losing the closing_price entirely.
+        try {
+            $tradesResponse = $position->apiQueryTokenTrades();
 
-                // Extract closing price from trade result
-                if ($tradesResponse->result) {
-                    $trades = is_array($tradesResponse->result) ? $tradesResponse->result : [];
-
-                    // Get the last trade price as closing price
-                    if (! empty($trades)) {
-                        $lastTrade = end($trades);
-                        $closingPrice = $lastTrade['price'] ?? $lastTrade['execPrice'] ?? null;
-                    }
-                }
-            } catch (\Throwable $e) {
-                // Log but don't fail - closing price is nice to have
-                info("Failed to get closing price for position {$position->id}: " . $e->getMessage());
+            if ($tradesResponse->result) {
+                $trades = is_array($tradesResponse->result) ? $tradesResponse->result : [];
+                $closingPrice = $this->extractClosingPriceFromTrades($trades, (string) $position->direction);
             }
+        } catch (\Throwable $e) {
+            // Log but don't fail - closing price is nice to have
+            info("Failed to get closing price for position {$position->id}: ".$e->getMessage());
         }
 
-        // Fallback: If no closing price from trades, use profit order's fill price
-        if ($closingPrice === null && $profitOrder instanceof Order && $profitOrder->status === 'FILLED') {
-            $closingPrice = $profitOrder->price;
+        // Fallback: TP filled naturally. Use its own price.
+        if ($closingPrice === null) {
+            $profitOrder = $position->profitOrder();
+            if ($profitOrder instanceof Order && $profitOrder->status === 'FILLED') {
+                $closingPrice = $profitOrder->price;
+            }
         }
 
         // Update closing_price if available
@@ -120,6 +122,53 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
             'high_profit_notification_sent' => $highProfitNotificationSent,
             'message' => 'Closing data updated',
         ];
+    }
+
+    /**
+     * Pick the closing trade's price from a user-trades response.
+     *
+     * A closing fill is the reducing leg of the position: SELL for LONG,
+     * BUY for SHORT, optionally tagged with the matching positionSide on
+     * hedge-mode exchanges (Binance). We scan newest-first and return the
+     * most recent match so partial/multi-step closes resolve to the final
+     * reducing fill. If no trade carries side/positionSide metadata (some
+     * exchanges omit it), fall back to the last trade in the list — it's
+     * the most recent fill for the symbol, which is the close we just ran.
+     */
+    private function extractClosingPriceFromTrades(array $trades, string $direction): ?string
+    {
+        if (empty($trades)) {
+            return null;
+        }
+
+        $direction = mb_strtoupper($direction);
+        $closeSide = $direction === 'LONG' ? 'SELL' : 'BUY';
+
+        foreach (array_reverse($trades) as $trade) {
+            $side = mb_strtoupper((string) ($trade['side'] ?? ''));
+            $positionSide = mb_strtoupper((string) ($trade['positionSide'] ?? ''));
+
+            $sideMatches = $side === $closeSide;
+            $positionSideMatches = $positionSide === '' || $positionSide === $direction;
+
+            if ($sideMatches && $positionSideMatches) {
+                $price = $trade['price'] ?? $trade['execPrice'] ?? null;
+
+                if (Math::isPositive($price)) {
+                    return (string) $price;
+                }
+            }
+        }
+
+        // Exchange didn't tag side/positionSide — use most recent trade.
+        $lastTrade = end($trades);
+        $price = $lastTrade['price'] ?? $lastTrade['execPrice'] ?? null;
+
+        if (Math::isPositive($price)) {
+            return (string) $price;
+        }
+
+        return null;
     }
 
     /**
