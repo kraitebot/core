@@ -60,9 +60,15 @@ final class ClosePositionJob extends BaseApiableJob
     }
 
     /**
-     * Only start if position is in an opened status.
+     * Skip (not fail) when the position has moved past its opened statuses
+     * between observer-dispatch and worker-pickup. OrderObserver fires
+     * this job when a PROFIT or STOP-MARKET reaches FILLED; if another
+     * workflow has already driven the position into `closing` /
+     * `cancelling` / closed / failed by the time the step runs, there's
+     * nothing to close — but that's an observer-race tail, not a failure.
+     * Lets it land in Skipped instead of polluting the Failed bucket.
      */
-    public function startOrFail(): bool
+    public function startOrSkip(): bool
     {
         return in_array($this->position->status, $this->position->openedStatuses(), strict: true);
     }

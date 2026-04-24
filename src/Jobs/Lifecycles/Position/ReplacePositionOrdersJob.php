@@ -55,9 +55,13 @@ class ReplacePositionOrdersJob extends BaseApiableJob
     }
 
     /**
-     * Guard: Only run if position is still in an active status.
+     * Skip (not fail) when the position has left its active statuses
+     * between its parent orchestrator (PreparePositionReplacementJob)
+     * resolving and this step running. Parallel cascade can have moved
+     * the position into `closing` / `cancelling` / closed — nothing to
+     * replace, but also no bug. Routes to Skipped rather than Failed.
      */
-    public function startOrFail(): bool
+    public function startOrSkip(): bool
     {
         return in_array($this->position->status, $this->position->activeStatuses(), strict: true);
     }

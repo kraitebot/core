@@ -54,23 +54,35 @@ final class ApplyWapJob extends BaseApiableJob
     }
 
     /**
-     * Guard: Only run if position is still in an active status.
-     * Prevents WAP on positions already closing/closed.
+     * Real-failure guard: `profit_percentage` missing is a configuration
+     * bug (the open workflow should always have set it) and deserves to
+     * land in Failed so operators notice.
      */
     public function startOrFail(): bool
     {
-        // Position must be in an active status
+        return $this->position->profit_percentage !== null;
+    }
+
+    /**
+     * Observer-race guards: skip (not fail) when the precondition has
+     * simply moved on between observer-dispatch and worker-pickup.
+     *
+     *   - Position status left `activeStatuses()` → cascade close already
+     *     running, nothing to re-weight.
+     *   - `profitOrder() === null` → the profit order got cancelled
+     *     between the triggering LIMIT fill and this step — same race
+     *     class, same soft resolution.
+     *
+     * Both land the step in Skipped, keeping the Failed bucket reserved
+     * for real bugs like the `profit_percentage` null above.
+     */
+    public function startOrSkip(): bool
+    {
         if (! in_array($this->position->status, $this->position->activeStatuses(), true)) {
             return false;
         }
 
-        // Must have a profit order to modify
         if ($this->position->profitOrder() === null) {
-            return false;
-        }
-
-        // Must have profit_percentage configured
-        if ($this->position->profit_percentage === null) {
             return false;
         }
 
