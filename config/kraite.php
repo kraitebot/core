@@ -79,21 +79,6 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | WebSocket Price Streams
-    |--------------------------------------------------------------------------
-    |
-    | price_update_throttle_seconds: Minimum interval between database writes
-    |                                for price updates from WebSocket streams.
-    |                                Higher values reduce database load but
-    |                                may result in slightly stale prices.
-    |                                Default: 5 seconds (was 1 second)
-    */
-    'websocket' => [
-        'price_update_throttle_seconds' => (int) env('PRICE_UPDATE_THROTTLE_SECONDS', 5),
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
     | Indicator Batch Processing
     |--------------------------------------------------------------------------
     |
@@ -127,18 +112,6 @@ return [
         'sr_safe_zone' => (float) env('TOKEN_DISCOVERY_SR_SAFE_ZONE', 0.20),
         'correlation_type' => env('TOKEN_DISCOVERY_CORRELATION_TYPE', 'rolling'),
     ],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Default Throttle Seconds
-    |--------------------------------------------------------------------------
-    |
-    | Default throttle window for auto-created throttle rules.
-    | When a throttle rule doesn't exist in the database, this default is used.
-    |
-    | default: 300 seconds (5 minutes)
-    */
-    'default_throttle_seconds' => (int) env('DEFAULT_THROTTLE_SECONDS', 300),
 
     /*
     |--------------------------------------------------------------------------

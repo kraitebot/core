@@ -2,113 +2,8 @@
 
 declare(strict_types=1);
 
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Support\Facades\File;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Support\Math;
-
-/**
- * Try running a callback multiple times with optional delays and failure callback.
- *
- * @param  callable  $callback  Main logic to run.
- * @param  int  $maxRetries  Max number of attempts.
- * @param  int|array  $delays  Delay(s) in seconds between retries.
- * @param  callable|null  $onFailure  Callback to run on final failure (receives Throwable).
- * @return mixed
- *
- * @throws Throwable The last exception after all retries fail.
- */
-function try_times(callable $callback, int $maxRetries = 3, int|array $delays = [2, 4, 8], ?callable $onFailure = null)
-{
-    $attempt = 0;
-
-    do {
-        try {
-            return $callback();
-        } catch (Throwable $e) {
-            $attempt++;
-            if ($attempt >= $maxRetries) {
-                if ($onFailure) {
-                    $onFailure($e);
-                }
-                throw $e;
-            }
-
-            $delay = is_array($delays)
-                ? ($delays[$attempt - 1] ?? end($delays))
-                : $delays;
-
-            sleep($delay);
-        }
-    } while ($attempt < $maxRetries);
-}
-
-function returnLadderedValue(array $values, int $index)
-{
-    return $values[min($index, count($values) - 1)];
-}
-
-function summarize_model_attributes(Model $model, array $only = []): string
-{
-    $attributes = $model->getAttributes();
-
-    if (! empty($only)) {
-        $attributes = array_intersect_key($attributes, array_flip($only));
-    }
-
-    $parts = [];
-
-    foreach ($attributes as $key => $value) {
-        if (! (is_scalar($value) || $value === null)) {
-            continue;
-        }
-
-        $parts[] = "{$key}=".var_export($value, true);
-    }
-
-    return implode(separator: ', ', array: $parts);
-}
-
-function format_model_attributes(Model $model, array $only = [], array $except = []): array
-{
-    return collect($model->getAttributes())
-        ->when($only, fn ($c) => $c->only($only))
-        ->when($except, fn ($c) => $c->except($except))
-        ->filter(fn ($value) => ! is_null($value))
-        ->mapWithKeys(function ($value, $key) {
-            if (! is_string($value)) {
-                return [$key => $value];
-            }
-
-            // Try first decode
-            $decoded = json_decode($value, associative: true);
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                return [$key => $value];
-            }
-
-            // If it's an array or a second-level string, decode recursively
-            $deepCleaned = deep_clean_json($decoded);
-
-            return [$key => $deepCleaned];
-        })
-        ->all();
-}
-
-function deep_clean_json($value)
-{
-    if (is_array($value)) {
-        return array_map(callback: 'deep_clean_json', array: $value);
-    }
-
-    if (is_string($value)) {
-        $decoded = json_decode($value, associative: true);
-        if (json_last_error() === JSON_ERROR_NONE) {
-            return deep_clean_json($decoded);
-        }
-    }
-
-    return $value;
-}
 
 function get_market_order_amount_divider($totalLimitOrders)
 {
@@ -196,34 +91,6 @@ function truncate_decimal_string(string $value, int $precision): string
     $result = $sign.$truncated;
 
     return $result === '-0' ? '0' : $result;
-}
-
-/**
- * Log a message to a specific file in storage/logs.
- * Useful for debugging specific subsystems like WebSocket connections.
- *
- * @param  string  $filename  The filename to write to (e.g., 'binance-websocket.log')
- * @param  string  $message  The message to log
- */
-function cleanLogsFolder(): void
-{
-    $logsPath = storage_path('logs');
-
-    if (! File::isDirectory($logsPath)) {
-        return;
-    }
-
-    /** @var array<int, string> $directories */
-    $directories = File::directories($logsPath);
-    foreach ($directories as $directory) {
-        File::deleteDirectory($directory);
-    }
-
-    /** @var array<int, string> $logFiles */
-    $logFiles = File::glob($logsPath.'/*.log');
-    foreach ($logFiles as $logFile) {
-        File::delete($logFile);
-    }
 }
 
 function log_on(string $filename, string $message): void

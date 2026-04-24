@@ -45,12 +45,4 @@ trait HasComputationHelpers
 
         return $p;
     }
-
-    /**
-     * Returns whether we are in testing mode (e.g., use binance testnet).
-     */
-    public static function testingMode(): bool
-    {
-        return (bool) config('kraite.testing.enabled');
-    }
 }
