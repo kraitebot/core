@@ -2,8 +2,38 @@
 
 declare(strict_types=1);
 
+use Illuminate\Support\Facades\File;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Support\Math;
+
+/**
+ * Wipe storage/logs clean of sub-directories and *.log files.
+ *
+ * Intentionally narrow — only called from the ConcludeSymbolsDirectionCommand
+ * and FetchKlinesCommand `--clean` operator paths, which also truncate the
+ * step trees and API log tables. Not a production safety net; a dev-mode
+ * reset helper.
+ */
+function cleanLogsFolder(): void
+{
+    $logsPath = storage_path('logs');
+
+    if (! File::isDirectory($logsPath)) {
+        return;
+    }
+
+    /** @var array<int, string> $directories */
+    $directories = File::directories($logsPath);
+    foreach ($directories as $directory) {
+        File::deleteDirectory($directory);
+    }
+
+    /** @var array<int, string> $logFiles */
+    $logFiles = File::glob($logsPath.'/*.log');
+    foreach ($logFiles as $logFile) {
+        File::delete($logFile);
+    }
+}
 
 function get_market_order_amount_divider($totalLimitOrders)
 {

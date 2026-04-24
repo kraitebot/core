@@ -7,6 +7,7 @@ namespace Kraite\Core\Jobs\Models\ExchangeSymbol;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Sleep;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
@@ -16,7 +17,6 @@ use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 use Kraite\Core\Support\Proxies\ApiRESTProxy;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
-use RuntimeException;
 use Throwable;
 
 /**
@@ -221,19 +221,39 @@ final class FetchKlinesJob extends BaseApiableJob
      * Upsert candles with advisory lock to prevent deadlocks.
      * Uses MySQL GET_LOCK to serialize upserts per symbol/timeframe.
      *
+     * Short 2s lock timeout on purpose: overlapping bulk-fetch crons
+     * (the 5-minute `--only-active-positions` tick + the hourly per-
+     * timeframe ticks) can fan out the SAME (symbol, timeframe) fetch
+     * into concurrent blocks. Each instance pulls the identical recent-
+     * candle window from the exchange and writes the identical upsert,
+     * so a contended loser can safely skip without data loss — the
+     * winner's write is indistinguishable from ours. A long wait here
+     * used to trip the 5s slow-query alarm and spam pushover at :15 /
+     * :05 / :00 under normal cron overlap.
+     *
      * @param  array<int, array<string, mixed>>  $buffer
      */
     private function upsertWithLock(array $buffer, int $maxAttempts = 5): void
     {
         $lockKey = "candles_{$this->exchangeSymbol->id}_{$this->timeframe}";
-        $lockTimeout = 30;
+        $lockTimeout = 2;
         $lockAcquired = false;
 
         try {
             $result = DB::selectOne('SELECT GET_LOCK(?, ?) as lock_result', [$lockKey, $lockTimeout]);
 
             if (! $result || $result->lock_result !== 1) {
-                throw new RuntimeException("Failed to acquire advisory lock for {$lockKey} after {$lockTimeout}s");
+                // Another worker is already running the identical upsert
+                // for this (symbol, timeframe). Skip silently — the
+                // winner's transaction will persist the same candles we
+                // would have written. Logged at debug level so the
+                // audit trail exists without polluting the jobs log.
+                Log::channel('jobs')->debug(
+                    '[FETCH-KLINES] Skipping upsert — another worker holds the advisory lock',
+                    ['lock_key' => $lockKey, 'timeout_seconds' => $lockTimeout, 'buffer_size' => count($buffer)]
+                );
+
+                return;
             }
 
             $lockAcquired = true;

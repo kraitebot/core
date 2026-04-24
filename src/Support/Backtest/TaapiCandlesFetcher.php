@@ -41,7 +41,7 @@ final class TaapiCandlesFetcher
 {
     private const BASE_URL = 'https://api.taapi.io/candles';
 
-    private const SUPPORTED_TIMEFRAMES = ['1h', '4h', '12h'];
+    private const SUPPORTED_TIMEFRAMES = ['1h', '4h', '12h', '1d'];
 
     private const MAX_RESULTS_PER_CALL = 300;
 

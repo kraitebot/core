@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 use Kraite\Core\Jobs\Models\ExchangeSymbol\ConcludeSymbolDirectionAtTimeframeJob;
 use Kraite\Core\Jobs\Models\Indicator\QuerySymbolIndicatorsJob;
 use Kraite\Core\Models\ExchangeSymbol;
+use Kraite\Core\Models\Kraite;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Models\StepsDispatcher;
 use StepDispatcher\Support\BaseCommand;
@@ -114,16 +115,16 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
         // Wrap workflow creation in transaction to prevent race conditions
         // if command runs concurrently
         DB::transaction(function () use ($symbolsToProcess, $shouldCleanup, $progressBar, &$skippedCount) {
+            $timeframes = Kraite::timeframes();
+
+            if (empty($timeframes)) {
+                $skippedCount = $symbolsToProcess->count();
+                $progressBar?->advance($skippedCount);
+
+                return;
+            }
+
             foreach ($symbolsToProcess as $exchangeSymbol) {
-                // Get starting timeframe from symbol's exchange (first in list)
-                $timeframes = $exchangeSymbol->apiSystem->timeframes;
-
-                if (! is_array($timeframes) || empty($timeframes)) {
-                    $skippedCount++;
-                    $progressBar?->advance();
-
-                    continue;
-                }
 
                 $startingTimeframe = $timeframes[0];
                 $this->createWorkflowForSymbol($exchangeSymbol->id, $startingTimeframe, $shouldCleanup);

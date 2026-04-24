@@ -60,6 +60,16 @@ final class BacktestSimulator
     private const SCALE = 16;
 
     /**
+     * Sims whose start candle falls within this trailing window AND that
+     * terminate as `non-reboundable` are discarded — they're false positives
+     * caused by walker running out of forward data, not true non-rebounds.
+     * Rebounds / tp_market_only / stopped_out from the same window ARE
+     * counted because they resolved before running out of data.
+     * Bypassed entirely when the caller requests a specific candle.
+     */
+    private const MIN_FORWARD_WALK_DAYS = 15;
+
+    /**
      * Simulate the ladder against historical candles for one symbol.
      *
      * @param  ExchangeSymbol  $symbol  Symbol to test (candles looked up by symbol + timeframe).
@@ -77,6 +87,7 @@ final class BacktestSimulator
      * @param  int|null  $limitHit  Only return rows whose deepest touched rung >= this.
      * @param  bool  $nonReboundableOnly  Filter output to non-reboundable + stopped_out statuses.
      * @param  Carbon|null  $specificCandle  Run the sim against this single candle only.
+     * @param  Carbon|null  $since  Limit the candle window: include only candles with candle_time_utc >= $since. Null = walk everything.
      * @return array{
      *   rows: array<int, array<string, mixed>>,
      *   totals: array{candles: int, stops: int, non_reboundable: int, tp_market_only: int, reboundable: int},
@@ -99,6 +110,7 @@ final class BacktestSimulator
         ?int $limitHit = null,
         bool $nonReboundableOnly = false,
         ?Carbon $specificCandle = null,
+        ?Carbon $since = null,
     ): array {
         $this->validate($timeframe, $margin, $leverage, $totalLimitOrders, $daysToIgnore);
 
@@ -108,6 +120,7 @@ final class BacktestSimulator
         $all = Candle::query()
             ->where('exchange_symbol_id', $symbol->id)
             ->where('timeframe', $timeframe)
+            ->when($since !== null, fn ($q) => $q->where('candle_time_utc', '>=', $since->toDateTimeString()))
             ->orderBy('candle_time_utc')
             ->get(['id', 'open', 'high', 'low', 'close', 'candle_time_utc']);
 
@@ -124,6 +137,15 @@ final class BacktestSimulator
         if (empty($startIndices)) {
             return $this->emptyResult('No start candles matched the requested selector.');
         }
+
+        // Boundary for the non-rebound false-positive filter: start candles
+        // after this timestamp get their `non-reboundable` verdicts discarded
+        // (walker just ran out of data, not a real non-rebound). Other
+        // verdicts from the same zone still count. Specific-candle mode
+        // bypasses this rule — user explicitly asked for that candle.
+        $bufferCutoffStr = $specificCandle !== null
+            ? null
+            : Carbon::now('UTC')->subDays(self::MIN_FORWARD_WALK_DAYS)->toDateTimeString();
 
         $rows = [];
         $totals = [
@@ -185,6 +207,8 @@ final class BacktestSimulator
                 'timeframe' => $timeframe,
                 'total_candles_in_db' => $all->count(),
                 'display_cutoff' => $displayCutoff->toDateTimeString(),
+                'window_since' => $since?->toDateTimeString(),
+                'end_cutoff_days' => self::MIN_FORWARD_WALK_DAYS,
                 'tp_percent' => $tpPercent,
                 'sl_percent' => $slPercent,
                 'gap_long_percent' => $gapLongPercent ?? (string) $symbol->percentage_gap_long,
@@ -602,8 +626,9 @@ final class BacktestSimulator
 
     private function validate(string $timeframe, string $margin, int $leverage, int $totalLimitOrders, int $daysToIgnore): void
     {
-        if (! in_array($timeframe, ['1h', '4h', '12h'], true)) {
-            throw new InvalidArgumentException("Unsupported timeframe: {$timeframe}. Allowed: 1h, 4h, 12h.");
+        $allowed = array_keys(CandleCoverageVerifier::INTERVAL_SECONDS);
+        if (! in_array($timeframe, $allowed, true)) {
+            throw new InvalidArgumentException("Unsupported timeframe: {$timeframe}. Allowed: ".implode(', ', $allowed).'.');
         }
         if (! is_numeric($margin) || (float) $margin <= 0) {
             throw new InvalidArgumentException('Margin must be numeric and > 0.');

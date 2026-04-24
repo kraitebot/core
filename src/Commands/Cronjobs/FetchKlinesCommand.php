@@ -12,6 +12,7 @@ use Kraite\Core\Jobs\Models\ExchangeSymbol\DispatchPerSymbolKlineBlocksJob;
 use Kraite\Core\Jobs\Models\ExchangeSymbol\FetchKlinesJob;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Models\TokenMapper;
 use StepDispatcher\Models\Step;
@@ -98,9 +99,10 @@ final class FetchKlinesCommand extends BaseCommand
         if ($explicitTimeframe !== null) {
             return $explicitTimeframe;
         }
-        $timeframes = $apiSystem->timeframes;
-        if (! is_array($timeframes) || empty($timeframes)) {
-            $this->verboseError("ApiSystem '{$apiSystem->canonical}' has no timeframes configured.");
+
+        $timeframes = Kraite::timeframes();
+        if (empty($timeframes)) {
+            $this->verboseError("No timeframes configured on the kraite singleton row — cannot fetch klines for '{$apiSystem->canonical}'.");
 
             return null;
         }
@@ -153,7 +155,7 @@ final class FetchKlinesCommand extends BaseCommand
     /** @param  array<int, string>|null  $explicitTimeframe */
     private function handleBulkSymbols(?string $canonical, ?array $explicitTimeframe, int $limit): int
     {
-        $apiSystemsQuery = ApiSystem::query()->where('is_exchange', true)->whereNotNull('timeframes')->whereHas('exchangeSymbols');
+        $apiSystemsQuery = ApiSystem::query()->where('is_exchange', true)->whereHas('exchangeSymbols');
         if ($canonical) {
             $apiSystemsQuery->where('canonical', $canonical);
         }

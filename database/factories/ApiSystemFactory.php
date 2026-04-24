@@ -52,7 +52,6 @@ final class ApiSystemFactory extends Factory
         return $this->state(function (array $attributes) {
             return [
                 'is_exchange' => true,
-                'timeframes' => ['1h', '4h', '12h'],
             ];
         });
     }

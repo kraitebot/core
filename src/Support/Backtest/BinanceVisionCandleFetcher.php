@@ -46,7 +46,7 @@ final class BinanceVisionCandleFetcher
 {
     private const VISION_BASE_URL = 'https://data.binance.vision/data/futures/um/monthly/klines';
 
-    private const SUPPORTED_TIMEFRAMES = ['1h', '4h', '12h'];
+    private const SUPPORTED_TIMEFRAMES = ['1h', '4h', '12h', '1d'];
 
     private const DEFAULT_MAX_MONTHS = 24;
 

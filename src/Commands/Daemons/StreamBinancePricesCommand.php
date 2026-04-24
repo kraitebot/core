@@ -106,9 +106,18 @@ final class StreamBinancePricesCommand extends Command
                     return;
                 }
 
+                // Combined-stream envelope: `{"stream": "...", "data": [...]}`.
+                // The single-stream shape (bare array) is no longer in use
+                // after the 2026-04-24 switch to `/stream?streams=` but we
+                // accept it as a fallback so a server-side rollback doesn't
+                // silently drop writes again.
+                $rows = isset($decoded['data']) && is_array($decoded['data'])
+                    ? $decoded['data']
+                    : $decoded;
+
                 $prices = [];
-                foreach ($decoded as $row) {
-                    if (isset($row['s'], $row['p'])) {
+                foreach ($rows as $row) {
+                    if (is_array($row) && isset($row['s'], $row['p'])) {
                         $prices[$row['s']] = $row['p'];
                     }
                 }

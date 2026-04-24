@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.3 - 2026-04-24
+
+### Features
+
+- [NEW FEATURE] `Commands/Cronjobs/WatchPriceStreamCommand` (`kraite:watch-price-stream`) — external watchdog cron for the Binance mark-price daemon. Runs every minute, checks `MAX(mark_price_synced_at)` staleness against a 90s threshold, and bounces `kraite-ingestion-binance-prices` via `sudo -n supervisorctl restart` when the stream freezes. Includes a 120s cooldown gate (cache-backed) so overlapping boot windows and persistent upstream issues don't loop-restart the daemon. `--dry-run` mode available for ops.
+- [NEW FEATURE] `Models/Kraite::timeframes()` static helper — single source for the global indicator/kline timeframe list that every consumer used to read as `$apiSystem->timeframes`. Memoised via `once()` so reads inside hot map closures (`HasTokenDiscovery::selectBestTokenByBtcBias`) and per-exchange iteration loops stay at one DB query per PHP process.
+- [NEW FEATURE] `BacktestSimulator::simulate(..., ?Carbon $since = null)` — optional window start lets the admin UI and CLI limit the candle walk to a recent slice instead of the full symbol history.
+- [NEW FEATURE] `BacktestTokenCommand` — added `--since` and `--candles_back` options mirroring the admin UI's window controls. The new `resolveWindowSince()` helper applies the same precedence (`--since` wins if both are set).
+
+### Fixes
+
+- [BUG FIX] Binance WebSocket price daemon — switched `BinanceApiClient::subscribeToStream` from the `/ws/<stream>` single-stream URL path to the `/stream?streams=<stream>` combined-stream path. Binance's `/ws/` endpoint silently stopped delivering frames for array streams (`!markPrice@arr@1s`) from our IP on 2026-04-24 — the handshake succeeded but zero data came through, and no `close` event ever fired so the existing reconnect logic never triggered. `StreamBinancePricesCommand` now unwraps the combined-stream envelope `{"stream": "...", "data": [...]}` before iterating the rows.
+- [BUG FIX] Restored `src/helpers.php::cleanLogsFolder()` (and the `Illuminate\Support\Facades\File` import) — the deadcode audit on 2026-04-24 removed it but two callers inside `ConcludeSymbolsDirectionCommand::handle` and `FetchKlinesCommand::handle` (both inside the operator `--clean` paths) still reference it. The previous release would throw `Undefined function` when either command ran with `--clean`.
+
+### Improvements
+
+- [IMPROVED] `Abstracts/BaseWebsocketClient` — major resilience overhaul:
+  - Idle-read watchdog: if no frame has been received for 30s the socket is force-closed, triggering the reconnect path. Catches the "TCP stays ESTABLISHED but server stops sending" zombie scenario that froze the Binance daemon for 14h on 2026-04-24.
+  - Unbounded reconnect with capped exponential backoff (30s ceiling): dropped the prior 5-attempt cap so a supervised daemon never "gives up".
+  - Heartbeat log every 60s (`connected_seconds`, `frames_received`, `seconds_since_last_frame`) so an empty daemon log file signals "daemon died" rather than "silent zombie".
+  - Connection/close state transitions now log to the `jobs` channel.
+  - Self-initiated 15-minute pong moved into the shared watchdog so it isn't leaking a new timer (pointing at a dead connection) on every reconnect.
+- [IMPROVED] `Jobs/Models/ExchangeSymbol/FetchKlinesJob::upsertWithLock()` — reduced advisory-lock wait from 30s to 2s, and a lock miss now skips silently (with a debug log) instead of throwing. Overlapping bulk-fetch crons (`--only-active-positions` every 5 min + hourly per-timeframe ticks) used to fan out the same BTC/<timeframe> step into concurrent blocks; the loser of the `GET_LOCK` race would wait 11+ seconds and trip the 5s slow-query alarm into Pushover. The upsert is idempotent — both workers pull the identical recent-candle window — so dropping the duplicate loses nothing.
+- [IMPROVED] Moved the indicator/kline timeframe list from `api_systems.timeframes` (per-exchange JSON) to `kraite.timeframes` (global singleton JSON). The per-exchange split was never exploited — all four exchange rows carried identical values. Migration `2026_04_24_000003_move_timeframes_from_api_systems_to_kraite` handles the hop (idempotent, with `Schema::hasColumn` guards on both directions), drops `api_systems.timeframes`, and seeds `kraite.timeframes` with `["1h","4h","12h","1d"]` from whatever the first non-null source row carried (falls back to the default set). Updated 6 consumers (`HasTokenDiscovery`, `ConcludeSymbolDirectionAtTimeframeJob`, `CalculateBtcCorrelationJob`, `CalculateBtcElasticityJob`, `ConcludeSymbolsDirectionCommand`, `FetchKlinesCommand`) plus the `ApiSystem` model cast, `ApiSystemFactory::exchange()` state, and the `KraiteSeeder` to use the new location.
+- [IMPROVED] `ConcludeSymbolsDirectionCommand::handle()` — hoisted the timeframes-empty guard above the per-symbol `foreach` so a missing config short-circuits the entire batch instead of checking the invariant once per symbol.
+
 ## 1.5.2 - 2026-04-24
 
 ### Features

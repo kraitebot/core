@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Cache;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
+use Kraite\Core\Models\Kraite as KraiteSettings;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Models\Symbol;
 use Kraite\Core\Models\TokenMapper;
@@ -682,8 +683,9 @@ trait HasTokenDiscovery
         /*
          * Score Each Candidate Across ALL Timeframes
          */
-        $scoredSymbols = $candidates->map(function ($symbol) use ($direction, $correlationField) {
-            $timeframes = $symbol->apiSystem->timeframes ?? [];
+        $timeframes = KraiteSettings::timeframes();
+
+        $scoredSymbols = $candidates->map(function ($symbol) use ($direction, $correlationField, $timeframes) {
 
             $bestScore = 0;
             $bestTimeframe = null;

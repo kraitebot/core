@@ -36,6 +36,7 @@ use RuntimeException;
  * @property string|null $admin_pushover_application_key
  * @property string|null $email
  * @property array<int, string> $notification_channels
+ * @property array<int, string>|null $timeframes
  * @property \Illuminate\Support\Carbon $created_at
  * @property \Illuminate\Support\Carbon $updated_at
  */
@@ -68,7 +69,29 @@ final class Kraite extends BaseModel
         'admin_pushover_application_key' => 'encrypted',
 
         'notification_channels' => 'array',
+        'timeframes' => 'array',
     ];
+
+    /**
+     * Global indicator/kline timeframe list. Single source for every
+     * consumer that used to read `$apiSystem->timeframes`.
+     *
+     * Memoised via `once()` so callers inside hot loops (candidate
+     * scoring in `HasTokenDiscovery::selectBestTokenByBtcBias`, per-
+     * exchange iteration in `FetchKlinesCommand::handleBulkSymbols`,
+     * etc.) see a single `SELECT * FROM kraite` per PHP process.
+     * Matches the style of `Kraite::admin()`.
+     *
+     * Returns an empty array when no kraite row exists yet (fresh
+     * install mid-seed) so callers can guard cleanly without null
+     * checks.
+     *
+     * @return array<int, string>
+     */
+    public static function timeframes(): array
+    {
+        return once(fn (): array => self::first()?->timeframes ?? []);
+    }
 
     public const IP_CACHE_KEY = 'kraite.server.public_ip';
 

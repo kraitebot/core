@@ -30,12 +30,13 @@ use Kraite\Core\Models\ExchangeSymbol;
  */
 final class CandleCoverageVerifier
 {
-    private const SUPPORTED_TIMEFRAMES = ['1h', '4h', '12h'];
+    private const SUPPORTED_TIMEFRAMES = ['1h', '4h', '12h', '1d'];
 
     public const INTERVAL_SECONDS = [
         '1h' => 3600,
         '4h' => 14400,
         '12h' => 43200,
+        '1d' => 86400,
     ];
 
     /**

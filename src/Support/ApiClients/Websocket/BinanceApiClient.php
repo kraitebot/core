@@ -40,7 +40,15 @@ final class BinanceApiClient extends BaseWebsocketClient
             return;
         }
 
-        $url = $this->baseURL."/ws/{$streamName}";
+        // Use the combined-stream URL shape (`/stream?streams=<name>`) rather
+        // than the single-stream shape (`/ws/<name>`). Binance's single-
+        // stream endpoint silently stopped delivering frames for array
+        // streams (like !markPrice@arr@1s) from this host's IP on
+        // 2026-04-24 — the handshake succeeded but zero data came through.
+        // The combined-stream endpoint works consistently and wraps the
+        // payload in `{"stream": "...", "data": [...]}`; subscribers have
+        // to unwrap the `data` key.
+        $url = $this->baseURL.'/stream?streams='.$streamName;
         $this->messageCount++;
         $this->handleCallback($url, $callbacks);
     }

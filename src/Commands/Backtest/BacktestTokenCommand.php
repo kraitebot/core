@@ -9,6 +9,7 @@ use InvalidArgumentException;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Support\Backtest\BacktestSimulator;
+use Kraite\Core\Support\Backtest\CandleCoverageVerifier;
 use StepDispatcher\Support\BaseCommand;
 use Throwable;
 
@@ -50,6 +51,8 @@ final class BacktestTokenCommand extends BaseCommand
                             {--limit_hit= : Only show rows where deepest rung reached >= this}
                             {--non_reboundable_only : Only emit non-reboundable + stopped_out rows}
                             {--candle= : Run on a single candle only — "YYYY-MM-DD HH:MM"}
+                            {--candles_back= : Limit the backtest window to the last N candles (tf-aware)}
+                            {--since= : Limit the backtest window to candles >= this date (YYYY-MM-DD). Overrides --candles_back when set}
                             {--output : Display command output (silent by default)}';
 
     protected $description = 'Backtest the Kraite ladder against a symbol\'s candle history — per-candle LONG / SHORT outcomes + totals.';
@@ -83,6 +86,11 @@ final class BacktestTokenCommand extends BaseCommand
                 limitHit: $this->parseOptionalInt($this->option('limit_hit')),
                 nonReboundableOnly: (bool) $this->option('non_reboundable_only'),
                 specificCandle: $this->parseCandleOption($this->option('candle')),
+                since: $this->resolveWindowSince(
+                    $config['timeframe'],
+                    $this->option('since'),
+                    $this->parseOptionalInt($this->option('candles_back')),
+                ),
             );
 
             $this->renderResult($symbol, $result);
@@ -180,6 +188,28 @@ final class BacktestTokenCommand extends BaseCommand
         }
 
         return Carbon::parse($input, config('app.timezone', 'UTC'));
+    }
+
+    /**
+     * Resolve the effective backtest-window start. Mirrors the UI's
+     * BacktrackingController::resolveWindowSince so both entry points
+     * honour the same precedence and semantics.
+     */
+    private function resolveWindowSince(string $timeframe, ?string $since, ?int $candlesBack): ?Carbon
+    {
+        if ($since !== null && mb_trim($since) !== '') {
+            return Carbon::parse($since);
+        }
+
+        if ($candlesBack !== null) {
+            if (! isset(CandleCoverageVerifier::INTERVAL_SECONDS[$timeframe])) {
+                throw new InvalidArgumentException("Unsupported timeframe: {$timeframe}.");
+            }
+
+            return Carbon::now()->subSeconds($candlesBack * CandleCoverageVerifier::INTERVAL_SECONDS[$timeframe]);
+        }
+
+        return null;
     }
 
     private function parseOptionalInt(mixed $value): ?int

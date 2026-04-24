@@ -12,6 +12,7 @@ use Kraite\Core\Jobs\Atomic\ExchangeSymbol\CopyDirectionToOtherExchangesJob;
 use Kraite\Core\Jobs\Atomic\ExchangeSymbol\QueryAndStoreSupportAndResistanceJob;
 use Kraite\Core\Jobs\Models\Indicator\QuerySymbolIndicatorsJob;
 use Kraite\Core\Models\ExchangeSymbol;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\IndicatorHistory;
 use Kraite\Core\Models\TradeConfiguration;
 use StepDispatcher\Models\Step;
@@ -60,13 +61,12 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
     {
         $exchangeSymbol = ExchangeSymbol::with('apiSystem')->findOrFail($this->exchangeSymbolId);
 
-        // Get timeframes from symbol's exchange (per-exchange configuration)
-        $allTimeframes = $exchangeSymbol->apiSystem->timeframes ?? [];
+        $allTimeframes = Kraite::timeframes();
 
         if (empty($allTimeframes)) {
             $response = [
                 'result' => 'error',
-                'message' => "No timeframes configured for exchange {$exchangeSymbol->apiSystem->canonical}",
+                'message' => 'No timeframes configured on the kraite singleton row',
             ];
             $this->step->update(['response' => $response]);
 

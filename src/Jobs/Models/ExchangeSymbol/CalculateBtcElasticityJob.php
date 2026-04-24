@@ -7,6 +7,7 @@ namespace Kraite\Core\Jobs\Models\ExchangeSymbol;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\Candle;
 use Kraite\Core\Models\ExchangeSymbol;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Symbol;
 
 /**
@@ -75,10 +76,9 @@ final class CalculateBtcElasticityJob extends BaseQueueableJob
             return ['skipped' => true, 'reason' => 'BTC not found on same exchange'];
         }
 
-        // Get timeframes from exchange's ApiSystem
-        $timeframes = $exchangeSymbol->apiSystem->timeframes;
-        if (! is_array($timeframes) || empty($timeframes)) {
-            return ['skipped' => true, 'reason' => 'No timeframes configured for exchange'];
+        $timeframes = Kraite::timeframes();
+        if (empty($timeframes)) {
+            return ['skipped' => true, 'reason' => 'No timeframes configured on the kraite singleton'];
         }
 
         // Calculate elasticity for each timeframe

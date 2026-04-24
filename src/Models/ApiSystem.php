@@ -23,7 +23,6 @@ use Kraite\Core\Concerns\ApiSystem\InteractsWithApis;
  * @property \Illuminate\Support\Carbon $updated_at
  * @property bool $should_restart_websocket
  * @property string|null $websocket_class
- * @property array<int, string>|null $timeframes
  * @property \Illuminate\Support\Carbon|null $cooldown_until
  */
 final class ApiSystem extends BaseModel
@@ -34,7 +33,6 @@ final class ApiSystem extends BaseModel
     use InteractsWithApis;
 
     protected $casts = [
-        'timeframes' => 'array',
         'cooldown_until' => 'datetime',
     ];
 
