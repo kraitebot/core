@@ -200,11 +200,20 @@ final class UpsertExchangeSymbolsFromExchangeJob extends BaseApiableJob
             ->unique()
             ->all();
 
+        // No pessimistic lock here on purpose — the Binance mark-price
+        // WebSocket daemon writes to every exchange_symbol row at 1 Hz
+        // (cross-exchange price replication), and a FOR UPDATE table-
+        // scan lock on the ~590-row exchange slice contended with those
+        // writes for 14+ seconds in production on 2026-04-25. The
+        // orphan-marking is idempotent (sets `is_marked_for_delisting=
+        // true` on rows not in the live payload), and the cron runs
+        // hourly with withoutOverlapping() so no concurrent run of the
+        // same job races us on the same exchange. The transaction
+        // wrapper still gives us atomicity across the per-row updates.
         return DB::transaction(function () use ($liveKeys): int {
             $orphans = ExchangeSymbol::query()
                 ->where('api_system_id', $this->apiSystem->id)
                 ->where('is_marked_for_delisting', false)
-                ->lockForUpdate()
                 ->get()
                 ->filter(static function (ExchangeSymbol $symbol) use ($liveKeys): bool {
                     return ! in_array(
