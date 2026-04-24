@@ -48,10 +48,15 @@ final class TaapiCandlesFetcher
     /**
      * Fetch recent candles via TAAPI and upsert them.
      *
+     * Intelligent mode: caps the HTTP call at the number of candles
+     * actually missing in the DB. If the latest closed candle is already
+     * present, the call is skipped entirely — TAAPI rate-limit budget is
+     * shared with production ingestion, so every avoided call matters.
+     *
      * @param  string  $timeframe  One of SUPPORTED_TIMEFRAMES.
-     * @param  int  $results  How many candles to return in one call (<=300).
-     * @param  int  $backtrack  Shift window backwards by N candles (0 = latest).
-     * @return array{inserted: int, earliest: string|null, latest: string|null, source_url: string}
+     * @param  int  $results  Upper bound on candles per call (<=300). Actual call uses min($results, gap+buffer).
+     * @param  int  $backtrack  Shift window backwards by N candles (0 = latest). Forces an HTTP call when >0.
+     * @return array{inserted: int, earliest: string|null, latest: string|null, source_url: string, skipped?: bool, reason?: string, requested?: int}
      */
     public function fetch(ExchangeSymbol $symbol, string $timeframe, int $results = 200, int $backtrack = 0): array
     {
@@ -65,6 +70,30 @@ final class TaapiCandlesFetcher
         }
         if ($backtrack < 0) {
             throw new InvalidArgumentException("backtrack must be >= 0 (got {$backtrack}).");
+        }
+
+        // Only run the DB-gap optimisation when caller wants the live tail
+        // (backtrack=0). A positive backtrack is an explicit "I want history
+        // at offset X" signal — respect it.
+        if ($backtrack === 0) {
+            ['gap' => $gap, 'latest_ts' => $latestTs] = $this->missingCandleCount($symbol, $timeframe);
+            if ($gap === 0) {
+                return [
+                    'inserted' => 0,
+                    'earliest' => null,
+                    'latest' => $latestTs !== null
+                        ? Carbon::createFromTimestamp($latestTs, 'UTC')->format('Y-m-d H:i:s')
+                        : null,
+                    'source_url' => self::BASE_URL,
+                    'skipped' => true,
+                    'reason' => 'DB already holds the latest closed candle.',
+                ];
+            }
+
+            // +2 candle buffer: covers the in-progress candle TAAPI may
+            // include and any boundary slack between local clock and the
+            // exchange's candle close.
+            $results = min($results, $gap + 2);
         }
 
         $secret = config('services.taapi.secret') ?? env('TAAPI_SECRET');
@@ -129,7 +158,36 @@ final class TaapiCandlesFetcher
             'earliest' => Carbon::createFromTimestamp($earliest, 'UTC')->format('Y-m-d H:i:s'),
             'latest' => Carbon::createFromTimestamp($latest, 'UTC')->format('Y-m-d H:i:s'),
             'source_url' => self::BASE_URL,
+            'requested' => $results,
         ];
+    }
+
+    /**
+     * How many closed candles for (symbol, timeframe) are missing between
+     * the last DB timestamp and "now"? Returns 0 when DB is current; the
+     * exact deficit otherwise. Empty DB returns PHP_INT_MAX so the caller
+     * defers to its own `$results` upper bound.
+     *
+     * The latest DB timestamp is surfaced alongside the gap so callers
+     * can skip-report without issuing a second `MAX(timestamp)` query.
+     *
+     * @return array{gap: int, latest_ts: int|null}
+     */
+    private function missingCandleCount(ExchangeSymbol $symbol, string $timeframe): array
+    {
+        $latestTs = DB::table('candles')
+            ->where('exchange_symbol_id', $symbol->id)
+            ->where('timeframe', $timeframe)
+            ->max('timestamp');
+
+        if ($latestTs === null) {
+            return ['gap' => PHP_INT_MAX, 'latest_ts' => null];
+        }
+
+        $latestTsInt = (int) $latestTs;
+        $gap = intdiv(time() - $latestTsInt, CandleCoverageVerifier::INTERVAL_SECONDS[$timeframe]);
+
+        return ['gap' => max(0, $gap), 'latest_ts' => $latestTsInt];
     }
 
     /**

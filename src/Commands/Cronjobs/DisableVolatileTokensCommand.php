@@ -54,14 +54,14 @@ final class DisableVolatileTokensCommand extends BaseCommand
      */
     private const ALLOWED_TOKENS = [
         'AAVE', 'ADA', 'AERO', 'ALGO', 'APT', 'ARB', 'ASTER', 'ATOM', 'AVAX', 'AXS',
-        'BAT', 'BCH', 'BNB', 'BSV', 'CC', 'CFX', 'CHIP', 'CHZ', 'COMP', 'CRV',
+        'BAT', 'BCH', 'BNB', 'BSV', 'CC', 'CFX', 'CHZ', 'COMP', 'CRV',
         'CVX', 'DASH', 'DEEP', 'DEXE', 'DOT', 'ENS', 'ETC', 'ETH', 'FET', 'FF',
-        'FIL', 'GALA', 'GRT', 'HBAR', 'ICP', 'IMX', 'INJ', 'IP', 'JASMY', 'JST',
-        'JTO', 'JUP', 'KAS', 'LDO', 'LINK', 'LIT', 'LTC', 'M', 'MANA', 'NEAR',
-        'NEO', 'ONDO', 'OP', 'PAXG', 'PENDLE', 'POL', 'QNT', 'RAVE', 'RENDER', 'RUNE',
-        'SAND', 'SEI', 'SENT', 'SFP', 'SOL', 'STRK', 'STX', 'SUI', 'TAO', 'THETA',
-        'TIA', 'TON', 'TRX', 'TWT', 'UNI', 'VET', 'WAL', 'XEC', 'XLM', 'XMR',
-        'XRP', 'XTZ', 'ZK', 'ZRO',
+        'FIL', 'GALA', 'GLM', 'GRT', 'HBAR', 'ICP', 'IMX', 'INJ', 'IP', 'JASMY',
+        'JST', 'JTO', 'JUP', 'KAS', 'LDO', 'LINK', 'LIT', 'LTC', 'M', 'MANA',
+        'NEAR', 'NEO', 'ONDO', 'OP', 'PAXG', 'PENDLE', 'POL', 'QNT', 'RAVE', 'RAY',
+        'RENDER', 'RUNE', 'SAND', 'SEI', 'SENT', 'SFP', 'SOL', 'STRK', 'STX', 'SUI',
+        'TAO', 'THETA', 'TIA', 'TON', 'TRX', 'TWT', 'UNI', 'VET', 'WAL', 'XLM',
+        'XMR', 'XRP', 'XTZ', 'ZK', 'ZRO',
     ];
 
     protected $signature = 'kraite:disable-volatile-tokens

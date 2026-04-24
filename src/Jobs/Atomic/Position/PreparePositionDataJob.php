@@ -24,7 +24,7 @@ use Kraite\Core\Support\Math;
  * Must run AFTER token assignment (exchange_symbol_id must be set).
  * Must run BEFORE DetermineLeverageJob and PlaceMarketOrderJob.
  */
-class PreparePositionDataJob extends BaseQueueableJob
+final class PreparePositionDataJob extends BaseQueueableJob
 {
     public Position $position;
 
@@ -54,13 +54,12 @@ class PreparePositionDataJob extends BaseQueueableJob
         $exchangeSymbol = $this->position->exchangeSymbol;
         $direction = $this->position->direction;
 
-        // 1. Calculate margin with subscription cap
-        $margin = $this->calculateMarginWithSubscriptionCap($account);
+        // Direction is load-bearing here — LONG and SHORT read different
+        // margin columns so the desk can size the two sides asymmetrically.
+        $margin = $this->calculateMarginWithSubscriptionCap($account, $direction);
 
-        // Check if margin is valid (> 0)
         $this->hasValidMargin = Math::gt($margin, '0', 2);
 
-        // Stop gracefully if margin is 0 or negative (no balance available)
         if (! $this->hasValidMargin) {
             return [
                 'position_id' => $this->position->id,
@@ -70,17 +69,13 @@ class PreparePositionDataJob extends BaseQueueableJob
             ];
         }
 
-        // 2. Get profit percentage from account
         $profitPercentage = $account->profit_percentage;
-
-        // 3. Get indicators from exchange symbol
         $indicatorsValues = $exchangeSymbol->indicators_values;
         $indicatorsTimeframe = $exchangeSymbol->indicators_timeframe;
-
-        // 4. Get total limit orders from exchange symbol (fallback to 4)
         $totalLimitOrders = $exchangeSymbol->total_limit_orders ?? 4;
 
-        // Update position with all data (leverage is set by DetermineLeverageJob)
+        // Leverage is set later by DetermineLeverageJob based on the
+        // resolved margin + leverage brackets.
         $this->position->updateSaving([
             'margin' => $margin,
             'profit_percentage' => $profitPercentage,
@@ -89,7 +84,6 @@ class PreparePositionDataJob extends BaseQueueableJob
             'total_limit_orders' => $totalLimitOrders,
         ]);
 
-        // Transition to 'opening' status
         $this->position->updateToOpening();
 
         return [
@@ -105,25 +99,34 @@ class PreparePositionDataJob extends BaseQueueableJob
     }
 
     /**
-     * Calculate margin with subscription cap.
+     * Calculate margin with subscription cap, direction-aware.
      *
-     * Formula: balance × (max_position_percentage / 100)
+     * Formula: balance × (margin_percentage_<direction> / 100)
      * Cap: subscription.max_balance (if not unlimited)
+     *
+     * @param  'LONG'|'SHORT'  $direction
      */
-    public function calculateMarginWithSubscriptionCap(Account $account): string
+    public function calculateMarginWithSubscriptionCap(Account $account, string $direction): string
     {
-        // Get account balance from ApiSnapshot (stored by VerifyMinAccountBalanceJob)
+        // Balance was stored by VerifyMinAccountBalanceJob earlier in the chain.
         $balanceSnapshot = ApiSnapshot::getFrom($account, 'account-balance');
         $balance = $balanceSnapshot['available-balance']
             ?? $account->margin
             ?? '0';
 
-        // Calculate position margin: balance × (max_position_percentage / 100)
-        $maxPct = $account->max_position_percentage ?? '5.00';
-        $margin = Math::mul($balance, Math::div($maxPct, '100'));
+        // Direction-aware percent — LONG and SHORT sizing are tuned
+        // independently on the account. Fallback 5.00 matches the
+        // default we ship on both columns at migration time.
+        $pct = $direction === 'SHORT'
+            ? ($account->margin_percentage_short ?? '5.00')
+            : ($account->margin_percentage_long ?? '5.00');
 
-        // Check subscription cap
-        $subscription = $account->user->subscription;
+        $margin = Math::mul($balance, Math::div((string) $pct, '100'));
+
+        // Check subscription cap — null-safe chain so unit tests (and
+        // the occasional account with a detached user relation) don't
+        // NPE before reaching the cap decision.
+        $subscription = $account->user?->subscription;
         if ($subscription && ! $subscription->hasUnlimitedBalance()) {
             $maxBalance = $subscription->max_balance;
             if (Math::gt($margin, $maxBalance)) {

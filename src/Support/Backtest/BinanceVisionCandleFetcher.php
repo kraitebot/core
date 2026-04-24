@@ -59,6 +59,7 @@ final class BinanceVisionCandleFetcher
      * @return array{
      *   months_downloaded: int,
      *   months_skipped_404: int,
+     *   months_already_covered: int,
      *   candles_upserted: int,
      *   earliest_candle: string|null,
      *   latest_candle: string|null,
@@ -80,6 +81,7 @@ final class BinanceVisionCandleFetcher
         $report = [
             'months_downloaded' => 0,
             'months_skipped_404' => 0,
+            'months_already_covered' => 0,
             'candles_upserted' => 0,
             'earliest_candle' => null,
             'latest_candle' => null,
@@ -90,6 +92,18 @@ final class BinanceVisionCandleFetcher
         $consecutive404s = 0;
 
         while ($cursor->greaterThanOrEqualTo($oldestAllowed)) {
+            // Skip download entirely when DB already holds every candle for
+            // this month. One cheap COUNT beats re-downloading a 1–5 MB ZIP
+            // and re-upserting 700+ rows.
+            if ($this->isMonthFullyCovered($symbol, $timeframe, $cursor)) {
+                $report['months_already_covered']++;
+                $anySuccessYet = true;
+                $consecutive404s = 0;
+                $cursor->subMonth();
+
+                continue;
+            }
+
             $url = $this->monthlyUrl($binanceSymbol, $timeframe, $cursor);
 
             try {
@@ -348,6 +362,30 @@ final class BinanceVisionCandleFetcher
                 $canonical ?? 'unknown'
             ));
         }
+    }
+
+    /**
+     * Is every closed candle for this (symbol, timeframe, month) already
+     * in the DB? Compares COUNT vs the deterministic expected count —
+     * `days_in_month * (24 / tf_hours)`. Cheaper than downloading + parsing
+     * a monthly ZIP just to let upsert no-op.
+     */
+    private function isMonthFullyCovered(ExchangeSymbol $symbol, string $timeframe, Carbon $monthCursor): bool
+    {
+        $start = $monthCursor->copy()->startOfMonth()->getTimestamp();
+        $end = $monthCursor->copy()->startOfMonth()->addMonth()->getTimestamp();
+
+        $existing = DB::table('candles')
+            ->where('exchange_symbol_id', $symbol->id)
+            ->where('timeframe', $timeframe)
+            ->where('timestamp', '>=', $start)
+            ->where('timestamp', '<', $end)
+            ->count();
+
+        $tfHours = intdiv(CandleCoverageVerifier::INTERVAL_SECONDS[$timeframe], 3600);
+        $expected = intdiv($monthCursor->daysInMonth * 24, $tfHours);
+
+        return $existing >= $expected;
     }
 
     private function assertSupportedTimeframe(string $timeframe): void

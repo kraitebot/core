@@ -202,8 +202,11 @@ final class BacktestSimulator
      * Run a single (direction × start candle) simulation.
      *
      * Mirrors the core walk-forward loop of AnalyseNonReboundablesCommand::simulate
-     * but built on Kraite's unbounded ladder model (no divider; market = full
-     * margin × leverage; limits chained from market qty via multipliers).
+     * but built on Kraite's calculators. Market qty is sized with the
+     * production divider applied (margin × leverage / 2^(N+1)) so the
+     * walk-forward sees the exact same ladder shape the live trader
+     * would place — critical for correct min_notional gating on
+     * low-price tokens.
      *
      * @return array<string, mixed>|null
      */
@@ -228,9 +231,22 @@ final class BacktestSimulator
             ? (string) $start->high
             : (string) $start->low;
 
-        // Market leg — sized against the worst-case entry reference price.
+        // Market leg — sized to match what production actually places.
+        // Production callers (VerifyOrderNotionalForMarketOrderJob and
+        // PlaceMarketOrderJob) pre-divide (margin × leverage) by
+        // 2^(N+1) so the market opens at 1/32 of the budget for N=4;
+        // the limit ladder then chains on top up to ~97% at full fill.
+        // Kraite::calculateMarketOrderData itself does NOT apply the
+        // divider (it's the "unbounded ladder" primitive) — the
+        // callers do. For the simulator to mirror live-trading
+        // behaviour — especially the min_notional gating that fires on
+        // low-price tokens — we pre-divide here so the market qty fed
+        // into calculateLimitOrdersData matches the real on-book order.
+        $divider = get_market_order_amount_divider($totalLimitOrders);
+        $dividedMargin = Math::div($margin, (string) $divider, self::SCALE);
+
         try {
-            $market = Kraite::calculateMarketOrderData($margin, $leverage, $symbol, $entryRef);
+            $market = Kraite::calculateMarketOrderData($dividedMargin, $leverage, $symbol, $entryRef);
         } catch (Throwable $e) {
             return [
                 'direction' => $direction,
@@ -306,6 +322,12 @@ final class BacktestSimulator
         $closestPrice = null;
         $closestCandle = null;
 
+        // SL price is invariant once the last rung is touched — compute
+        // at the promotion boundary, cache for the rest of the walk.
+        // `false` = not yet computed; `null` = computed but ladder math
+        // rejected it (skip SL checks entirely from here on).
+        $cachedSlPrice = false;
+
         for ($i = $startIdx + 1; $i < $allCandles->count(); $i++) {
             /** @var Candle $c */
             $c = $allCandles[$i];
@@ -320,6 +342,16 @@ final class BacktestSimulator
                 $closestDiff = null;
                 $closestPrice = null;
                 $closestCandle = null;
+
+                if (! $skipStopLoss && $maxFilledRung === $totalLimitOrders && $cachedSlPrice === false) {
+                    $cachedSlPrice = $this->resolveStopLossPrice(
+                        $direction,
+                        $priceByRung[$totalLimitOrders],
+                        $slPercent,
+                        $this->cumulativeQtyAtRung($marketQty, $ladder, $totalLimitOrders),
+                        $symbol,
+                    );
+                }
 
                 continue; // never same-bar TP after a touch
             }
@@ -353,29 +385,11 @@ final class BacktestSimulator
                 );
             }
 
-            // SL only after last rung touched.
-            if (! $skipStopLoss && $maxFilledRung === $totalLimitOrders && $i > $lastTouchIdx) {
-                $anchorPrice = (string) $priceByRung[$totalLimitOrders];
-                $cumQty = $this->cumulativeQtyAtRung($marketQty, $ladder, $totalLimitOrders);
-
-                try {
-                    $sl = Kraite::calculateStopLossOrder(
-                        direction: $direction,
-                        anchorPrice: $anchorPrice,
-                        stopPercent: $slPercent,
-                        currentQty: $cumQty,
-                        exchangeSymbol: $symbol,
-                    );
-                } catch (Throwable $e) {
-                    // If SL can't be computed (e.g. clamp to zero on extreme
-                    // tokens) we treat as skipped — don't false-positive the
-                    // stopped_out tally.
-                    continue;
-                }
-
-                $slPrice = (string) $sl['price'];
-
-                if ($this->slHit($direction, $c, $slPrice)) {
+            // SL only after last rung touched. $cachedSlPrice===null means
+            // the SL couldn't be computed (clamped to zero etc.) — skip so
+            // we don't false-positive the stopped_out tally.
+            if ($cachedSlPrice !== false && $cachedSlPrice !== null && $i > $lastTouchIdx) {
+                if ($this->slHit($direction, $c, $cachedSlPrice)) {
                     return [
                         'direction' => $direction,
                         'start_candle' => $this->ctString($start->candle_time_utc),
@@ -388,7 +402,7 @@ final class BacktestSimulator
                         'status' => 'stopped_out',
                         'message' => sprintf(
                             'Stopped out at %s on %s after last rung (N=%d) touched at %s.',
-                            $slPrice,
+                            $cachedSlPrice,
                             $this->ctString($c->candle_time_utc),
                             $totalLimitOrders,
                             $this->ctString($allCandles[$lastTouchIdx]->candle_time_utc)
@@ -540,6 +554,34 @@ final class BacktestSimulator
         }
 
         return $sum;
+    }
+
+    /**
+     * Computes the stop-loss price once at the rung-N promotion boundary.
+     * Returns the formatted string price on success, or null when the
+     * ladder math rejects the inputs (e.g. clamp to zero on extreme
+     * low-price tokens) — the caller treats null as "skip SL checks".
+     */
+    private function resolveStopLossPrice(
+        string $direction,
+        string $anchorPrice,
+        string $slPercent,
+        string $cumQty,
+        ExchangeSymbol $symbol,
+    ): ?string {
+        try {
+            $sl = Kraite::calculateStopLossOrder(
+                direction: $direction,
+                anchorPrice: $anchorPrice,
+                stopPercent: $slPercent,
+                currentQty: $cumQty,
+                exchangeSymbol: $symbol,
+            );
+        } catch (Throwable) {
+            return null;
+        }
+
+        return (string) $sl['price'];
     }
 
     /**

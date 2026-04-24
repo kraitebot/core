@@ -32,7 +32,7 @@ final class CandleCoverageVerifier
 {
     private const SUPPORTED_TIMEFRAMES = ['1h', '4h', '12h'];
 
-    private const INTERVAL_SECONDS = [
+    public const INTERVAL_SECONDS = [
         '1h' => 3600,
         '4h' => 14400,
         '12h' => 43200,

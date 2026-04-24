@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.2 - 2026-04-24
+
+### Features
+
+- [NEW FEATURE] Per-token ladder backtest pipeline. `Support/Backtest/BacktestSimulator` walks forward per (candle × direction) using the production market + ladder calculators (with `get_market_order_amount_divider($N) = 2^(N+1)` applied at the market-sizing boundary to match live sizing), classifies each outcome as `tp_hit_from_market_only` / `reboundable` / `stopped_out` / `non-reboundable`. Companion fetchers `BinanceVisionCandleFetcher` (free monthly ZIP archive, up to 24 months, idempotent upsert) + `TaapiCandlesFetcher` (recency top-up between Vision's last complete month and live) populate the `candles` table; `CandleCoverageVerifier` reports contiguity / hole-runs / staleness for operator visibility.
+- [NEW FEATURE] `Commands/Backtest/BacktestTokenCommand` — `kraite:backtest-token` CLI wrapper mirroring the legacy `debug:analyse-non-reboundables` option surface (exchange_symbol_id / token+exchange / account defaults / tp/gap/sl overrides / multipliers / non_reboundable_only / days_to_ignore / single-candle mode). Registered in `CoreServiceProvider`.
+- [NEW FEATURE] Direction-aware margin sizing. `Jobs/Atomic/Position/PreparePositionDataJob::calculateMarginWithSubscriptionCap(Account $account, string $direction)` reads `margin_percentage_long` for LONG positions and `margin_percentage_short` for SHORT — the desk can tune each side independently. Migration `split_margin_percentage_into_long_short` replaces the single `max_position_percentage` column with the two direction-aware columns (default 5.00 on both to preserve prior behaviour).
+- [NEW FEATURE] Allow-list model for `Commands/Cronjobs/DisableVolatileTokensCommand`. Switched from deny-list (curated meme / speculative / structural-brittle / operator-excluded buckets) to `ALLOWED_TOKENS` (CMC top-75 ∩ Binance availability). Every `exchange_symbols` row whose token isn't on the allow-list gets `is_manually_enabled=false` across every api_system; strictly additive, never re-enables. Unknown listings stay disabled by default instead of auto-trading into the first ladder-math failure.
+
+### Fixes
+
+- [BUG FIX] `Support/TradingMappers/{Binance,Bybit,Kucoin,Bitget}TradingMapper::isNowDelisted()` — now accepts both `isDirty('delivery_ts_ms')` (pre-save / `saving()`-hook context) and `wasChanged('delivery_ts_ms')` (post-save / `saved()`-hook context) signals. Prior version relied only on `wasChanged`, which returns false during the `saving()` hook — the `is_marked_for_delisting` flag-flip path in `ExchangeSymbolObserver::saving()` never fired on the 2026-04-24 Binance delisting batch (DEGEN, B3, BOB, ZKJ, DAM, IR got pushover alerts but no flag persisted on their DB rows).
+
+### Improvements
+
+- [IMPROVED] `Support/TradingMappers/{Bybit,Kucoin,Bitget}TradingMapper::isNowDelisted()` — body simplified to `return $exchangeSymbol->delivery_ts_ms !== null;` after the `$changed` guard. The prior two-clause form was equivalent; with `$changed` already asserted, `$new !== null` captures the entire null-or-different case in one line.
+- [IMPROVED] `Support/Backtest/BacktestSimulator::simulateOne()` — stop-loss price is now computed once at the rung-N promotion boundary and cached for the remainder of the walk-forward loop. Prior version recomputed `cumulativeQtyAtRung()` + `Kraite::calculateStopLossOrder()` on every candle after the last rung was touched; both results are invariant. Measurable savings on stopped-out legs.
+- [IMPROVED] `Support/Backtest/CandleCoverageVerifier::INTERVAL_SECONDS` promoted from private to public const so both `TaapiCandlesFetcher::missingCandleCount()` and `BinanceVisionCandleFetcher::isMonthFullyCovered()` reference the single source of truth for timeframe-to-seconds mapping instead of re-declaring it locally.
+- [IMPROVED] `Support/Backtest/TaapiCandlesFetcher::missingCandleCount()` — returns `['gap' => int, 'latest_ts' => ?int]` tuple so the `fetch()` skip-path reuses the already-resolved timestamp instead of firing a second `MAX(timestamp)` query.
+- [IMPROVED] `Jobs/Atomic/Position/PreparePositionDataJob::compute()` — dropped narrative WHAT comments that restated the code verbatim. Kept the WHY comments explaining direction-aware sizing and leverage deferral.
+
+### Removals (deadcode cleanup)
+
+- [IMPROVED] Deleted zero-reference classes: `Kraite\Core\Models\AccountHistory`, `Kraite\Core\Models\Funding`, `Kraite\Core\Models\BinanceListenKey`, `Kraite\Core\Support\ModelChanges`, `Kraite\Core\Jobs\Debug\DispatchPlaceLimitOrderJob` (+ empty `Jobs/Debug/` directory).
+- [IMPROVED] Removed unused globals from `src/helpers.php`: `try_times()`, `returnLadderedValue()` (duplicate of the `Kraite::returnLadderedValue()` static method), `summarize_model_attributes()`, `format_model_attributes()`, `deep_clean_json()`, `cleanLogsFolder()`. Dropped the now-unused `Illuminate\Database\Eloquent\Model` + `Illuminate\Support\Facades\File` imports.
+- [IMPROVED] Removed `Trading/Concerns/HasComputationHelpers::testingMode()` — zero callers, and the config key it read (`kraite.testing.enabled`) was never defined → always resolved to null/false.
+- [IMPROVED] Removed dead config keys `kraite.websocket` + `kraite.default_throttle_seconds` from `config/kraite.php`.
+
 ## 1.5.1 - 2026-04-23
 
 ### Fixes

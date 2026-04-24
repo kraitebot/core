@@ -33,7 +33,8 @@ use Kraite\Core\Concerns\Account\InteractsWithApis;
  * @property int $position_leverage_long
  * @property int $position_leverage_short
  * @property string $margin_mode
- * @property string $max_position_percentage
+ * @property string $margin_percentage_long
+ * @property string $margin_percentage_short
  * @property int|null $last_notified_account_balance_history_id
  * @property array|null $credentials
  * @property array|null $credentials_testing
