@@ -53,10 +53,18 @@ final class PreparePositionReplacementJob extends BaseApiableJob
     }
 
     /**
-     * Guard: Only run if position is still in an active status.
-     * Prevents double-dispatch on positions already closing/closed.
+     * Skip (not fail) if the position has moved past its active statuses
+     * between observer-dispatch and worker-pickup.
+     *
+     * The OrderObserver fires this job when a LIMIT / PROFIT / STOP order
+     * transitions to CANCELLED or EXPIRED. By the time the queued step
+     * runs, the position may already be closing (TP filled, SL filled,
+     * user-triggered cancel). Nothing to replace — but it's not a failure
+     * either, it's just that the precondition stopped applying. Routing
+     * to `startOrSkip` lands the step in the Skipped terminal state
+     * instead of polluting the Failed bucket.
      */
-    public function startOrFail(): bool
+    public function startOrSkip(): bool
     {
         return in_array($this->position->status, $this->position->activeStatuses(), strict: true);
     }
