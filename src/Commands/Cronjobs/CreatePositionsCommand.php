@@ -7,8 +7,10 @@ namespace Kraite\Core\Commands\Cronjobs;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Kraite\Core\Jobs\Lifecycles\Account\PreparePositionsOpeningJob;
+use Kraite\Core\Jobs\Lifecycles\Position\DispatchPositionJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\User;
+use Kraite\Core\Support\Proxies\JobProxy;
 use Kraite\Core\Trading\Kraite;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Support\BaseCommand;
@@ -73,11 +75,77 @@ final class CreatePositionsCommand extends BaseCommand
             $this->verboseComment("User #{$user->id}: {$accounts->count()} tradeable account(s)");
 
             foreach ($accounts as $account) {
+                // Self-heal first — orphan 'new' positions (their previous
+                // DispatchPositionJob step was swept during operator
+                // cleanup, supervisor restart, or any cleanup that lost a
+                // step row while leaving the position behind) get re-
+                // dispatched before we contemplate opening new slots.
+                // Runs unconditionally — recovering a stranded orphan
+                // doesn't compete for slot capacity, the slot is already
+                // taken.
+                $this->recoverOrphanPositionsForAccount($account);
+
                 $this->attemptOpeningPositionsForAccount($account);
             }
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Find positions in 'new' status with a token assigned but no live
+     * DispatchPositionJob step, and re-dispatch them. Position 235 (and
+     * 233) hit this on 2026-04-25 — manual cleanup deleted their follow-
+     * up DispatchPositionJob alongside genuinely-stale Pending rows,
+     * leaving the positions stranded. This recovery makes that operator
+     * mistake transparent: next tick picks them up.
+     */
+    private function recoverOrphanPositionsForAccount(Account $account): void
+    {
+        $orphanPositions = $account->positions()
+            ->where('status', 'new')
+            ->whereNotNull('exchange_symbol_id')
+            ->get();
+
+        if ($orphanPositions->isEmpty()) {
+            return;
+        }
+
+        $resolver = JobProxy::with($account);
+        $exchangeDispatchClass = $resolver->resolve(DispatchPositionJob::class);
+
+        // The two classes that can carry the orphan — base or per-exchange
+        // override. Either one with a non-terminal state means the position
+        // is being processed by an active workflow.
+        $candidateClasses = array_unique([DispatchPositionJob::class, $exchangeDispatchClass]);
+
+        $terminalStates = Step::terminalStepStates();
+
+        $recovered = 0;
+
+        foreach ($orphanPositions as $position) {
+            $hasLiveStep = Step::query()
+                ->whereIn('class', $candidateClasses)
+                ->whereJsonContains('arguments->positionId', $position->id)
+                ->whereNotIn('state', $terminalStates)
+                ->exists();
+
+            if ($hasLiveStep) {
+                continue;
+            }
+
+            Step::create([
+                'class' => $exchangeDispatchClass,
+                'queue' => 'positions',
+                'arguments' => ['positionId' => $position->id],
+            ]);
+
+            $recovered++;
+        }
+
+        if ($recovered > 0) {
+            $this->verboseInfo("    → Recovered {$recovered} orphan position(s) for account #{$account->id}");
+        }
     }
 
     /**

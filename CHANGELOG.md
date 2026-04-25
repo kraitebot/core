@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.5 - 2026-04-25
+
+### Features
+
+- [NEW FEATURE] `CreatePositionsCommand::recoverOrphanPositionsForAccount()` — every `kraite:cron-create-positions` tick now self-heals positions stuck in `status='new'` with a token assigned but no live `DispatchPositionJob` step. The 2026-04-25 dispatcher drain operation deleted stale Pending rows; two positions (233, 235) survived the sweep but their follow-up `DispatchPositionJob` rows were swept along with the genuinely-stale work, leaving the positions stranded. Recovery runs unconditionally before the engine guards (slot-cap, directional, exchange cooldown) — orphans are slots already taken, recovering them doesn't compete with new opens. Idempotent: positions with any non-terminal `DispatchPositionJob` step are left alone; positions whose only step ended in a terminal state are treated as stranded and re-dispatched.
+
 ## 1.5.4 - 2026-04-25
 
 ### Fixes
