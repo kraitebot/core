@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.7 - 2026-04-25
+
+### Fixes
+
+- [BUG FIX] `CreatePositionsCommand::attemptOpeningPositionsForAccount()` — added a command-entry idempotency guard that skips the dispatch when a non-terminal `PreparePositionsOpeningJob` step already exists for the account. The step-dispatcher framework guarantees ordering WITHIN a workflow tree but cannot prevent twin root workflows for the same domain entity. The 2026-04-25 17:33 incident proved this is the actual cause: two `PreparePositionsOpeningJob` rows dispatched 1s apart (operator manual artisan invocation racing the scheduled cron is the most plausible trigger; `schedule:work` lag and stale `withoutOverlapping` mutexes are also possible). The v1.5.6 `DispatchPositionSlotsJob` guard stops the consequence; this one stops the cause. Defense-in-depth pair.
+
 ## 1.5.6 - 2026-04-25
 
 ### Fixes
