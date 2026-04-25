@@ -55,10 +55,43 @@ final class DispatchPositionSlotsJob extends BaseQueueableJob
         $resolver = JobProxy::with($this->account);
         $dispatchJobClass = $resolver->resolve(DispatchPositionJob::class);
 
+        // Both classes that can carry the orchestrator — base or per-exchange
+        // override. Either one in a non-terminal state means the position is
+        // already being processed by an active workflow.
+        $candidateClasses = array_unique([DispatchPositionJob::class, $dispatchJobClass]);
+        $terminalStates = Step::terminalStepStates();
+
+        $dispatched = 0;
+        $skipped = 0;
+
         // Step 1: Dispatch each position with ISOLATED block_uuids
         // Each position is fully independent - one failure doesn't cascade to others.
         // Account-level issues are caught earlier (VerifyMinAccountBalanceJob, etc.)
+        //
+        // Idempotency guard: skip positions that already carry a live (non-
+        // terminal) DispatchPositionJob step. Two concurrent
+        // PreparePositionsOpening blocks for the same account (operator
+        // manual cron racing the scheduled tick, recover-stale recovery
+        // re-running this orchestrator, etc.) used to produce one
+        // DispatchPositionJob per position per instance — twin workflows
+        // racing the exchange, with the loser hitting the LIMIT-cap guard
+        // mid-ladder and triggering CancelPositionJob at a realised loss.
+        // The 2026-04-25 17:33 cluster of 12 Failed steps (positions
+        // #241 + #242) was exactly this. Same shape as the orphan-
+        // recovery dedup in CreatePositionsCommand.
         foreach ($positions as $position) {
+            $hasLiveStep = Step::query()
+                ->whereIn('class', $candidateClasses)
+                ->whereJsonContains('arguments->positionId', $position->id)
+                ->whereNotIn('state', $terminalStates)
+                ->exists();
+
+            if ($hasLiveStep) {
+                $skipped++;
+
+                continue;
+            }
+
             Step::create([
                 'class' => $dispatchJobClass,
                 'queue' => 'positions',
@@ -67,11 +100,14 @@ final class DispatchPositionSlotsJob extends BaseQueueableJob
                 'workflow_id' => $workflowId,
                 'index' => 1,
             ]);
+
+            $dispatched++;
         }
 
         return [
             'account_id' => $this->account->id,
-            'positions_dispatched' => $positions->count(),
+            'positions_dispatched' => $dispatched,
+            'positions_skipped_already_live' => $skipped,
             'message' => 'Position dispatching initiated',
         ];
     }

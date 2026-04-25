@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.6 - 2026-04-25
+
+### Fixes
+
+- [BUG FIX] `DispatchPositionSlotsJob::compute()` — added an idempotency guard that skips creating a `DispatchPositionJob` step for any 'new' position that already carries a non-terminal `DispatchPositionJob` step. Twin `PreparePositionsOpening` blocks for the same account (operator manual `kraite:cron-create-positions` racing the scheduled cron, recover-stale recovery re-running the orchestrator, etc.) used to produce one `DispatchPositionJob` per position per instance, with the loser racing the exchange and tripping the `total_limit_orders` cap mid-ladder — triggering `CancelPositionJob` at a realised loss. The 2026-04-25 17:33-17:34 cluster of 12 Failed steps (positions #241 + #242 closed at a loss) was exactly this race. Same shape as the orphan-recovery dedup landed in v1.5.5.
+
 ## 1.5.5 - 2026-04-25
 
 ### Features
