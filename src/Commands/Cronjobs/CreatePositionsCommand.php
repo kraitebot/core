@@ -153,34 +153,6 @@ final class CreatePositionsCommand extends BaseCommand
      */
     private function attemptOpeningPositionsForAccount(Account $account): void
     {
-        // Idempotency guard at the command entry. The step-dispatcher
-        // framework guarantees ordering WITHIN a workflow tree, but if
-        // two PreparePositionsOpeningJob root steps are enqueued for the
-        // same account they're independent trees — both run their full
-        // Verify/Query/Assign/Dispatch chain in parallel, producing twin
-        // DispatchPositionJob blocks per position. The 2026-04-25 17:33
-        // cluster (12 Failed steps, realised loss on positions #241 +
-        // #242) was caused by exactly that — two PreparePositionsOpening
-        // dispatched 1s apart (operator manual artisan invocation
-        // racing the scheduled cron, schedule:work lag batching missed
-        // ticks, or a stale withoutOverlapping mutex releasing two
-        // pending ticks back-to-back). withoutOverlapping() protects
-        // scheduler-against-scheduler but cannot stop ANY of those.
-        // Skip the dispatch when an opening workflow is already in
-        // flight; the next cron tick (3 min later) will pick up where
-        // we left off.
-        $alreadyInFlight = Step::query()
-            ->where('class', PreparePositionsOpeningJob::class)
-            ->whereJsonContains('arguments->accountId', $account->id)
-            ->whereNotIn('state', Step::terminalStepStates())
-            ->exists();
-
-        if ($alreadyInFlight) {
-            $this->verboseComment('    → PreparePositionsOpeningJob already in flight for this account, skipping');
-
-            return;
-        }
-
         $maxSlots = $account->maxPositionSlots();
         /** @var int $openPositions */
         $openPositions = $account->positions()->opened()->count();

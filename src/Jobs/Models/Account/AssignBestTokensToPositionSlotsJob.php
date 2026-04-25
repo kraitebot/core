@@ -4,13 +4,14 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Models\Account;
 
+use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseQueueableJob;
-use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Models\Symbol;
+use Kraite\Core\Trading\Kraite;
 
 /**
  * AssignBestTokensToPositionSlotsJob
@@ -109,86 +110,108 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
 
     /**
      * Create position slots based on available capacity.
+     *
+     * The slot calculation + position INSERTs run inside a single
+     * DB::transaction with a row-level lock (lockForUpdate) on the
+     * accounts row. Without the lock this is a textbook check-then-act
+     * race: two concurrent runs both read the same dbLongs/dbShorts
+     * pre-state and both compute available_slots > 0, then both INSERT
+     * — slot cap silently breached. The 2026-04-25 17:33 incident
+     * created 2 SHORT positions (#241, #242) when only 1 SHORT slot
+     * was free, exactly because of this.
+     *
+     * The lockForUpdate pins exclusive access to the account row for
+     * the duration of the transaction. Concurrent runs serialise on
+     * the lock; the second one reads the post-commit count and sees
+     * zero available slots.
      */
     public function createPositionSlots(): array
     {
-        // Get exchange positions from the snapshot stored by QueryAccountPositionsJob
+        // Get exchange positions from the snapshot stored by QueryAccountPositionsJob.
+        // Read OUTSIDE the lock — snapshot data, no DB contention concern.
         $exchangePositions = ApiSnapshot::getFrom($this->account, 'account-positions') ?? [];
 
         // Count exchange positions by direction
         $exchangeLongs = $this->countPositionsByDirection($exchangePositions, 'LONG');
         $exchangeShorts = $this->countPositionsByDirection($exchangePositions, 'SHORT');
 
-        // Count DB positions by direction (opened statuses only)
-        $dbLongs = $this->account->positions()->opened()->onlyLongs()->count();
-        $dbShorts = $this->account->positions()->opened()->onlyShorts()->count();
-
-        // Use MAX for conservative calculation (avoid opening more than allowed)
-        $currentLongs = max($exchangeLongs, $dbLongs);
-        $currentShorts = max($exchangeShorts, $dbShorts);
-
-        // Get max slots from account configuration
-        $maxLongs = $this->account->total_positions_long;
-        $maxShorts = $this->account->total_positions_short;
-
-        // Calculate available slots
-        $availableLongSlots = max(0, $maxLongs - $currentLongs);
-        $availableShortSlots = max(0, $maxShorts - $currentShorts);
-
-        // Check directional guards
+        // Engine guards — read OUTSIDE the lock, depend on Kraite singleton.
         $engine = Kraite::withAccount($this->account);
         $canOpenLongs = $engine->canOpenLongs();
         $canOpenShorts = $engine->canOpenShorts();
 
-        $createdPositions = [];
+        return DB::transaction(function () use (
+            $exchangeLongs,
+            $exchangeShorts,
+            $canOpenLongs,
+            $canOpenShorts
+        ): array {
+            // Pessimistic lock on the accounts row — every concurrent
+            // AssignBest run for this account serialises here.
+            $lockedAccount = Account::whereKey($this->account->id)
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        // Create empty Position records for available LONG slots
-        if ($canOpenLongs && $availableLongSlots > 0) {
-            for ($i = 0; $i < $availableLongSlots; $i++) {
-                $position = Position::create([
-                    'account_id' => $this->account->id,
-                    'direction' => 'LONG',
-                    'status' => 'new',
-                ]);
-                $createdPositions[] = ['id' => $position->id, 'direction' => 'LONG'];
+            $dbLongs = $lockedAccount->positions()->opened()->onlyLongs()->count();
+            $dbShorts = $lockedAccount->positions()->opened()->onlyShorts()->count();
+
+            $currentLongs = max($exchangeLongs, $dbLongs);
+            $currentShorts = max($exchangeShorts, $dbShorts);
+
+            $maxLongs = $lockedAccount->total_positions_long;
+            $maxShorts = $lockedAccount->total_positions_short;
+
+            $availableLongSlots = max(0, $maxLongs - $currentLongs);
+            $availableShortSlots = max(0, $maxShorts - $currentShorts);
+
+            $createdPositions = [];
+
+            if ($canOpenLongs && $availableLongSlots > 0) {
+                for ($i = 0; $i < $availableLongSlots; $i++) {
+                    $position = Position::create([
+                        'account_id' => $lockedAccount->id,
+                        'direction' => 'LONG',
+                        'status' => 'new',
+                    ]);
+                    $createdPositions[] = ['id' => $position->id, 'direction' => 'LONG'];
+                }
             }
-        }
 
-        // Create empty Position records for available SHORT slots
-        if ($canOpenShorts && $availableShortSlots > 0) {
-            for ($i = 0; $i < $availableShortSlots; $i++) {
-                $position = Position::create([
-                    'account_id' => $this->account->id,
-                    'direction' => 'SHORT',
-                    'status' => 'new',
-                ]);
-                $createdPositions[] = ['id' => $position->id, 'direction' => 'SHORT'];
+            if ($canOpenShorts && $availableShortSlots > 0) {
+                for ($i = 0; $i < $availableShortSlots; $i++) {
+                    $position = Position::create([
+                        'account_id' => $lockedAccount->id,
+                        'direction' => 'SHORT',
+                        'status' => 'new',
+                    ]);
+                    $createdPositions[] = ['id' => $position->id, 'direction' => 'SHORT'];
+                }
             }
-        }
 
-        $this->totalCreated = count($createdPositions);
+            $this->totalCreated = count($createdPositions);
 
-        return [
-            'account_id' => $this->account->id,
-            'exchange_positions' => [
-                'longs' => $exchangeLongs,
-                'shorts' => $exchangeShorts,
-            ],
-            'db_positions' => [
-                'longs' => $dbLongs,
-                'shorts' => $dbShorts,
-            ],
-            'max_slots' => [
-                'longs' => $maxLongs,
-                'shorts' => $maxShorts,
-            ],
-            'available_slots' => [
-                'longs' => $availableLongSlots,
-                'shorts' => $availableShortSlots,
-            ],
-            'created_positions' => $createdPositions,
-            'total_created' => $this->totalCreated,
-        ];
+            return [
+                'account_id' => $lockedAccount->id,
+                'exchange_positions' => [
+                    'longs' => $exchangeLongs,
+                    'shorts' => $exchangeShorts,
+                ],
+                'db_positions' => [
+                    'longs' => $dbLongs,
+                    'shorts' => $dbShorts,
+                ],
+                'max_slots' => [
+                    'longs' => $maxLongs,
+                    'shorts' => $maxShorts,
+                ],
+                'available_slots' => [
+                    'longs' => $availableLongSlots,
+                    'shorts' => $availableShortSlots,
+                ],
+                'created_positions' => $createdPositions,
+                'total_created' => $this->totalCreated,
+            ];
+        });
     }
 
     /**

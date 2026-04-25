@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.9 - 2026-04-25
+
+### Fixes
+
+- [BUG FIX] `AssignBestTokensToPositionSlotsJob::createPositionSlots()` — slot calculation + position INSERTs now run inside a single `DB::transaction` with a row-level `lockForUpdate` on the `accounts` row. The 2026-04-25 17:33 incident created 2 SHORT positions (#241, #242) when only 1 SHORT slot was free because two concurrent `AssignBest` runs both read the same `dbShorts=5` pre-state and both inserted before either committed — textbook check-then-act race. Concurrent runs now serialise on the lock; the second one reads the post-commit count and finds zero available slots. Pinned by `tests/Feature/Jobs/AssignBestTokensAtomicSlotReservationTest`.
+
+### Improvements
+
+- [IMPROVED] `CreatePositionsCommand::attemptOpeningPositionsForAccount()` — backed out the v1.5.7 command-entry idempotency guard. With the AssignBest atomic slot reservation in place that guard is redundant: the slot cap is now an enforced invariant rather than a check the command had to second-guess. Removing redundant defence-in-depth keeps the codebase readable — bandaids stacked on a real bug were the wrong instinct, the proper fix is at the database transaction layer per CLAUDE.md.
+
 ## 1.5.8 - 2026-04-25
 
 ### Features
