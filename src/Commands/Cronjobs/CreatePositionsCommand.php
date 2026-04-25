@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Commands\Cronjobs;
 
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use Kraite\Core\Jobs\Lifecycles\Account\PreparePositionsOpeningJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\User;
@@ -63,7 +63,7 @@ final class CreatePositionsCommand extends BaseCommand
         $this->verboseInfo("Found {$users->count()} user(s) with can_trade=true");
 
         foreach ($users as $user) {
-            /** @var \Illuminate\Database\Eloquent\Collection<int, Account> $accounts */
+            /** @var Collection<int, Account> $accounts */
             $accounts = $user->accounts()
                 ->with('apiSystem')
                 ->where('is_active', true)
@@ -121,14 +121,18 @@ final class CreatePositionsCommand extends BaseCommand
             return;
         }
 
-        // Dispatch workflow to cross-check with exchange and open positions
+        // Dispatch workflow to cross-check with exchange and open positions.
+        // The orchestrator self-elects to parent mode inside its compute()
+        // via $this->step->makeItAParent() — pre-setting child_block_uuid
+        // here would commit the step to parent-mode before compute() can
+        // decide, which is the zombie pattern documented in
+        // ~/steps-dispatcher/issue.md.
         Step::create([
             'class' => PreparePositionsOpeningJob::class,
             'queue' => 'cronjobs',
             'arguments' => [
                 'accountId' => $account->id,
             ],
-            'child_block_uuid' => (string) Str::uuid(),
         ]);
 
         $this->verboseComment('    → Dispatched PreparePositionsOpeningJob');

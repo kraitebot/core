@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Kraite\Core\Commands\Cronjobs;
 
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use Kraite\Core\Jobs\Lifecycles\Order\PrepareSyncOrdersJob;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
@@ -89,13 +88,20 @@ final class SyncOrdersCommand extends BaseCommand
         $syncedCount = 0;
 
         foreach ($openPositions as $position) {
+            // Don't pre-set child_block_uuid here. The orchestrator's
+            // compute() decides whether to spawn children (early-return
+            // when position isn't 'active' produces no children) and
+            // calls $this->step->makeItAParent() inline at the moment
+            // it actually dispatches its child lifecycle. Pre-setting
+            // would commit the step to parent-mode before compute()
+            // runs, which leaves a zombie when the early-return path
+            // fires. See ~/steps-dispatcher/issue.md.
             Step::create([
                 'class' => PrepareSyncOrdersJob::class,
                 'queue' => 'positions',
                 'arguments' => [
                     'positionId' => $position->id,
                 ],
-                'child_block_uuid' => (string) Str::uuid(),
             ]);
 
             $this->verboseComment("  Position #{$position->id}: Dispatched sync");

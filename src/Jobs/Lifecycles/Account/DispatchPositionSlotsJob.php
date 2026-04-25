@@ -64,7 +64,6 @@ final class DispatchPositionSlotsJob extends BaseQueueableJob
                 'queue' => 'positions',
                 'arguments' => ['positionId' => $position->id],
                 'block_uuid' => (string) Str::uuid(),
-                'child_block_uuid' => (string) Str::uuid(),
                 'workflow_id' => $workflowId,
                 'index' => 1,
             ]);

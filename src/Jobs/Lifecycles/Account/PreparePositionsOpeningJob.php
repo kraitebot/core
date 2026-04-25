@@ -44,6 +44,12 @@ final class PreparePositionsOpeningJob extends BaseQueueableJob
 
     public function compute()
     {
+        // Self-elect to parent mode. Idempotent: returns the existing
+        // child_block_uuid on retry (set on the prior run that may have
+        // crashed mid-flight) so the idempotency guard below can detect
+        // already-spawned children.
+        $childBlockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
+
         // Idempotency guard — if a prior invocation already wrote children
         // into this block, this is a retry (typically triggered by
         // steps:recover-stale flipping the parent Running → Pending after
@@ -54,7 +60,7 @@ final class PreparePositionsOpeningJob extends BaseQueueableJob
         // AssignBestTokensToPositionSlotsJob would spawn duplicate Position
         // rows on every round.
         $alreadyDispatched = Step::query()
-            ->where('block_uuid', $this->uuid())
+            ->where('block_uuid', $childBlockUuid)
             ->exists();
 
         if ($alreadyDispatched) {
@@ -72,7 +78,7 @@ final class PreparePositionsOpeningJob extends BaseQueueableJob
         $lifecycleClass = $resolver->resolve(VerifyMinAccountBalanceLifecycle::class);
         $lifecycle = new $lifecycleClass($this->account);
         $nextIndex = $lifecycle->dispatch(
-            blockUuid: $this->uuid(),
+            blockUuid: $childBlockUuid,
             startIndex: 1,
             workflowId: $workflowId
         );
@@ -81,7 +87,7 @@ final class PreparePositionsOpeningJob extends BaseQueueableJob
         $positionsLifecycleClass = $resolver->resolve(QueryAccountPositionsLifecycle::class);
         $positionsLifecycle = new $positionsLifecycleClass($this->account);
         $positionsLifecycle->dispatch(
-            blockUuid: $this->uuid(),
+            blockUuid: $childBlockUuid,
             startIndex: $nextIndex,
             workflowId: $workflowId
         );
@@ -90,7 +96,7 @@ final class PreparePositionsOpeningJob extends BaseQueueableJob
         $ordersLifecycleClass = $resolver->resolve(QueryAccountOpenOrdersLifecycle::class);
         $ordersLifecycle = new $ordersLifecycleClass($this->account);
         $nextIndex = $ordersLifecycle->dispatch(
-            blockUuid: $this->uuid(),
+            blockUuid: $childBlockUuid,
             startIndex: $nextIndex,
             workflowId: $workflowId
         );
@@ -100,7 +106,7 @@ final class PreparePositionsOpeningJob extends BaseQueueableJob
             'class' => AssignBestTokensToPositionSlotsJob::class,
             'queue' => 'cronjobs',
             'arguments' => ['accountId' => $this->account->id],
-            'block_uuid' => $this->uuid(),
+            'block_uuid' => $childBlockUuid,
             'workflow_id' => $workflowId,
             'index' => $nextIndex,
         ]);
@@ -115,7 +121,7 @@ final class PreparePositionsOpeningJob extends BaseQueueableJob
             'class' => DispatchPositionSlotsJob::class,
             'queue' => 'cronjobs',
             'arguments' => ['accountId' => $this->account->id],
-            'block_uuid' => $this->uuid(),
+            'block_uuid' => $childBlockUuid,
             'workflow_id' => $workflowId,
             'index' => $nextIndex,
         ]);

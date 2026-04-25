@@ -58,8 +58,15 @@ final class PrepareSyncOrdersJob extends BaseQueueableJob
         $lifecycleClass = $resolver->resolve(SyncPositionOrdersLifecycle::class);
         $lifecycle = new $lifecycleClass($this->position);
 
+        // Self-elect to parent mode now that we've decided to spawn a child.
+        // The early-return path above (position not 'active') skips this and
+        // leaves child_block_uuid null, so the framework lets the step
+        // Complete normally as an orphan instead of waiting forever for
+        // children that never come.
+        $childBlockUuid = $this->step->makeItAParent();
+
         $lifecycle->dispatch(
-            blockUuid: $this->uuid(),
+            blockUuid: $childBlockUuid,
             startIndex: 1,
             workflowId: null
         );

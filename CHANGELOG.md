@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.4 - 2026-04-25
+
+### Fixes
+
+- [BUG FIX] Eliminated the zombie-parent class of step-dispatcher wedges. 18 call sites that pre-set `'child_block_uuid' => Str::uuid()` at `Step::create()` time were rewritten to self-elect to parent mode inside `compute()` via `$this->step->child_block_uuid ?? $this->step->makeItAParent()`. Pre-setting commits the step to parent-mode before its compute() can decide whether children are actually being spawned; on any path that returns without creating children, the parent ends up with `child_block_uuid` pointing at an empty block, which `childStepsAreConcludedFromMap()` treats as not-concluded forever — wedging `transitionParentsToComplete()` and starving the dispatcher tick. Refactor covers cron commands (`CreatePositionsCommand`, `StoreAccountsBalancesCommand`, `SyncOrdersCommand`, `RefreshExchangeSymbolsCommand` × 3 sub-sites), the OrderObserver (4 sites), and orchestrators (`PreparePositionsOpeningJob`, `PrepareSyncOrdersJob`, `PrepareOrderCorrectionJob`, `PreparePositionReplacementJob`, `ApplyWapJob`, `ClosePositionJob`, `CancelPositionJob`, `SmartReplaceOrdersJob`, `DiscoverCMCTokensForOrphanedSymbolsJob`, `TouchTaapiDataForExchangeSymbolsJob`, `SyncLeverageBracketsJob` base + Bybit/Kucoin/Bitget overrides, `DispatchAccountBalancesJob`, `DispatchPositionSlotsJob`, `DispatchPositionJob` per-exchange variants × 4, `ReplacePositionOrdersJob` Binance/Bitget, `PlaceLimitOrdersJob`, `DispatchLimitOrdersJob`, `VerifyPositionExistsOnExchangeJob`, `CalculateWapAndModifyProfitOrderJob` follow-up WAP). `DispatchLimitOrdersJob` additionally guards `makeItAParent()` behind a `count > 0` check so an empty ladder doesn't elect to parent mode at all.
+
 ## 1.5.3 - 2026-04-24
 
 ### Features

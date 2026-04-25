@@ -92,7 +92,7 @@ final class ApplyWapJob extends BaseApiableJob
     public function computeApiable()
     {
         $resolver = JobProxy::with($this->position->account);
-        $blockUuid = $this->uuid();
+        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
 
         // Step 1: Update position status to 'waping'.
         // Guarded with onlyFromStatus=['active', 'syncing']: if a concurrent

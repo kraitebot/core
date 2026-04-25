@@ -102,23 +102,28 @@ final class DispatchLimitOrdersJob extends BaseQueueableJob
             ->all();
 
         // 3. Create Steps to place orders on exchange (sequential to allow cancellation on failure)
-        $blockUuid = $this->uuid();
-        collect($this->limitOrders)
-            ->each(function (Order $order, int $rungIndex) use ($resolver, $blockUuid): void {
-                Step::create([
-                    'class' => $resolver->resolve(PlaceLimitOrderJob::class),
-                    'queue' => 'orders',
-                    'arguments' => [
-                        'orderId' => $order->id,
-                        'rungIndex' => $rungIndex + 1,
-                    ],
-                    'block_uuid' => $blockUuid,
-                    'index' => $rungIndex + 1,
-                    'workflow_id' => null,
-                ]);
-            });
-
+        // Self-elect to parent only when there are children to spawn — otherwise
+        // we'd leave a parent step with a child_block_uuid pointing at an empty
+        // block, which the dispatcher treats as a never-completing zombie.
         $totalCreated = count($this->limitOrders);
+
+        if ($totalCreated > 0) {
+            $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
+            collect($this->limitOrders)
+                ->each(function (Order $order, int $rungIndex) use ($resolver, $blockUuid): void {
+                    Step::create([
+                        'class' => $resolver->resolve(PlaceLimitOrderJob::class),
+                        'queue' => 'orders',
+                        'arguments' => [
+                            'orderId' => $order->id,
+                            'rungIndex' => $rungIndex + 1,
+                        ],
+                        'block_uuid' => $blockUuid,
+                        'index' => $rungIndex + 1,
+                        'workflow_id' => null,
+                    ]);
+                });
+        }
 
         $this->position->appLog(
             event: 'limit_orders_dispatched',

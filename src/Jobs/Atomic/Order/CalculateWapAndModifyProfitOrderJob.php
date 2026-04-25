@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\Order;
 
-use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Exceptions\NonNotifiableException;
@@ -365,7 +364,6 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
                     'positionId' => $this->position->id,
                     'message' => 'Follow-up WAP for LIMIT fills that arrived during the prior WAP run',
                 ],
-                'child_block_uuid' => (string) Str::uuid(),
                 'dispatch_after' => now()->addSeconds(3),
             ]);
         }

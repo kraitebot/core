@@ -94,7 +94,7 @@ final class PrepareOrderCorrectionJob extends BaseQueueableJob
     public function compute(): array
     {
         $resolver = JobProxy::with($this->position->account);
-        $blockUuid = $this->uuid();
+        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
 
         if ($this->order->is_algo) {
             return $this->dispatchAlgoCorrectionWorkflow($resolver, $blockUuid);

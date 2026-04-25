@@ -52,10 +52,8 @@ final class SyncLeverageBracketsJob extends BaseQueueableJob
             ->get();
 
         if ($symbols->isEmpty()) {
-            // No children to create - clear child_block_uuid so StepDispatcher
-            // can mark this step as complete (otherwise it waits for non-existent children)
-            $this->step->update(['child_block_uuid' => null]);
-
+            // No children to spawn — DON'T elect to parent mode. Step
+            // completes as orphan, no zombie. (See ~/steps-dispatcher/issue.md.)
             return [
                 'exchange' => $this->apiSystem->canonical,
                 'steps_created' => 0,
@@ -63,7 +61,7 @@ final class SyncLeverageBracketsJob extends BaseQueueableJob
             ];
         }
 
-        $blockUuid = $this->uuid();
+        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
 
         foreach ($symbols->values() as $position => $symbol) {
             Step::create([

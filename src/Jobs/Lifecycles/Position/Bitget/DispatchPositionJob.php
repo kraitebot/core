@@ -41,12 +41,13 @@ final class DispatchPositionJob extends BaseDispatchPositionJob
     public function compute()
     {
         $resolver = JobProxy::with($this->position->account);
+        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
 
         // Step 1: Verify trading pair not already open
         $verifyLifecycleClass = $resolver->resolve(VerifyTradingPairNotOpenLifecycle::class);
         $verifyLifecycle = new $verifyLifecycleClass($this->position);
         $nextIndex = $verifyLifecycle->dispatch(
-            blockUuid: $this->uuid(),
+            blockUuid: $blockUuid,
             startIndex: 1,
             workflowId: null
         );
@@ -55,7 +56,7 @@ final class DispatchPositionJob extends BaseDispatchPositionJob
         $marginModeLifecycleClass = $resolver->resolve(SetMarginModeLifecycle::class);
         $marginModeLifecycle = new $marginModeLifecycleClass($this->position);
         $nextIndex = $marginModeLifecycle->dispatch(
-            blockUuid: $this->uuid(),
+            blockUuid: $blockUuid,
             startIndex: $nextIndex,
             workflowId: null
         );
@@ -64,7 +65,7 @@ final class DispatchPositionJob extends BaseDispatchPositionJob
         $prepareDataLifecycleClass = $resolver->resolve(PreparePositionDataLifecycle::class);
         $prepareDataLifecycle = new $prepareDataLifecycleClass($this->position);
         $nextIndex = $prepareDataLifecycle->dispatch(
-            blockUuid: $this->uuid(),
+            blockUuid: $blockUuid,
             startIndex: $nextIndex,
             workflowId: null
         );
@@ -73,7 +74,7 @@ final class DispatchPositionJob extends BaseDispatchPositionJob
         $determineLeverageLifecycleClass = $resolver->resolve(DetermineLeverageLifecycle::class);
         $determineLeverageLifecycle = new $determineLeverageLifecycleClass($this->position);
         $nextIndex = $determineLeverageLifecycle->dispatch(
-            blockUuid: $this->uuid(),
+            blockUuid: $blockUuid,
             startIndex: $nextIndex,
             workflowId: null
         );
@@ -82,7 +83,7 @@ final class DispatchPositionJob extends BaseDispatchPositionJob
         $leverageLifecycleClass = $resolver->resolve(SetLeverageLifecycle::class);
         $leverageLifecycle = new $leverageLifecycleClass($this->position);
         $nextIndex = $leverageLifecycle->dispatch(
-            blockUuid: $this->uuid(),
+            blockUuid: $blockUuid,
             startIndex: $nextIndex,
             workflowId: null
         );
@@ -91,7 +92,7 @@ final class DispatchPositionJob extends BaseDispatchPositionJob
         $verifyNotionalLifecycleClass = $resolver->resolve(VerifyOrderNotionalLifecycle::class);
         $verifyNotionalLifecycle = new $verifyNotionalLifecycleClass($this->position);
         $nextIndex = $verifyNotionalLifecycle->dispatch(
-            blockUuid: $this->uuid(),
+            blockUuid: $blockUuid,
             startIndex: $nextIndex,
             workflowId: null
         );
@@ -100,7 +101,7 @@ final class DispatchPositionJob extends BaseDispatchPositionJob
         $placeEntryLifecycleClass = $resolver->resolve(PlaceMarketOrderLifecycle::class);
         $placeEntryLifecycle = new $placeEntryLifecycleClass($this->position);
         $nextIndex = $placeEntryLifecycle->dispatch(
-            blockUuid: $this->uuid(),
+            blockUuid: $blockUuid,
             startIndex: $nextIndex,
             workflowId: null
         );
@@ -109,7 +110,7 @@ final class DispatchPositionJob extends BaseDispatchPositionJob
         $placeLimitOrdersLifecycleClass = $resolver->resolve(PlaceLimitOrdersLifecycle::class);
         $placeLimitOrdersLifecycle = new $placeLimitOrdersLifecycleClass($this->position);
         $nextIndex = $placeLimitOrdersLifecycle->dispatch(
-            blockUuid: $this->uuid(),
+            blockUuid: $blockUuid,
             startIndex: $nextIndex,
             workflowId: null
         );
@@ -118,7 +119,7 @@ final class DispatchPositionJob extends BaseDispatchPositionJob
         $placePositionTpslLifecycleClass = $resolver->resolve(PlacePositionTpslLifecycle::class);
         $placePositionTpslLifecycle = new $placePositionTpslLifecycleClass($this->position);
         $nextIndex = $placePositionTpslLifecycle->dispatch(
-            blockUuid: $this->uuid(),
+            blockUuid: $blockUuid,
             startIndex: $nextIndex,
             workflowId: null
         );
@@ -127,7 +128,7 @@ final class DispatchPositionJob extends BaseDispatchPositionJob
         $activatePositionLifecycleClass = $resolver->resolve(ActivatePositionLifecycle::class);
         $activatePositionLifecycle = new $activatePositionLifecycleClass($this->position);
         $nextIndex = $activatePositionLifecycle->dispatch(
-            blockUuid: $this->uuid(),
+            blockUuid: $blockUuid,
             startIndex: $nextIndex,
             workflowId: null
         );
@@ -137,7 +138,7 @@ final class DispatchPositionJob extends BaseDispatchPositionJob
         Step::create([
             'class' => $resolver->resolve(CancelPositionJob::class),
             'queue' => 'positions',
-            'block_uuid' => $this->uuid(),
+            'block_uuid' => $blockUuid,
             'index' => 1,
             'type' => 'resolve-exception',
             'arguments' => [

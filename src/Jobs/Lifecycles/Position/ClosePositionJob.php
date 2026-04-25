@@ -76,7 +76,9 @@ final class ClosePositionJob extends BaseApiableJob
     public function computeApiable()
     {
         $resolver = JobProxy::with($this->position->account);
-        $blockUuid = $this->uuid();
+        // Self-elect to parent mode now (always spawns children below).
+        // Idempotent: returns existing child_block_uuid on retry.
+        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
 
         // Step 1: Update status to 'closing'
         $statusLifecycleClass = $resolver->resolve(UpdatePositionStatusJob::class);

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Kraite\Core\Commands\Cronjobs;
 
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use Kraite\Core\Jobs\Lifecycles\Account\DispatchAccountBalancesJob;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Support\BaseCommand;
@@ -52,10 +51,13 @@ final class StoreAccountsBalancesCommand extends BaseCommand
 
     private function dispatchJob(): void
     {
+        // Orchestrator self-elects to parent mode inside compute() via
+        // $this->step->makeItAParent() — only when at least one account is
+        // active and gets a child step. Pre-setting here would zombie the
+        // step on the no-active-accounts edge case.
         Step::create([
             'class' => DispatchAccountBalancesJob::class,
             'queue' => 'cronjobs',
-            'child_block_uuid' => (string) Str::uuid(),
         ]);
 
         $this->verboseComment('→ Dispatched DispatchAccountBalancesJob');

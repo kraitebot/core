@@ -68,7 +68,7 @@ final class SmartReplaceOrdersJob extends BaseQueueableJob
     public function compute()
     {
         $resolver = JobProxy::with($this->position->account);
-        $blockUuid = $this->uuid();
+        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
         $index = 1;
 
         // Step 1: Scrub orphan algo orders on the exchange for this

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\Position;
 
-use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Jobs\Lifecycles\Position\ClosePositionJob;
 use Kraite\Core\Jobs\Lifecycles\Position\SmartReplaceOrdersJob;
@@ -95,7 +94,6 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
                     'positionId' => $position->id,
                     'message' => $this->message ?? "Position closed externally ({$this->triggerStatus})",
                 ],
-                'child_block_uuid' => (string) Str::uuid(),
             ]);
         } else {
             // Position still exists — smart replace only missing orders
@@ -105,7 +103,6 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
                 'arguments' => [
                     'positionId' => $position->id,
                 ],
-                'child_block_uuid' => (string) Str::uuid(),
             ]);
         }
 

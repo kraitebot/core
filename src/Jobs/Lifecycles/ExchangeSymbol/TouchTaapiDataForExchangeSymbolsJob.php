@@ -43,11 +43,8 @@ final class TouchTaapiDataForExchangeSymbolsJob extends BaseQueueableJob
             ->get();
 
         if ($symbolsToVerify->isEmpty()) {
-            // No children to create - clear child_block_uuid so StepDispatcher
-            // can mark this step as complete (otherwise it waits for non-existent children)
-            $this->step->update(['child_block_uuid' => null]);
-
-            // Count how many symbols already have TAAPI data verified
+            // No children to create — DON'T elect to parent mode. Step
+            // completes as orphan, no zombie. (See ~/steps-dispatcher/issue.md.)
             $alreadyVerifiedCount = ExchangeSymbol::where('api_statuses->taapi_verified', true)->count();
 
             return [
@@ -60,8 +57,8 @@ final class TouchTaapiDataForExchangeSymbolsJob extends BaseQueueableJob
             ];
         }
 
-        // Create a child step for each symbol to verify.
-        // Child steps use $this->uuid() (parent's child_block_uuid) as their block_uuid.
+        $childBlockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
+
         foreach ($symbolsToVerify as $exchangeSymbol) {
             Step::create([
                 'class' => TouchTaapiDataForExchangeSymbolJob::class,
@@ -69,7 +66,7 @@ final class TouchTaapiDataForExchangeSymbolsJob extends BaseQueueableJob
                 'arguments' => [
                     'exchangeSymbolId' => $exchangeSymbol->id,
                 ],
-                'block_uuid' => $this->uuid(),
+                'block_uuid' => $childBlockUuid,
                 'index' => 1,
             ]);
         }

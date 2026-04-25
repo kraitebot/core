@@ -38,11 +38,8 @@ final class DiscoverCMCTokensForOrphanedSymbolsJob extends BaseQueueableJob
             ->get();
 
         if ($orphanedSymbols->isEmpty()) {
-            // No children to create - clear child_block_uuid so StepDispatcher
-            // can mark this step as complete (otherwise it waits for non-existent children)
-            $this->step->update(['child_block_uuid' => null]);
-
-            // Check if there are orphaned symbols that were already processed
+            // No children to create — DON'T elect to parent mode. The step
+            // completes as an orphan, no zombie. (See ~/steps-dispatcher/issue.md.)
             $alreadyProcessedCount = ExchangeSymbol::whereNull('symbol_id')
                 ->where('api_statuses->cmc_api_called', true)
                 ->count();
@@ -57,9 +54,11 @@ final class DiscoverCMCTokensForOrphanedSymbolsJob extends BaseQueueableJob
             ];
         }
 
-        // Create a child step for each orphaned symbol.
-        // Child steps use $this->uuid() (parent's child_block_uuid) as their block_uuid.
-        // They don't need child_block_uuid since they're leaf steps.
+        // Self-elect to parent mode now that we have children to spawn.
+        // Idempotent: returns existing child_block_uuid on retry so re-runs
+        // don't lose the link to children created on the first attempt.
+        $childBlockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
+
         foreach ($orphanedSymbols as $exchangeSymbol) {
             Step::create([
                 'class' => DiscoverCMCTokenForExchangeSymbolJob::class,
@@ -67,7 +66,7 @@ final class DiscoverCMCTokensForOrphanedSymbolsJob extends BaseQueueableJob
                 'arguments' => [
                     'exchangeSymbolId' => $exchangeSymbol->id,
                 ],
-                'block_uuid' => $this->uuid(),
+                'block_uuid' => $childBlockUuid,
                 'index' => 1,
             ]);
         }

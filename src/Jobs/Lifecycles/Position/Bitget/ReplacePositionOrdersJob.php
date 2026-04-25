@@ -42,7 +42,7 @@ final class ReplacePositionOrdersJob extends BaseReplacePositionOrdersJob
     public function computeApiable(): array
     {
         $resolver = JobProxy::with($this->position->account);
-        $blockUuid = $this->uuid();
+        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
 
         // Step 1: Update status to 'syncing'
         $statusLifecycleClass = $resolver->resolve(UpdatePositionStatusJob::class);

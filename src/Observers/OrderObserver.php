@@ -185,7 +185,6 @@ final class OrderObserver
                 'positionId' => $position->id,
                 'message' => "{$model->type} order #{$model->id} filled — closing position",
             ],
-            'child_block_uuid' => (string) Str::uuid(),
         ]);
     }
 
@@ -218,7 +217,6 @@ final class OrderObserver
                 'triggerStatus' => $model->status,
                 'message' => "{$model->type} order #{$model->id} {$action} — preparing replacement",
             ],
-            'child_block_uuid' => (string) Str::uuid(),
         ]);
     }
 
@@ -266,7 +264,6 @@ final class OrderObserver
                 'positionId' => $position->id,
                 'message' => "LIMIT order #{$model->id} filled — applying WAP",
             ],
-            'child_block_uuid' => (string) Str::uuid(),
         ]);
     }
 
@@ -352,7 +349,6 @@ final class OrderObserver
                 'orderId' => $model->id,
                 'message' => "{$model->type} order #{$model->id} modified ({$driftType}) — correcting",
             ],
-            'child_block_uuid' => (string) Str::uuid(),
         ]);
     }
 

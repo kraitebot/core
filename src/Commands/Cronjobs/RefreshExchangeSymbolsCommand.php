@@ -118,13 +118,16 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
             // - TouchTaapiDataForExchangeSymbolsJob: touches TAAPI to check data availability (Binance only)
             // - SyncLeverageBracketsJob: syncs leverage brackets for each exchange
             // All run at index 3 so they execute in parallel.
-            // child_block_uuid is required so the parent waits for all children to complete.
+            //
+            // Each orchestrator self-elects to parent mode inside its own compute()
+            // via $this->step->makeItAParent() — only when it actually has work
+            // to spawn. Pre-setting child_block_uuid here would zombie the step
+            // when the orchestrator's empty-work early-return fires.
             Step::create([
                 'class' => DiscoverCMCTokensForOrphanedSymbolsJob::class,
                 'queue' => 'cronjobs',
                 'arguments' => [],
                 'block_uuid' => $blockUuid,
-                'child_block_uuid' => (string) Str::uuid(),
                 'index' => 3,
             ]);
 
@@ -133,7 +136,6 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
                 'queue' => 'cronjobs',
                 'arguments' => [],
                 'block_uuid' => $blockUuid,
-                'child_block_uuid' => (string) Str::uuid(),
                 'index' => 3,
             ]);
 
@@ -151,7 +153,6 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
                     'queue' => 'cronjobs',
                     'arguments' => ['apiSystemId' => $exchange->id],
                     'block_uuid' => $blockUuid,
-                    'child_block_uuid' => (string) Str::uuid(),
                     'index' => 3,
                 ]);
 

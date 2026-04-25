@@ -37,12 +37,15 @@ final class SyncLeverageBracketsJob extends BaseQueueableJob
 
     public function compute()
     {
-        // Default implementation: create single child step for batch fetching
+        // Default implementation always creates one child — self-elect to
+        // parent mode now. Idempotent on retry via the ?? fallback.
+        $childBlockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
+
         Step::create([
             'class' => AtomicSyncLeverageBracketsJob::class,
             'queue' => 'cronjobs',
             'arguments' => ['apiSystemId' => $this->apiSystem->id],
-            'block_uuid' => $this->uuid(),
+            'block_uuid' => $childBlockUuid,
             'index' => 1,
         ]);
 

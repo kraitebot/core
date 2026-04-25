@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Lifecycles\Order;
 
-use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BasePositionLifecycle;
 use Kraite\Core\Jobs\Atomic\Order\DispatchLimitOrdersJob;
 use StepDispatcher\Models\Step;
@@ -29,7 +28,6 @@ final class PlaceLimitOrdersJob extends BasePositionLifecycle
             'queue' => 'positions',
             'arguments' => ['positionId' => $this->position->id],
             'block_uuid' => $blockUuid,
-            'child_block_uuid' => (string) Str::uuid(),
             'index' => $startIndex,
             'workflow_id' => $workflowId,
         ]);
