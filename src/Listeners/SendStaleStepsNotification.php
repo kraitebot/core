@@ -27,10 +27,39 @@ final class SendStaleStepsNotification
         $canonical = match ($event->reason) {
             'stale_dispatched_steps_promoted' => 'stale_dispatched_steps_detected',
             'stale_dispatched_steps_still_stuck' => 'stale_priority_steps_detected',
+            'group_no_progress' => 'group_no_progress_detected',
             default => null,
         };
 
         if ($canonical === null) {
+            return;
+        }
+
+        // Group-progress wedge has a different payload shape — there's no
+        // single "oldest step" because the symptom is per-group dispatcher
+        // stall, not a specific stuck step. Surface group, pending count,
+        // last terminal update, and threshold so the operator can jump
+        // straight to the wedged group in the admin UI.
+        if ($event->reason === 'group_no_progress') {
+            $context = $event->context;
+
+            $referenceData = [
+                'count' => $event->count,
+                'group' => $context['group'] ?? 'N/A',
+                'pending_count' => $context['pending_count'] ?? $event->count,
+                'last_terminal_update' => $context['last_terminal_update'] ?? 'never',
+                'progress_threshold_seconds' => $context['progress_threshold_seconds'] ?? 0,
+                'server' => $context['hostname'] ?? gethostname(),
+            ];
+
+            NotificationService::send(
+                user: Kraite::admin(),
+                canonical: $canonical,
+                referenceData: $referenceData,
+                duration: 600,
+                cacheKeys: ['group' => $referenceData['group']],
+            );
+
             return;
         }
 

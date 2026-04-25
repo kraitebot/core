@@ -291,6 +291,43 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'group_no_progress_detected' => (static function () use ($context, $hostname) {
+                $group = is_string($context['group'] ?? null) ? $context['group'] : 'N/A';
+                $pendingCount = is_int($context['pending_count'] ?? null) ? $context['pending_count'] : 0;
+                $lastTerminalUpdate = is_string($context['last_terminal_update'] ?? null) ? $context['last_terminal_update'] : 'never';
+                $thresholdSeconds = is_int($context['progress_threshold_seconds'] ?? null) ? $context['progress_threshold_seconds'] : 0;
+                $thresholdMinutes = $thresholdSeconds > 0 ? (int) round($thresholdSeconds / 60) : 0;
+
+                return [
+                    'severity' => NotificationSeverity::Critical,
+                    'title' => "Dispatcher Group '{$group}' Stalled",
+                    'emailMessage' => "🚨 CRITICAL: Dispatcher group has Pending work but no terminal-state progress.\n\n".
+                        "📊 DETAILS:\n\n".
+                        "• Group: {$group}\n".
+                        "• Pending steps: {$pendingCount}\n".
+                        "• Last terminal update: {$lastTerminalUpdate}\n".
+                        "• Threshold: {$thresholdMinutes} minute(s)\n".
+                        "• Server: {$hostname}\n\n".
+                        "⚠️ WHAT THIS MEANS:\n\n".
+                        'This watchdog catches dispatcher wedges that the per-step stuck detector misses — '.
+                        'no individual step is stuck, but no group-level work is concluding either. '.
+                        'The 2026-04-25 incident hid this exact failure mode for 16h before manual '.
+                        "intervention; this alarm closes that blind spot.\n\n".
+                        "🔍 RESOLUTION STEPS:\n\n".
+                        "1. Inspect the wedged group's tick state:\n".
+                        "[CMD]SELECT `group`, can_dispatch, current_tick_id, updated_at FROM steps_dispatcher WHERE `group` = '{$group}';[/CMD]\n\n".
+                        "2. Check the Pending pile-up:\n".
+                        "[CMD]SELECT class, COUNT(*) c, MIN(created_at) oldest FROM steps WHERE `group` = '{$group}' AND state = 'StepDispatcher\\\\States\\\\Pending' GROUP BY class ORDER BY c DESC LIMIT 10;[/CMD]\n\n".
+                        "3. Look for Skipped parents with non-null child_block_uuid (the historical wedge shape):\n".
+                        "[CMD]SELECT id, class, child_block_uuid, updated_at FROM steps WHERE `group` = '{$group}' AND state = 'StepDispatcher\\\\States\\\\Skipped' AND child_block_uuid IS NOT NULL;[/CMD]\n\n".
+                        "4. Compare healthy vs wedged groups' last terminal update:\n".
+                        "[CMD]SELECT `group`, MAX(updated_at) last_terminal FROM steps WHERE state IN ('StepDispatcher\\\\States\\\\Completed','StepDispatcher\\\\States\\\\Skipped','StepDispatcher\\\\States\\\\Cancelled','StepDispatcher\\\\States\\\\Failed','StepDispatcher\\\\States\\\\Stopped') GROUP BY `group` ORDER BY last_terminal;[/CMD]",
+                    'pushoverMessage' => "🚨 Group '{$group}' wedged\nPending: {$pendingCount}\nLast progress: {$lastTerminalUpdate}\nServer: {$hostname}",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                ];
+            })(),
+
             'exchange_symbol_no_taapi_data' => (static function () use ($context) {
                 // Support both new format ('exchangeSymbol') and legacy format ('exchange_symbol')
                 $exchangeSymbol = $context['exchangeSymbol'] ?? ($context['exchange_symbol'] ?? null);

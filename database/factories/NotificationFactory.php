@@ -180,6 +180,27 @@ final class NotificationFactory extends Factory
     }
 
     /**
+     * Indicate that the notification is for the dispatcher group-progress
+     * watchdog (any group with Pending steps but no terminal-state progress
+     * within the threshold — generalised stall detection that catches
+     * cleanup-phase wedges the per-step detector misses).
+     */
+    public function groupNoProgress(): static
+    {
+        return $this->state(function (array $attributes) {
+            return [
+                'canonical' => 'group_no_progress_detected',
+                'title' => 'Dispatcher Group Stalled - No Terminal Progress',
+                'description' => 'Sent when a dispatcher group has Pending work but no terminal-state step has been updated within the watchdog threshold (default 10 minutes)',
+                'default_severity' => NotificationSeverity::Critical,
+                'verified' => true,
+                'cache_duration' => 600,
+                'cache_key' => ['group'],
+            ];
+        });
+    }
+
+    /**
      * Indicate that the notification is unverified.
      */
     public function unverified(): static

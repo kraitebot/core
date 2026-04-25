@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.8 - 2026-04-25
+
+### Features
+
+- [NEW FEATURE] `group_no_progress_detected` notification canonical wired through the full pipeline. The `SendStaleStepsNotification` listener now routes `StaleStepsDetected(reason='group_no_progress')` events (fired by `RecoverStaleStepsCommand --watchdog-progress` in step-dispatcher v1.11.6) to a Pushover canonical with severity=critical and a 10-minute throttle keyed by group. `NotificationMessageBuilder` carries the matching email + Pushover templates with copy-paste SQL diagnostic queries the operator can run to inspect the wedged group. New migration `2026_04_25_220000_seed_group_no_progress_notification` seeds the canonical row in production; `KraiteSeeder` carries the same content for fresh installs. `NotificationFactory::groupNoProgress()` state added so tests can seed it explicitly. Closes the operational-visibility hole identified during the 2026-04-25 wedge — without this listener mapping the watchdog event landed silently and the failure class it was built to catch could go unnoticed for hours.
+
 ## 1.5.7 - 2026-04-25
 
 ### Fixes

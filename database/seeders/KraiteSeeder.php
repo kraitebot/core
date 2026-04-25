@@ -723,6 +723,24 @@ final class KraiteSeeder extends Seeder
                 'cache_duration' => 60,
                 'cache_key' => null,
             ],
+            // Group-progress watchdog (catches cleanup-phase wedges that the
+            // per-step detector misses — see ~/steps-dispatcher/issue.md and
+            // the 2026-04-25 incident write-up)
+            [
+                'canonical' => 'group_no_progress_detected',
+                'title' => 'Dispatcher Group Stalled - No Terminal Progress',
+                'description' => 'Triggered when a dispatcher group has Pending steps but no terminal-state step has been updated within the watchdog threshold (default 10 minutes)',
+                'detailed_description' => 'This CRITICAL notification is sent when a dispatcher group has accumulated Pending work but is no longer concluding any step in a terminal state. '.
+                    'Generalised stall detection that catches cleanup-phase wedges the per-step detector misses — '.
+                    'no individual step is stuck, but no group-level work is making progress either. '.
+                    'The 2026-04-25 incident hid this exact failure mode for 16h before manual intervention; this alarm closes that blind spot. '.
+                    'Inspect the affected group via the admin /system/step-dispatcher view and check for Skipped parents with non-null child_block_uuid (the historical wedge shape).',
+                'usage_reference' => 'RecoverStaleStepsCommand --watchdog-progress',
+                'default_severity' => 'critical',
+                'verified' => 1,
+                'cache_duration' => 600,
+                'cache_key' => ['group'],
+            ],
             // Stale priority steps (critical - self-healing failed)
             [
                 'canonical' => 'stale_priority_steps_detected',
