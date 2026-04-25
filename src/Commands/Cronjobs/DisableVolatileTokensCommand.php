@@ -55,7 +55,7 @@ final class DisableVolatileTokensCommand extends BaseCommand
     private const ALLOWED_TOKENS = [
         'AAVE', 'ADA', 'AERO', 'ALGO', 'APT', 'ARB', 'ASTER', 'ATOM', 'AVAX', 'AXS',
         'BAT', 'BCH', 'BNB', 'BSV', 'CC', 'CFX', 'CHZ', 'COMP', 'CRV',
-        'CVX', 'DASH', 'DEEP', 'DEXE', 'DOT', 'ENS', 'ETC', 'ETH', 'FET', 'FF',
+        'CVX', 'DASH', 'DEEP', 'DEXE', 'DOT', 'ENS', 'ETC', 'ETH', 'FET',
         'FIL', 'GALA', 'GLM', 'GRT', 'HBAR', 'ICP', 'IMX', 'INJ', 'IP', 'JASMY',
         'JST', 'JTO', 'JUP', 'KAS', 'LDO', 'LINK', 'LIT', 'LTC', 'M', 'MANA',
         'NEAR', 'NEO', 'ONDO', 'OP', 'PAXG', 'PENDLE', 'POL', 'QNT', 'RAVE', 'RAY',
