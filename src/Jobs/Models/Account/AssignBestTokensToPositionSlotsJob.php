@@ -216,13 +216,37 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
 
     /**
      * Count positions by direction from exchange response.
+     *
+     * Handles both Binance position-mode response shapes:
+     *   - HEDGE: one row per (symbol, positionSide=LONG|SHORT) with
+     *     always-positive positionAmt.
+     *   - ONE-WAY: one row per symbol with positionSide=BOTH and SIGNED
+     *     positionAmt (positive = LONG, negative = SHORT, zero = empty).
+     *
+     * Falls back to Bybit's `side` (Buy/Sell) shape when positionSide is
+     * absent.
      */
     public function countPositionsByDirection(array $positions, string $direction): int
     {
         return collect($positions)->filter(static function ($position) use ($direction) {
-            // Binance uses 'positionSide' with LONG/SHORT
             if (isset($position['positionSide'])) {
-                return mb_strtoupper($position['positionSide']) === $direction;
+                $positionSide = mb_strtoupper($position['positionSide']);
+
+                // One-way mode: positionSide=BOTH; sign of positionAmt
+                // gives the direction. Zero positionAmt is empty.
+                if ($positionSide === 'BOTH') {
+                    $amount = (float) ($position['positionAmt'] ?? 0);
+
+                    if ($amount === 0.0) {
+                        return false;
+                    }
+
+                    return ($direction === 'LONG' && $amount > 0)
+                        || ($direction === 'SHORT' && $amount < 0);
+                }
+
+                // Hedge mode: literal LONG / SHORT match.
+                return $positionSide === $direction;
             }
 
             // Bybit uses 'side' with Buy/Sell

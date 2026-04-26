@@ -23,8 +23,19 @@ trait MapsPlaceOrder
         $properties->set('options.symbol', (string) $order->position->exchangeSymbol->parsed_trading_pair);
         $properties->set('options.side', (string) $this->sideType($order->side));
         $properties->set('options.newClientOrderId', (string) $order->client_order_id);
-        $properties->set('options.positionSide', (string) $order->position_side);
         $properties->set('options.quantity', (string) api_format_quantity($order->quantity, $order->position->exchangeSymbol));
+
+        // Position-mode-aware payload. In HEDGE mode every order MUST carry
+        // positionSide=LONG/SHORT; (side, positionSide) implies open vs close
+        // intent. In ONE-WAY mode positionSide MUST be omitted (Binance error
+        // -4061 if sent) and closing-intent orders MUST carry reduceOnly=true
+        // — otherwise the same `side` reopens an opposing position instead of
+        // closing the existing one.
+        if ($order->position->account->isHedgeMode()) {
+            $properties->set('options.positionSide', (string) $order->position_side);
+        } elseif ($this->isClosingIntent($order)) {
+            $properties->set('options.reduceOnly', 'true');
+        }
 
         switch ($order->type) {
             // A profit order type limit.
@@ -63,6 +74,32 @@ trait MapsPlaceOrder
         $order['_orderType'] = $this->canonicalOrderType($order);
 
         return $order;
+    }
+
+    /**
+     * Whether this order is closing intent — relevant for one-way mode
+     * where reduceOnly must be set explicitly on closes (otherwise the
+     * `side` flip would open an opposing position instead of closing
+     * the existing one). Hedge mode encodes intent via positionSide and
+     * doesn't need this flag.
+     *
+     * Closing types are PROFIT-LIMIT / PROFIT-MARKET (TP), STOP-MARKET
+     * (SL via algo), MARKET-CANCEL (emergency reduce-only close).
+     * MARKET (initial entry) and LIMIT (DCA) carry opening intent.
+     *
+     * Note: STOP-MARKET on Binance routes through the algo path
+     * (preparePlaceAlgoOrderProperties), so this branch only matters
+     * for non-Binance exchanges that share this trait — listing it
+     * here keeps the intent table complete.
+     */
+    private function isClosingIntent(Order $order): bool
+    {
+        return in_array($order->type, [
+            'PROFIT-LIMIT',
+            'PROFIT-MARKET',
+            'STOP-MARKET',
+            'MARKET-CANCEL',
+        ], strict: true);
     }
 
     /**

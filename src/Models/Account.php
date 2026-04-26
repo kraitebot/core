@@ -30,6 +30,7 @@ use Kraite\Core\Concerns\Account\InteractsWithApis;
  * @property float|null $margin
  * @property bool $can_trade
  * @property bool $is_active
+ * @property bool $on_hedge_mode
  * @property int $position_leverage_long
  * @property int $position_leverage_short
  * @property string $margin_mode
@@ -70,6 +71,7 @@ final class Account extends BaseModel
     protected $casts = [
         'can_trade' => 'boolean',
         'is_active' => 'boolean',
+        'on_hedge_mode' => 'boolean',
         'position_leverage_long' => 'integer',
         'position_leverage_short' => 'integer',
         'margin_mode' => 'string',

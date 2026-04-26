@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.6.0 - 2026-04-26
+
+### Features
+
+- [NEW FEATURE] **Dual position-mode support** for Binance Futures (Hedge AND One-Way). Triggered by Karine Esnault account (#5) — her Binance is in One-Way mode while Kraite previously assumed Hedge for every account, causing every order placement to fail with -4061 "POSITION_SIDE_NOT_MATCH". The feature is reactive (no proactive polling, no mutation of user's Binance settings on their behalf) and self-healing on mode drift. Full design in `docs/02-features/dual-position-mode.md`.
+- [NEW FEATURE] `accounts.on_hedge_mode` boolean column (migration `2026_04_26_110850_add_on_hedge_mode_to_accounts`). DB default `true` preserves existing live accounts (Bruno's hedge-mode book stays untouched). Application-layer default `false` via `AccountFactory` so new traders default to one-way (Bruno's stated preference: "one-way is most popular").
+- [NEW FEATURE] `Account::isHedgeMode()` / `Account::isOneWayMode()` accessors on `HasGetters` trait. Mapper layer reads these to decide payload shape.
+- [NEW FEATURE] `AccountFactory::hedgeMode()` / `oneWayMode()` factory states for tests that need either shape.
+- [NEW FEATURE] `HandlesApiJobExceptions::isPositionModeMismatch()` + `autoFlipPositionMode()` — auto-flip catch in the central exception handler. Listens for the documented Binance position-mode error family `(-4060, -4061, -4062, -4067)` so a Binance-side rename or asymmetric variant doesn't silently break the auto-flip. Atomic flip via `lockForUpdate` so concurrent failures from sibling atomic jobs serialise on the row lock. Reschedules the failing step with `rescheduleWithoutRetry` (2s `dispatch_after`) — no retry-counter burn, no `Position::updateToFailed` cascade, no symbol auto-block. Audit goes to BOTH `Log::warning('position_mode_auto_flip', ...)` for ops grep AND `Account::modelLog('position_mode_auto_flip', ...)` for the per-account forensic timeline.
+
+### Improvements
+
+- [IMPROVED] `BinanceApiDataMapper::preparePlaceOrderProperties()` (via `MapsPlaceOrder`) — branches on `account->isHedgeMode()`. Hedge: sets `positionSide=LONG/SHORT` as before. One-way: omits `positionSide` (Binance rejects with -4061 if sent), sets `reduceOnly=true` on closing-intent orders (`PROFIT-LIMIT`, `PROFIT-MARKET`, `STOP-MARKET`, `MARKET-CANCEL`). Without `reduceOnly` in one-way mode a SELL on a LONG position would OPEN a SHORT instead of closing the LONG.
+- [IMPROVED] `BinanceApiDataMapper::preparePlaceAlgoOrderProperties()` (via `MapsPlaceAlgoOrder`) — same hedge/one-way branch on `positionSide`. `closePosition=true` stays in BOTH modes (works universally for closing whatever direction is open at trigger time). Never sets `reduceOnly` regardless of mode — `closePosition` and `reduceOnly` are mutually exclusive per Binance docs (-4062 if both set).
+- [IMPROVED] `AssignBestTokensToPositionSlotsJob::countPositionsByDirection()` — added a one-way branch. Hedge response: one row per `(symbol, positionSide=LONG|SHORT)` with positive `positionAmt`. One-way response: one row per symbol with `positionSide=BOTH` and SIGNED `positionAmt` (positive=LONG, negative=SHORT, zero=empty). Without this branch the slot counter would falsely return zero for one-way accounts that have open positions, and slot calc would think the account is empty.
+
 ## 1.5.10 - 2026-04-26
 
 ### Features

@@ -7,6 +7,9 @@ namespace Kraite\Core\Concerns\BaseApiableJob;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Kraite\Core\Models\Account;
 use Throwable;
 
 /*
@@ -32,6 +35,22 @@ trait HandlesApiJobExceptions
         }
 
         if ($e instanceof RequestException) {
+            // Position-mode mismatch is checked FIRST so it never gets
+            // miscategorised as an IP-ban, rate limit, or recvWindow drift.
+            // Listens for the family of position-side error codes Binance
+            // documents (-4060, -4061, -4062, -4067) — covers asymmetric
+            // variants and protects against a Binance-side rename. The
+            // catch flips `accounts.on_hedge_mode` and reschedules the
+            // failing step so the next dispatcher tick retries with the
+            // corrected payload, with no Position::updateToFailed cascade
+            // and no symbol auto-block.
+            if ($this->isPositionModeMismatch($e)) {
+                $this->autoFlipPositionMode();
+                $this->rescheduleWithoutRetry(now()->addSeconds(2));
+
+                return;
+            }
+
             if ($this->exceptionHandler->ignoreException($e)) {
                 // Ignorable exceptions (like 400 Bad Request for invalid symbols)
                 // Job completes normally, allowing computeApiable() to return its result
@@ -170,5 +189,115 @@ trait HandlesApiJobExceptions
     {
         // Just apply a standard rate limiter retry.
         $this->retryJob(now()->addSeconds($this->exceptionHandler->backoffSeconds));
+    }
+
+    /**
+     * Recognise a Binance position-mode mismatch error.
+     *
+     * Documented family (per Binance error-code reference):
+     *   -4060: INVALID_POSITION_SIDE
+     *   -4061: POSITION_SIDE_NOT_MATCH (the canonical mismatch error)
+     *   -4062: REDUCE_ONLY_CONFLICT (reduceOnly set in the wrong mode)
+     *   -4067: POSITION_SIDE_CHANGE_EXISTS_OPEN_ORDERS
+     *
+     * Listening for the family rather than -4061 alone defends against
+     * Binance renaming or returning a sibling code in an asymmetric
+     * variant. Other exchanges add their own equivalents in their own
+     * trait (Bybit's positionIdx mismatch, etc.) when phased.
+     */
+    protected function isPositionModeMismatch(RequestException $e): bool
+    {
+        if (! $e->hasResponse()) {
+            return false;
+        }
+
+        $payload = json_decode((string) $e->getResponse()->getBody(), associative: true);
+
+        if (! is_array($payload)) {
+            return false;
+        }
+
+        $code = (int) ($payload['code'] ?? 0);
+
+        return in_array($code, [-4060, -4061, -4062, -4067], strict: true);
+    }
+
+    /**
+     * Atomically flip the failing job's account on_hedge_mode. Uses
+     * lockForUpdate so concurrent failures from sibling atomic jobs
+     * (e.g. PlaceLimitOrder rung 2 + PlaceStopLossOrder firing -4061
+     * in the same millisecond) serialise on the row lock — second
+     * instance sees the post-flip state and no-ops if it already
+     * flipped, avoiding thrash.
+     *
+     * Audit goes to BOTH:
+     *   - Log::warning('position_mode_auto_flip', ...) for ops grep
+     *   - Account::modelLog('position_mode_auto_flip', ...) for the
+     *     per-account forensic timeline visible in the admin UI.
+     */
+    protected function autoFlipPositionMode(): void
+    {
+        $account = $this->resolveAccountForPositionModeFlip();
+
+        if (! $account) {
+            Log::warning('position_mode_auto_flip_skipped', [
+                'reason' => 'no_account_resolved',
+                'job_class' => static::class,
+            ]);
+
+            return;
+        }
+
+        DB::transaction(function () use ($account): void {
+            /** @var Account $locked */
+            $locked = Account::whereKey($account->id)->lockForUpdate()->first();
+
+            if (! $locked) {
+                return;
+            }
+
+            $previous = (bool) $locked->on_hedge_mode;
+            $next = ! $previous;
+
+            $locked->on_hedge_mode = $next;
+            $locked->save();
+
+            Log::warning('position_mode_auto_flip', [
+                'account_id' => $locked->id,
+                'previous' => $previous,
+                'new' => $next,
+                'job_class' => static::class,
+            ]);
+
+            $locked->modelLog(
+                eventType: 'position_mode_auto_flip',
+                metadata: [
+                    'previous' => $previous,
+                    'new' => $next,
+                    'job_class' => static::class,
+                ],
+                message: sprintf(
+                    'Position mode auto-flipped: %s → %s (Binance returned position-side mismatch on %s)',
+                    $previous ? 'hedge' : 'one-way',
+                    $next ? 'hedge' : 'one-way',
+                    class_basename(static::class)
+                )
+            );
+        });
+    }
+
+    /**
+     * Find the account associated with the failing job. Every
+     * BaseApiableJob has an `exceptionHandler` with an `account`
+     * reference — that's the canonical source. Returns null if for
+     * some reason the handler isn't set up yet.
+     */
+    protected function resolveAccountForPositionModeFlip(): ?Account
+    {
+        if (isset($this->exceptionHandler) && $this->exceptionHandler->account instanceof Account) {
+            return $this->exceptionHandler->account;
+        }
+
+        return null;
     }
 }

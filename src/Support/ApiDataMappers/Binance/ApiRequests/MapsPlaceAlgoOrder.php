@@ -45,7 +45,15 @@ trait MapsPlaceAlgoOrder
         $properties->set('relatable', $order);
         $properties->set('options.symbol', (string) $order->position->exchangeSymbol->parsed_trading_pair);
         $properties->set('options.side', (string) $this->sideType($order->side));
-        $properties->set('options.positionSide', (string) $order->position_side);
+
+        // HEDGE mode requires positionSide; ONE-WAY mode rejects it (-4061).
+        // closePosition=true (set below) works in BOTH modes — closes whatever
+        // direction is currently open at trigger time. closePosition is
+        // mutually exclusive with reduceOnly per Binance docs (-4062 if both
+        // set), so the algo path NEVER sets reduceOnly regardless of mode.
+        if ($order->position->account->isHedgeMode()) {
+            $properties->set('options.positionSide', (string) $order->position_side);
+        }
 
         // Algo-specific parameters (per Binance docs)
         $properties->set('options.algoType', 'CONDITIONAL');

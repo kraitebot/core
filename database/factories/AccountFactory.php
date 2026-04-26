@@ -50,7 +50,37 @@ final class AccountFactory extends Factory
             'bybit_api_key' => null,
             'bybit_api_secret' => null,
             'last_report_id' => null,
+            // One-way is the popular default for new traders. Hedge-mode
+            // accounts get this explicitly via the `hedgeMode()` factory
+            // state. Live accounts auto-correct via the reactive flip on
+            // -4061 / equivalent if the wrong default ever leaks.
+            'on_hedge_mode' => false,
         ];
+    }
+
+    /**
+     * Indicate that the account is in hedge mode (dual position side on
+     * Binance, positionIdx=1|2 on Bybit, etc.).
+     */
+    public function hedgeMode(): static
+    {
+        return $this->state(function (array $attributes) {
+            return [
+                'on_hedge_mode' => true,
+            ];
+        });
+    }
+
+    /**
+     * Indicate that the account is in one-way mode (single position side).
+     */
+    public function oneWayMode(): static
+    {
+        return $this->state(function (array $attributes) {
+            return [
+                'on_hedge_mode' => false,
+            ];
+        });
     }
 
     /**
