@@ -7,12 +7,11 @@ namespace Kraite\Core\Jobs\Atomic\Order\Bitget;
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
-use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
-use Kraite\Core\Support\ValueObjects\ApiProperties;
+use Kraite\Core\Trading\Kraite;
 use RuntimeException;
 use Throwable;
 
@@ -34,7 +33,7 @@ use Throwable;
  * 3. doubleCheck(): Query position, verify both IDs present
  * 4. complete(): Set reference_* fields on both orders, set first_profit_price on position
  */
-class PlacePositionTpslJob extends BaseApiableJob
+final class PlacePositionTpslJob extends BaseApiableJob
 {
     public Position $position;
 
@@ -161,7 +160,7 @@ class PlacePositionTpslJob extends BaseApiableJob
         $result = $mapper->resolvePlacePosTpslResponse($response);
 
         if (! ($result['success'] ?? false)) {
-            throw new \RuntimeException('Failed to place position TP/SL: ' . json_encode($result['_raw'] ?? []));
+            throw new RuntimeException('Failed to place position TP/SL: '.json_encode($result['_raw'] ?? []));
         }
 
         // Query position to get the TP/SL order IDs
@@ -247,6 +246,18 @@ class PlacePositionTpslJob extends BaseApiableJob
 
     /**
      * Verify the TP/SL orders were accepted.
+     *
+     * Fast path: when both order rows already carry an `exchange_order_id`
+     * captured during `computeApiable()`, skip the API round-trip entirely.
+     * This is the 99% case under normal load and avoids the doubleCheck →
+     * getPositions → 429 failure mode that wrongly killed an already-placed
+     * position (THETAUSDT, 2026-04-26).
+     *
+     * Slow path: when Bitget eventual consistency returned a null id at
+     * place time, re-query to backfill. Any failure here returns false so
+     * the step framework retries the doubleCheck — rather than escaping
+     * the API exception handler (which is wired only into `compute()`)
+     * and crashing the step.
      */
     public function doubleCheck(): bool
     {
@@ -254,14 +265,20 @@ class PlacePositionTpslJob extends BaseApiableJob
             return false;
         }
 
-        // Query position again to verify IDs are present
-        $positionData = $this->queryPositionForTpslIds();
+        if ($this->profitOrder->exchange_order_id !== null
+            && $this->stopLossOrder->exchange_order_id !== null) {
+            return true;
+        }
 
-        // Check that both IDs are present
+        try {
+            $positionData = $this->queryPositionForTpslIds();
+        } catch (Throwable) {
+            return false;
+        }
+
         $hasTpId = $positionData['takeProfitId'] !== null;
         $hasSlId = $positionData['stopLossId'] !== null;
 
-        // Update order IDs if they were null before but are now present
         if ($hasTpId && $this->profitOrder->exchange_order_id === null) {
             $this->profitOrder->updateSaving([
                 'exchange_order_id' => $positionData['takeProfitId'],
@@ -278,7 +295,10 @@ class PlacePositionTpslJob extends BaseApiableJob
     }
 
     /**
-     * Set reference data and first_profit_price.
+     * Set reference data, first_profit_price, and emit audit log entries.
+     *
+     * Mirrors the Binance equivalents (PlaceProfitOrderJob, PlaceStopLossOrderJob)
+     * by firing one appLog per leg so the audit trail is symmetric across exchanges.
      */
     public function complete(): void
     {
@@ -289,6 +309,16 @@ class PlacePositionTpslJob extends BaseApiableJob
                 'reference_quantity' => $this->profitOrder->quantity,
                 'reference_status' => $this->profitOrder->status,
             ]);
+
+            $this->position->appLog(
+                event: 'profit_order_placed',
+                message: "Profit order placed at \${$this->profitOrder->price}",
+                metadata: [
+                    'order_id' => $this->profitOrder->id,
+                    'price' => $this->profitOrder->price,
+                    'quantity' => $this->profitOrder->quantity,
+                ]
+            );
         }
 
         // Set reference data for stop-loss order
@@ -298,6 +328,16 @@ class PlacePositionTpslJob extends BaseApiableJob
                 'reference_quantity' => $this->stopLossOrder->quantity,
                 'reference_status' => $this->stopLossOrder->status,
             ]);
+
+            $this->position->appLog(
+                event: 'stop_loss_placed',
+                message: "Stop-loss order placed at \${$this->stopLossOrder->price}",
+                metadata: [
+                    'order_id' => $this->stopLossOrder->id,
+                    'price' => $this->stopLossOrder->price,
+                    'quantity' => $this->stopLossOrder->quantity,
+                ]
+            );
         }
 
         // Store first_profit_price on position for reference
@@ -314,7 +354,7 @@ class PlacePositionTpslJob extends BaseApiableJob
     public function resolveException(Throwable $e): void
     {
         $this->position->updateSaving([
-            'error_message' => 'Position TP/SL failed: ' . $e->getMessage(),
+            'error_message' => 'Position TP/SL failed: '.$e->getMessage(),
         ]);
     }
 }

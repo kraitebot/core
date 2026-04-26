@@ -314,11 +314,14 @@ final class BitgetApi
     }
 
     /**
-     * Get order fill details (trades).
+     * Get account-level trade fills for a symbol — Bitget's order-fills
+     * endpoint, exposed under the cross-exchange `accountTrades` name so
+     * `Position::apiQueryTokenTrades()` resolves it the same way it does
+     * for Binance.
      *
      * @see https://www.bitget.com/api-doc/contract/trade/Get-Order-Fills
      */
-    public function getOrderFills(?ApiProperties $properties = null)
+    public function accountTrades(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
 

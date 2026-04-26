@@ -64,7 +64,6 @@ return new class extends Migration
             $table->decimal('stop_market_initial_percentage', 5, 2)->default(2.50);
             $table->unsignedInteger('total_positions_short')->default(1)->comment('Max active positions SHORT');
             $table->unsignedInteger('total_positions_long')->default(1)->comment('Max active positions LONG');
-            $table->integer('stop_market_wait_minutes')->default(120)->comment('Delay (in minutes) before placing market stop-loss');
             $table->unsignedInteger('position_leverage_short')->default(15)->comment('The max leverage that the position SHORT can use');
             $table->unsignedInteger('position_leverage_long')->default(20)->comment('The max leverage that the position LONG can use');
             $table->longText('binance_api_key')->nullable();

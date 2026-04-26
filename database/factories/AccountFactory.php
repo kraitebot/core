@@ -42,7 +42,6 @@ final class AccountFactory extends Factory
             'stop_market_initial_percentage' => 0.05,
             'total_positions_short' => 0,
             'total_positions_long' => 0,
-            'stop_market_wait_minutes' => 5,
             'position_leverage_short' => 1,
             'position_leverage_long' => 1,
             'binance_api_key' => null,

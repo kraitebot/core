@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.6.1 - 2026-04-26
+
+### Fixes
+
+- [BUG FIX] `Bitget\PlacePositionTpslJob::doubleCheck()` killed already-placed positions on transient HTTP 429 from `getPositions`. Root cause: `doubleCheck()` runs OUTSIDE the `compute()` try/catch that wires `handleApiException`, so a rate-limit during the verification re-query bypassed the retry path and went straight to `Failed` → `CancelPositionJob` cancelled the TP/SL we'd just placed (THETAUSDT, position 423, 2026-04-26). Two-part fix: fast-path returns `true` when both Order rows already carry an `exchange_order_id` from `computeApiable()` (the 99% case — Bitget specificity vs Binance which returns IDs in the place response and never needs the re-query); slow-path wraps the re-query in `try/catch` so transient failures return `false` (framework retries `doubleCheck`) instead of escaping as a step crash.
+- [BUG FIX] `Bitget\MapsAccountQueryTrades` trait + `BitgetApi` were silently breaking `closing_price` population on every Bitget close. The mapper exposed `prepareAccountQueryTradesProperties` / `resolveAccountQueryTradesResponse` while the cross-exchange interface (used by `Position::apiQueryTokenTrades()` → `UpdateRemainingClosingDataJob`) calls `prepareQueryTokenTradesProperties` / `resolveQueryTradeResponse`. `BitgetApi` exposed `getOrderFills` while the same chain calls `accountTrades` by name. Result: every Bitget close logged "Method prepareQueryTokenTradesProperties does not exist for this API" and `positions.closing_price` stayed null. Renamed all three methods to match the cross-exchange interface used by Binance/Bybit/KuCoin.
+
+### Improvements
+
+- [IMPROVED] `Bitget\PlacePositionTpslJob::complete()` now fires `profit_order_placed` + `stop_loss_placed` `appLog` events — symmetric audit trail with Binance's separate `PlaceProfitOrderJob` / `PlaceStopLossOrderJob` (both already fire the same event names). Previously Bitget closes left no `app_logs` breadcrumb for TP/SL placement.
+- [IMPROVED] `AccountFactory` — removed stale `stop_market_wait_minutes` default. Companion to the in-flight `2026_04_26_150000_drop_stop_market_wait_minutes_from_accounts` migration in `kraitebot/ingestion`; without this every test using `Account::factory()->create()` was failing with "Unknown column 'stop_market_wait_minutes'".
+
 ## 1.6.0 - 2026-04-26
 
 ### Features

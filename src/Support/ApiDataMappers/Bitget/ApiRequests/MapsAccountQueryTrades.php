@@ -10,7 +10,7 @@ use Kraite\Core\Support\ValueObjects\ApiProperties;
 
 trait MapsAccountQueryTrades
 {
-    public function prepareAccountQueryTradesProperties(Position $position, ?string $orderId = null): ApiProperties
+    public function prepareQueryTokenTradesProperties(Position $position, ?string $orderId = null): ApiProperties
     {
         $properties = new ApiProperties;
         $properties->set('relatable', $position);
@@ -49,7 +49,7 @@ trait MapsAccountQueryTrades
      *     }
      * }
      */
-    public function resolveAccountQueryTradesResponse(Response $response): array
+    public function resolveQueryTradeResponse(Response $response): array
     {
         $body = json_decode((string) $response->getBody(), associative: true);
 
