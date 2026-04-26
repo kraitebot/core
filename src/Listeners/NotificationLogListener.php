@@ -7,6 +7,7 @@ namespace Kraite\Core\Listeners;
 use Illuminate\Notifications\Events\NotificationFailed;
 use Illuminate\Notifications\Events\NotificationSent;
 use Illuminate\Support\Str;
+use Kraite\Core\Enums\NotificationLogStatus;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Notification;
 use Kraite\Core\Models\NotificationLog;
@@ -33,7 +34,7 @@ final class NotificationLogListener
      */
     public function handleNotificationSent(NotificationSent $event): void
     {
-        $this->createLog($event, 'delivered');
+        $this->createLog($event, NotificationLogStatus::Delivered->value);
     }
 
     /**
@@ -49,7 +50,7 @@ final class NotificationLogListener
         }
 
         /** @var string|null $errorMessage */
-        $this->createLog($event, 'failed', $errorMessage);
+        $this->createLog($event, NotificationLogStatus::Failed->value, $errorMessage);
     }
 
     /**

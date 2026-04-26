@@ -246,7 +246,7 @@
                     <!-- Header -->
                     <tr>
                         <td class="header">
-                            <h1>MARTINGALIAN</h1>
+                            <h1>KRAITE</h1>
                         </td>
                     </tr>
 

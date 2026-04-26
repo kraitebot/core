@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace Kraite\Core\Support;
 
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Notification;
 use Kraite\Core\Models\NotificationLog;
 use Kraite\Core\Models\User;
 use Kraite\Core\Notifications\AlertNotification;
+use Throwable;
 
 /**
  * NotificationService
@@ -30,6 +32,26 @@ use Kraite\Core\Notifications\AlertNotification;
  */
 final class NotificationService
 {
+    /**
+     * In-process cache for `Notification` model lookups by canonical.
+     *
+     * `send()` is called from hot paths (every `ApiRequestLog::saved`
+     * event, every position-lifecycle step) and each call previously
+     * issued a `SELECT * FROM notifications WHERE canonical = ? LIMIT 1`
+     * with no caching. Per-process cache eliminates the N+1 — the
+     * `notifications` table is config-grade data that changes rarely.
+     * Cleared between requests in worker processes via long-running PHP
+     * boot, or `Once::flush()` in tests.
+     *
+     * @var array<string, ?Notification>
+     */
+    private static array $notificationCache = [];
+
+    public static function flushNotificationCache(): void
+    {
+        self::$notificationCache = [];
+    }
+
     /**
      * Send a notification to a specific user.
      *
@@ -59,6 +81,15 @@ final class NotificationService
         );
     }
 
+    private static function resolveNotification(string $canonical): ?Notification
+    {
+        if (! array_key_exists($canonical, self::$notificationCache)) {
+            self::$notificationCache[$canonical] = Notification::where('canonical', $canonical)->first();
+        }
+
+        return self::$notificationCache[$canonical];
+    }
+
     /**
      * Send notification to a specific user (internal use only).
      * Handles throttling, message building, and actual notification dispatch.
@@ -84,8 +115,9 @@ final class NotificationService
             return false;
         }
 
-        // Load notification for throttle duration and cache key template
-        $notification = Notification::where('canonical', $canonical)->first();
+        // Load notification for throttle duration and cache key template.
+        // Cached in-process to avoid one DB hit per send() call on hot paths.
+        $notification = self::resolveNotification($canonical);
 
         // Check if this specific notification is active
         if ($notification && ! $notification->is_active) {
@@ -135,8 +167,21 @@ final class NotificationService
             }
         }
 
-        // Build notification message from canonical template
-        $messageData = NotificationMessageBuilder::build($canonical, $referenceData, $user);
+        // Build notification message from canonical template. Builder
+        // throws InvalidArgumentException on unknown canonicals (typo at
+        // call site) — we log & swallow so a coding mistake doesn't
+        // crash the calling job/observer, but the failure is visible
+        // in logs instead of producing a junk live notification.
+        try {
+            $messageData = NotificationMessageBuilder::build($canonical, $referenceData, $user);
+        } catch (Throwable $e) {
+            Log::error('[NotificationService] Failed to build message', [
+                'canonical' => $canonical,
+                'message' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
 
         if (! $messageData) {
             return false;

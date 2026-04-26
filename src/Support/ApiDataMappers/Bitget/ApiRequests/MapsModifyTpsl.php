@@ -21,6 +21,15 @@ trait MapsModifyTpsl
     /**
      * Prepare properties for modifying a TP/SL order on Bitget.
      *
+     * NOTE: this mapper currently produces requests Bitget rejects with
+     * HTTP 400 across every field-name combination tried (verified live
+     * 2026-04-26 via tinker). It is not used by the drift-correction flow
+     * — `Bitget\ModifyAlgoOrderJob` uses `place-pos-tpsl` (which atomically
+     * overwrites existing TP/SL while preserving the plan-order IDs).
+     * Left in place because `Order::apiModifyTpsl()` is still wired into
+     * the WAP recalc path (`CalculateWapAndModifyProfitOrderJob`); fixing
+     * that path is a separate concern.
+     *
      * @param  Order  $order  The TP or SL order to modify
      * @param  string  $newTriggerPrice  The new trigger price
      *

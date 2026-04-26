@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Sleep;
 use Kraite\Core\Models\ApiRequestLog;
 use Kraite\Core\Models\ApiSystem;
+use Kraite\Core\Support\HeaderSanitizer;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use Kraite\Core\Support\ValueObjects\ApiRequest;
 use Throwable;
@@ -128,7 +129,10 @@ abstract class BaseApiClient
             'path' => $apiRequest->path,
             'payload' => $properties,
             'http_method' => $apiRequest->method,
-            'http_headers_sent' => $headers,
+            // Auth headers (ACCESS-KEY, ACCESS-PASSPHRASE, X-MBX-APIKEY,
+            // KC-API-KEY, etc.) carry full credentials in plaintext —
+            // redacted before persistence to api_request_logs.
+            'http_headers_sent' => HeaderSanitizer::sanitize($headers),
             'hostname' => gethostname(),
             'debug_data' => $apiRequest->properties->getOr('debug', []),
             'api_system_id' => $this->apiSystem->id,

@@ -168,6 +168,19 @@ final class CoreServiceProvider extends ServiceProvider
     protected function registerSlowQueryListener(): void
     {
         DB::listen(static function (QueryExecuted $query) {
+            // Re-entry guard. The closure body itself executes queries
+            // (SlowQuery::create + NotificationService::send touch
+            // `slow_queries`, `notifications`, `notification_logs`); each
+            // of those queries fires DB::listen again. The Str::contains
+            // guard below only filters writes to `slow_queries` itself —
+            // notification-table reads are NOT filtered, so a slow read
+            // there would recurse into a second slow_query_detected
+            // notification, looping until the cache throttle catches up.
+            static $inSlowQueryHandler = false;
+            if ($inSlowQueryHandler) {
+                return;
+            }
+
             $threshold = (int) config('kraite.slow_query_threshold_ms', 5000);
             if ($query->time <= $threshold) {
                 return;
@@ -182,42 +195,53 @@ final class CoreServiceProvider extends ServiceProvider
                 return;
             }
 
-            $bindings = $query->bindings;
-            foreach ($bindings as $k => $v) {
-                if (! ($v instanceof DateTimeInterface)) {
-                    continue;
-                }
-
-                $bindings[$k] = $v->format('Y-m-d H:i:s');
+            $inSlowQueryHandler = true;
+            try {
+                self::handleSlowQuery($query, $threshold);
+            } finally {
+                $inSlowQueryHandler = false;
             }
-
-            $sqlFull = $query->sql;
-            foreach ($bindings as $binding) {
-                $val = is_null($binding) ? 'NULL' : addslashes((string) $binding);
-                $wrap = is_null($binding) ? 'NULL' : "'{$val}'";
-                $sqlFull = preg_replace('/\?/', $wrap, $sqlFull, limit: 1);
-            }
-
-            SlowQuery::create([
-                'tick_id' => cache('current_tick_id'),
-                'connection' => $query->connectionName,
-                'time_ms' => (int) $query->time,
-                'sql' => $query->sql,
-                'sql_full' => $sqlFull,
-                'bindings' => $bindings,
-            ]);
-
-            // Send notification to admin about slow query
-            NotificationService::send(
-                user: Kraite::admin(),
-                canonical: 'slow_query_detected',
-                referenceData: [
-                    'sql_full' => $sqlFull,
-                    'time_ms' => (int) $query->time,
-                    'connection' => $query->connectionName,
-                    'threshold_ms' => $threshold,
-                ]
-            );
         });
+    }
+
+    private static function handleSlowQuery(QueryExecuted $query, int $threshold): void
+    {
+
+        $bindings = $query->bindings;
+        foreach ($bindings as $k => $v) {
+            if (! ($v instanceof DateTimeInterface)) {
+                continue;
+            }
+
+            $bindings[$k] = $v->format('Y-m-d H:i:s');
+        }
+
+        $sqlFull = $query->sql;
+        foreach ($bindings as $binding) {
+            $val = is_null($binding) ? 'NULL' : addslashes((string) $binding);
+            $wrap = is_null($binding) ? 'NULL' : "'{$val}'";
+            $sqlFull = preg_replace('/\?/', $wrap, $sqlFull, limit: 1);
+        }
+
+        SlowQuery::create([
+            'tick_id' => cache('current_tick_id'),
+            'connection' => $query->connectionName,
+            'time_ms' => (int) $query->time,
+            'sql' => $query->sql,
+            'sql_full' => $sqlFull,
+            'bindings' => $bindings,
+        ]);
+
+        // Send notification to admin about slow query
+        NotificationService::send(
+            user: Kraite::admin(),
+            canonical: 'slow_query_detected',
+            referenceData: [
+                'sql_full' => $sqlFull,
+                'time_ms' => (int) $query->time,
+                'connection' => $query->connectionName,
+                'threshold_ms' => $threshold,
+            ]
+        );
     }
 }

@@ -4,15 +4,12 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Models;
 
-
-
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Kraite\Core\Abstracts\BaseModel;
 use Kraite\Core\Concerns\Kraite\HasAccessors;
 use Kraite\Core\Concerns\Kraite\HasGetters;
 use RuntimeException;
-
 
 /**
  * @property int $id
@@ -45,6 +42,10 @@ final class Kraite extends BaseModel
     use HasAccessors;
     use HasGetters;
 
+    public const IP_CACHE_KEY = 'kraite.server.public_ip';
+
+    public const IP_CACHE_TTL_SECONDS = 86400;
+
     protected $table = 'kraite';
 
     protected $casts = [
@@ -73,6 +74,32 @@ final class Kraite extends BaseModel
     ];
 
     /**
+     * Credential columns excluded from any Eloquent serialization
+     * (`toArray()`, `toJson()`, `jsonSerialize()`). Direct attribute
+     * access still works — `$hidden` only filters serialization, which is
+     * the leak path (`api_request_logs.payload` carrying the model JSON
+     * via `Account::admin()` calls that hydrate from `kraite.all_credentials`).
+     */
+    protected $hidden = [
+        'binance_api_key',
+        'binance_api_secret',
+        'bybit_api_key',
+        'bybit_api_secret',
+        'kraken_api_key',
+        'kraken_private_key',
+        'kucoin_api_key',
+        'kucoin_api_secret',
+        'kucoin_passphrase',
+        'bitget_api_key',
+        'bitget_api_secret',
+        'bitget_passphrase',
+        'coinmarketcap_api_key',
+        'taapi_secret',
+        'admin_pushover_user_key',
+        'admin_pushover_application_key',
+    ];
+
+    /**
      * Global indicator/kline timeframe list. Single source for every
      * consumer that used to read `$apiSystem->timeframes`.
      *
@@ -92,10 +119,6 @@ final class Kraite extends BaseModel
     {
         return once(fn (): array => self::first()?->timeframes ?? []);
     }
-
-    public const IP_CACHE_KEY = 'kraite.server.public_ip';
-
-    public const IP_CACHE_TTL_SECONDS = 86400;
 
     /**
      * Current server's public IP.

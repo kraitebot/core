@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Observers;
 
+use Kraite\Core\Enums\NotificationLogStatus;
 use Kraite\Core\Models\NotificationLog;
 use Kraite\Core\Models\User;
-
 use NotificationChannels\Pushover\PushoverChannel;
 
 final class NotificationLogObserver
@@ -27,14 +27,23 @@ final class NotificationLogObserver
             $newStatus = $notificationLog->status;
             $originalStatus = $notificationLog->getOriginal('status');
 
+            $bounceValues = [
+                NotificationLogStatus::SoftBounced->value,
+                NotificationLogStatus::HardBounced->value,
+            ];
+            $recoveryValues = [
+                NotificationLogStatus::Delivered->value,
+                NotificationLogStatus::Opened->value,
+            ];
+
             // Handle bounce detection (status changed TO bounce)
-            if (in_array($newStatus, ['soft bounced', 'hard bounced'])) {
+            if (in_array($newStatus, $bounceValues, true)) {
                 $this->handleBounceDetection($notificationLog);
             }
 
             // Handle bounce recovery (status changed FROM bounce TO delivered/opened)
-            if (in_array($originalStatus, ['soft bounced', 'hard bounced']) &&
-                in_array($newStatus, ['delivered', 'opened'])) {
+            if (in_array($originalStatus, $bounceValues, true)
+                && in_array($newStatus, $recoveryValues, true)) {
                 $this->handleBounceRecovery($notificationLog);
             }
         }

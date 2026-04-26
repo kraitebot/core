@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
+use Kraite\Core\Enums\NotificationLogStatus;
 
 /**
  * NotificationLog
@@ -147,7 +148,7 @@ final class NotificationLog extends Model
      */
     public function scopeFailed(\Illuminate\Database\Eloquent\Builder $query): \Illuminate\Database\Eloquent\Builder
     {
-        return $query->where('status', 'failed');
+        return $query->where('status', NotificationLogStatus::Failed->value);
     }
 
     /**
@@ -158,7 +159,7 @@ final class NotificationLog extends Model
      */
     public function scopeDelivered(\Illuminate\Database\Eloquent\Builder $query): \Illuminate\Database\Eloquent\Builder
     {
-        return $query->where('status', 'delivered');
+        return $query->where('status', NotificationLogStatus::Delivered->value);
     }
 
     /**

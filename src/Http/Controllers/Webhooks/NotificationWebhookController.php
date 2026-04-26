@@ -7,8 +7,9 @@ namespace Kraite\Core\Http\Controllers\Webhooks;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
-use Log;
+use Kraite\Core\Enums\NotificationLogStatus;
 use Kraite\Core\Models\NotificationLog;
+use Log;
 use Throwable;
 
 /**
@@ -127,7 +128,7 @@ final class NotificationWebhookController extends Controller
             // Update with acknowledgment timestamp
             if ($acknowledged && $acknowledgedAt !== null && is_numeric($acknowledgedAt)) {
                 $notificationLog->update([
-                    'status' => 'delivered',
+                    'status' => NotificationLogStatus::Delivered->value,
                 ]);
             }
 
@@ -180,7 +181,9 @@ final class NotificationWebhookController extends Controller
         }
 
         // Update status and bounce timestamp based on bounce type
-        $status = $bounceType === 'hard_bounce' ? 'hard bounced' : 'soft bounced';
+        $status = $bounceType === 'hard_bounce'
+            ? NotificationLogStatus::HardBounced->value
+            : NotificationLogStatus::SoftBounced->value;
         $bounceTimestamp = $bounceTime ? \Carbon\Carbon::parse($bounceTime) : now();
         $bounceField = $bounceType === 'hard_bounce' ? 'hard_bounced_at' : 'soft_bounced_at';
 
@@ -254,7 +257,7 @@ final class NotificationWebhookController extends Controller
 
         $notificationLog->update([
             'opened_at' => $openedAtTimestamp,
-            'status' => 'opened',
+            'status' => NotificationLogStatus::Opened->value,
             'http_headers_received' => $request->headers->all(),
             'gateway_response' => array_merge($notificationLog->gateway_response ?? [], ['open_event' => $data]),
         ]);
@@ -372,10 +375,12 @@ final class NotificationWebhookController extends Controller
         // Parse signature header format: ts=<timestamp>;s=<signature>;s-algorithm=HmacSHA256
         $parts = [];
         foreach (explode(';', $signatureHeader) as $part) {
-            if (!(str_contains(haystack: $part, needle: '='))) { continue; }
+            if (! (str_contains(haystack: $part, needle: '='))) {
+                continue;
+            }
 
-[$key, $value] = explode('=', $part, limit: 2);
-                $parts[mb_trim($key)] = mb_trim($value);
+            [$key, $value] = explode('=', $part, limit: 2);
+            $parts[mb_trim($key)] = mb_trim($value);
         }
 
         $timestamp = $parts['ts'] ?? null;

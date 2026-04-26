@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Support;
 
 use Exception;
+use InvalidArgumentException;
 use Kraite\Core\Enums\NotificationSeverity;
 use Kraite\Core\Models\Notification;
 use Kraite\Core\Models\User;
@@ -812,15 +813,15 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
-            // Default fallback for unknown canonicals
-            default => [
-                'severity' => NotificationSeverity::Info,
-                'title' => 'Notification: '.$canonicalString,
-                'emailMessage' => "A notification was triggered: {$canonicalString}\n\nNo message template is defined for this canonical.",
-                'pushoverMessage' => "Notification: {$canonicalString}",
-                'actionUrl' => null,
-                'actionLabel' => null,
-            ],
+            // Fail loud on unknown canonicals. Previously this returned a
+            // generic placeholder notification — meaning a typo at a call
+            // site shipped an incoherent live notification with no runtime
+            // error, masking the bug. Better to throw at build time so the
+            // dispatcher logs/notifies at the call site (which knows the
+            // canonical) rather than ship junk to admin/user.
+            default => throw new InvalidArgumentException(
+                "NotificationMessageBuilder: unknown canonical `{$canonicalString}` — add a match arm or fix the call site."
+            ),
         };
     }
 

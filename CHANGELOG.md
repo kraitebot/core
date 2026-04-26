@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.6.2 - 2026-04-26
+
+### Security
+
+- [SECURITY] `Account` and `Kraite` models now declare `$hidden` for every credential column (binance/bybit/kraken/kucoin/bitget keys, secrets, passphrases, plus admin-only coinmarketcap/taapi/pushover keys). Eloquent serialization (`toArray()`, `toJson()`, `jsonSerialize()`) was the leak path for `api_request_logs.payload` — every Bitget request was persisting plaintext API key / secret / passphrase via `ApiProperties::set('account', $account)` → JSON encode. Direct attribute access and the `all_credentials` accessor still work (functional access preserved); only serialization is filtered.
+- [SECURITY] New `Support\HeaderSanitizer` redacts auth headers in `BaseApiClient::prepareLogData()` before persistence to `api_request_logs.http_headers_sent`. Covers Bitget (`ACCESS-KEY`, `ACCESS-SIGN`, `ACCESS-PASSPHRASE`), Binance (`X-MBX-APIKEY`), KuCoin (`KC-API-*`), Bybit (`X-BAPI-*`), Kraken (`API-KEY`, `API-SIGN`), generic (`Authorization`, `X-API-KEY`). Case-insensitive matching; timestamp headers (`*-TIMESTAMP`) and non-auth headers pass through unchanged so log rows stay useful for debugging.
+
+### Fixes
+
+- [BUG FIX] `Bitget\ModifyAlgoOrderJob` (new, atomic) restores drifted Bitget position-level TP/SL orders back to their `reference_price` by re-calling `place-pos-tpsl` (the only endpoint that works for `pos_profit` / `pos_loss` orders — `cancel-plan-order` returns silent no-op and `modify-tpsl-order` rejects with HTTP 400 on every field combination). `place-pos-tpsl` overwrites atomically AND preserves the existing plan-order IDs (verified live against FETUSDT pos 421, 2026-04-26). Pairs in the sibling leg's unchanged price so neither side is accidentally cleared.
+- [BUG FIX] `Bitget\PrepareOrderCorrectionJob` (new, lifecycle override) replaces the base cancel+recreate algo workflow with `ModifyAlgoOrderJob` for Bitget accounts. LIMIT-order branch identical to base (`apiModify` works on Bitget regular orders the same way it does on Binance).
+- [BUG FIX] `OrderObserver` now resolves `PrepareOrderCorrectionJob` via `JobProxy::with($position->account)->resolve(...)` so Bitget accounts get the override automatically. Previously hardcoded the base class, bypassing the resolution chain entirely. Binance behavior preserved exactly — JobProxy falls back to base when no override exists.
+- [BUG FIX] `ForbiddenHostnameObserver::created()` now logs notification dispatch failures via `Log::error` instead of swallowing them silently. Hid a Redis outage during a real ban event.
+- [BUG FIX] Slow-query `DB::listen` closure now has a re-entry guard. The closure body itself executes queries (SlowQuery insert + Notification reads + NotificationLog write); each fired `DB::listen` again, and a slow notification-related query could trigger a second `slow_query_detected` notification, looping until the cache throttle caught up.
+- [BUG FIX] `NotificationMessageBuilder::build()` now throws `InvalidArgumentException` on unknown canonicals instead of silently returning a placeholder notification. Typo at a call site previously shipped an incoherent live notification with no runtime error. `NotificationService::send()` catches the throw, logs via `Log::error`, and returns false — caller never crashes.
+
+### Improvements
+
+- [IMPROVED] New `Enums\NotificationLogStatus` enum centralises status string values previously scattered as bare literals across `NotificationLogListener`, `NotificationLogObserver`, `NotificationWebhookController`, and `NotificationLog` model scopes. Casing typo / drift risk eliminated.
+- [IMPROVED] `NotificationService` now caches the `Notification::where('canonical')->first()` lookup in-process. Previously a per-call DB read on hot paths (`ApiRequestLog::saved`, every position-lifecycle step). `flushNotificationCache()` exposed for test isolation.
+- [IMPROVED] `MapsModifyTpsl` mapper marked with explanatory comment that it currently produces requests Bitget rejects (HTTP 400 on every field combination tried) and is no longer used by drift correction (which now uses `place-pos-tpsl`). Left in place because `Order::apiModifyTpsl()` is still wired into the WAP recalc path — fixing that is a separate concern.
+- [IMPROVED] Email notification template (`emails/notification.blade.php`) header — `MARTINGALIAN` → `KRAITE`.
+
 ## 1.6.1 - 2026-04-26
 
 ### Fixes

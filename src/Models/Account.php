@@ -97,6 +97,30 @@ final class Account extends BaseModel
     ];
 
     /**
+     * Credential columns excluded from any Eloquent serialization
+     * (`toArray()`, `toJson()`, `jsonSerialize()`). Direct attribute access
+     * (`$account->bitget_api_secret`) and the `all_credentials` accessor
+     * still work — `$hidden` only filters serialization, which is the leak
+     * path (`api_request_logs.payload` carrying the model JSON).
+     */
+    protected $hidden = [
+        'binance_api_key',
+        'binance_api_secret',
+        'bybit_api_key',
+        'bybit_api_secret',
+        'kraken_api_key',
+        'kraken_private_key',
+        'kucoin_api_key',
+        'kucoin_api_secret',
+        'kucoin_passphrase',
+        'bitget_api_key',
+        'bitget_api_secret',
+        'bitget_passphrase',
+        'coinmarketcap_api_key',
+        'taapi_secret',
+    ];
+
+    /**
      * Create a temporary (non-persisted) Account instance with provided credentials.
      * This is the base method for creating in-memory accounts for testing or admin operations.
      *

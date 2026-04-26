@@ -12,6 +12,7 @@ use Kraite\Core\Jobs\Lifecycles\Position\ClosePositionJob;
 use Kraite\Core\Jobs\Lifecycles\Position\PreparePositionReplacementJob;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Support\Math;
+use Kraite\Core\Support\Proxies\JobProxy;
 use StepDispatcher\Models\Step;
 use StepDispatcher\States\Dispatched;
 use StepDispatcher\States\Pending;
@@ -341,8 +342,15 @@ final class OrderObserver
             default => 'quantity',
         };
 
+        // Resolve to the exchange-specific override when one exists (e.g.
+        // Bitget uses modify-tpsl-order for algo correction instead of the
+        // default cancel+recreate). Falls back to the base class when no
+        // override is registered, preserving existing Binance behaviour.
+        $resolvedClass = JobProxy::with($position->account)
+            ->resolve(PrepareOrderCorrectionJob::class);
+
         Step::create([
-            'class' => PrepareOrderCorrectionJob::class,
+            'class' => $resolvedClass,
             'queue' => 'positions',
             'arguments' => [
                 'positionId' => $position->id,

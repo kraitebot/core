@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Observers;
 
+use Illuminate\Support\Facades\Log;
 use Kraite\Core\Models\ForbiddenHostname;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Support\NotificationService;
@@ -91,7 +92,14 @@ final class ForbiddenHostnameObserver
                 ]
             );
         } catch (Throwable $e) {
-            // Fail silently - don't break the application if notification fails
+            // Don't break the calling code path (a forbidden-host event must
+            // still record), but surface the failure — silent swallow hid a
+            // Redis outage during a real ban event in production.
+            Log::error('[ForbiddenHostnameObserver] Failed to dispatch notification', [
+                'forbidden_hostname_id' => $record->id,
+                'type' => $record->type,
+                'message' => $e->getMessage(),
+            ]);
         }
     }
 }
