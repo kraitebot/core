@@ -26,7 +26,7 @@ use Throwable;
  *   php artisan kraite:backtest-token --exchange_symbol_id=123 --account_id=1
  *   php artisan kraite:backtest-token --token=SOL --exchange=binance --account_id=1
  *   php artisan kraite:backtest-token --token=SOL --exchange=binance --timeframe=4h --tp_percent=0.5
- *   php artisan kraite:backtest-token --exchange_symbol_id=123 --account_id=1 --multipliers=2,2,2.5,1.5 --non_reboundable_only
+ *   php artisan kraite:backtest-token --exchange_symbol_id=123 --account_id=1 --multipliers=2,2,2.5,1.5 --skip_stop_loss
  *   php artisan kraite:backtest-token --exchange_symbol_id=123 --account_id=1 --candle="2025-10-10 04:00"
  */
 final class BacktestTokenCommand extends BaseCommand
@@ -49,7 +49,6 @@ final class BacktestTokenCommand extends BaseCommand
                             {--skip_stop_loss : Skip SL evaluation even when last rung touched}
                             {--days_to_ignore=20 : Suppress displaying rows within the last N days (analysis still uses all data)}
                             {--limit_hit= : Only show rows where deepest rung reached >= this}
-                            {--non_reboundable_only : Only emit non-reboundable + stopped_out rows}
                             {--candle= : Run on a single candle only — "YYYY-MM-DD HH:MM"}
                             {--candles_back= : Limit the backtest window to the last N candles (tf-aware)}
                             {--since= : Limit the backtest window to candles >= this date (YYYY-MM-DD). Overrides --candles_back when set}
@@ -84,7 +83,6 @@ final class BacktestTokenCommand extends BaseCommand
                 skipStopLoss: (bool) $this->option('skip_stop_loss'),
                 daysToIgnore: (int) $this->option('days_to_ignore'),
                 limitHit: $this->parseOptionalInt($this->option('limit_hit')),
-                nonReboundableOnly: (bool) $this->option('non_reboundable_only'),
                 specificCandle: $this->parseCandleOption($this->option('candle')),
                 since: $this->resolveWindowSince(
                     $config['timeframe'],
@@ -274,6 +272,9 @@ final class BacktestTokenCommand extends BaseCommand
         $this->line(sprintf('  Reboundable: %d (%s%%)', $totals['reboundable'], $pct((int) $totals['reboundable'])));
         $this->line(sprintf('  Stopped out: %d (%s%%)', $totals['stops'], $pct((int) $totals['stops'])));
         $this->line(sprintf('  Non-reboundable: %d (%s%%)', $totals['non_reboundable'], $pct((int) $totals['non_reboundable'])));
+        if (! empty($totals['dropped_inconclusive'])) {
+            $this->line(sprintf('  Dropped (last 15d buffer, non-rebound false positives): %d', $totals['dropped_inconclusive']));
+        }
         $this->line('');
         $this->line(sprintf('[ Candles in DB for %s / %s: %d ]', $symbol->parsed_trading_pair, $meta['timeframe'], $meta['total_candles_in_db'] ?? 0));
         $this->line('');

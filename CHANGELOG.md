@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.10 - 2026-04-26
+
+### Features
+
+- [NEW FEATURE] `Support/Backtest/BinanceRestCandleFetcher` — fills the recency gap left by `BinanceVisionCandleFetcher` (Vision only serves completed months; this fetcher pulls live REST candles for the current month so backtest windows stay continuous through "today").
+
+### Improvements
+
+- [IMPROVED] `Support/Backtest/BacktestSimulator` — significant evolution of the walk-forward simulator (~+270 lines): expanded outcome classification, refined ladder progression, and additional helpers driving the admin UI's backtest browser.
+- [IMPROVED] `Support/Backtest/TaapiCandlesFetcher` — incremental refinement of the recency top-up path between Vision's last complete month and live.
+- [IMPROVED] `Commands/Backtest/BacktestTokenCommand` — dropped the `--non_reboundable_only` filter (subsumed by the simulator's richer outcome classification); usage docstring updated to surface `--skip_stop_loss` instead.
+
 ## 1.5.9 - 2026-04-25
 
 ### Fixes

@@ -9,7 +9,9 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
 use Kraite\Core\Models\ExchangeSymbol;
+use Kraite\Core\Models\Kraite;
 use RuntimeException;
+use Throwable;
 
 /**
  * TaapiCandlesFetcher
@@ -96,9 +98,9 @@ final class TaapiCandlesFetcher
             $results = min($results, $gap + 2);
         }
 
-        $secret = config('services.taapi.secret') ?? env('TAAPI_SECRET');
-        if (! $secret) {
-            throw new RuntimeException('TAAPI_SECRET is not configured.');
+        $secret = $this->resolveSecret();
+        if ($secret === null) {
+            throw new RuntimeException('TAAPI secret not configured (kraite.taapi_secret empty and no env fallback).');
         }
 
         $exchangeCanonical = $this->mapTaapiExchange($symbol);
@@ -289,6 +291,32 @@ final class TaapiCandlesFetcher
      * Map Kraite api_system canonical to TAAPI's exchange identifier.
      * TAAPI uses `binancefutures` for USDM perps, not `binance`.
      */
+    /**
+     * Resolve the TAAPI secret. Prefers the global kraite singleton
+     * (same source every other TAAPI call uses via Account::admin('taapi'))
+     * with env/config as a safety net for test and bootstrap contexts.
+     */
+    private function resolveSecret(): ?string
+    {
+        try {
+            $fromDb = Kraite::find(1)?->taapi_secret;
+            if (is_string($fromDb) && $fromDb !== '') {
+                return $fromDb;
+            }
+        } catch (Throwable) {
+            // DB not reachable or model/table unavailable — fall through.
+        }
+
+        $fromConfig = config('services.taapi.secret');
+        if (is_string($fromConfig) && $fromConfig !== '') {
+            return $fromConfig;
+        }
+
+        $fromEnv = env('TAAPI_SECRET');
+
+        return is_string($fromEnv) && $fromEnv !== '' ? $fromEnv : null;
+    }
+
     private function mapTaapiExchange(ExchangeSymbol $symbol): string
     {
         $canonical = $symbol->apiSystem->canonical ?? 'binance';
