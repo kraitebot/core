@@ -57,7 +57,7 @@ final class DisableVolatileTokensCommand extends BaseCommand
         'BAT', 'BCH', 'BNB', 'BSV', 'CC', 'CFX', 'CHZ', 'COMP', 'CRV',
         'CVX', 'DASH', 'DEEP', 'DEXE', 'DOT', 'ENS', 'ETC', 'ETH', 'FET',
         'FIL', 'GALA', 'GLM', 'GRT', 'HBAR', 'ICP', 'IMX', 'INJ', 'IP', 'JASMY',
-        'JST', 'JTO', 'JUP', 'KAS', 'LDO', 'LINK', 'LIT', 'LTC', 'M', 'MANA',
+        'JST', 'JTO', 'JUP', 'KAS', 'LDO', 'LINK', 'LIT', 'LTC', 'MANA',
         'NEAR', 'NEO', 'ONDO', 'OP', 'PAXG', 'PENDLE', 'POL', 'QNT', 'RAVE', 'RAY',
         'RENDER', 'RUNE', 'SAND', 'SEI', 'SENT', 'SFP', 'SOL', 'STRK', 'STX', 'SUI',
         'TAO', 'THETA', 'TIA', 'TON', 'TRX', 'TWT', 'UNI', 'VET', 'WAL', 'XLM',

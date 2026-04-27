@@ -813,6 +813,49 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'market_regime_critical' => (function () use ($context) {
+                $score = (int) ($context['score'] ?? 0);
+                $hostname = is_string($context['hostname'] ?? null) ? $context['hostname'] : (string) gethostname();
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'title' => "BSCS Critical — {$score}/100",
+                    'emailMessage' => "Black Swan Composite Score crossed into Critical band (score={$score}, threshold≥80).\n\nNew position opens are paused until the score recedes (Phase 2 — currently telemetry-only). Existing positions untouched.\n\nServer: {$hostname}\n\nReview the regime dashboard for sub-signal breakdown.",
+                    'pushoverMessage' => "BSCS Critical {$score}/100 — opens paused (Phase 2)",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 1,
+                ];
+            })(),
+
+            'market_regime_recovered' => (function () use ($context) {
+                $score = (int) ($context['score'] ?? 0);
+
+                return [
+                    'severity' => NotificationSeverity::Info,
+                    'title' => "BSCS Recovered — {$score}/100",
+                    'emailMessage' => "Black Swan Composite Score has fallen out of Critical (score={$score}). Position opens resume on the next cron tick (Phase 2).",
+                    'pushoverMessage' => "BSCS recovered to {$score}/100",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => -1,
+                ];
+            })(),
+
+            'market_regime_compute_stale' => (function () use ($context) {
+                $hours = (int) ($context['stale_hours'] ?? 0);
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'title' => 'BSCS Compute Stale',
+                    'emailMessage' => "Black Swan Composite Score has not been recomputed for {$hours} hours. The hourly cron `kraite:cron-compute-market-regime` may be failing. The gate (Phase 2) fail-opens on stale signals — opens still allowed.\n\nInvestigate Horizon and check for repeated failures of `ComputeMarketRegimeJob`.",
+                    'pushoverMessage' => "BSCS compute stale {$hours}h — investigate",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 1,
+                ];
+            })(),
+
             // Fail loud on unknown canonicals. Previously this returned a
             // generic placeholder notification — meaning a typo at a call
             // site shipped an incoherent live notification with no runtime

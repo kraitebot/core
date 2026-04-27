@@ -38,7 +38,7 @@ use Throwable;
  *        - tp_hit_from_market_only   — closed without any limit fill
  *        - reboundable               — ladder averaged, TP hit from WAP
  *        - stopped_out               — last rung + SL triggered
- *        - non-reboundable           — data exhausted, never recovered
+ *        - inconclusive              — walker ran out of forward data without TP or SL
  *
  * The service is a pure consumer of the `candles` table. It does not
  * fetch, store, or mutate market data. Candle population is the job
@@ -60,14 +60,13 @@ final class BacktestSimulator
     private const SCALE = 16;
 
     /**
-     * Sims whose start candle falls within this trailing window AND that
-     * terminate as `non-reboundable` are discarded — they're false positives
-     * caused by walker running out of forward data, not true non-rebounds.
-     * Rebounds / tp_market_only / stopped_out from the same window ARE
-     * counted because they resolved before running out of data.
-     * Bypassed entirely when the caller requests a specific candle.
+     * Don't START sims for candles inside this trailing window — they
+     * wouldn't have enough forward data to resolve and would all come back
+     * "inconclusive". The walker still uses the last N days as forward data
+     * for older sims; this only gates which candles can be entries.
+     * Bypassed when the caller requests a specific candle.
      */
-    private const MIN_FORWARD_WALK_DAYS = 15;
+    private const MIN_START_BUFFER_DAYS = 15;
 
     /**
      * Number of equal time buckets the window is sliced into so the caller
@@ -99,7 +98,7 @@ final class BacktestSimulator
      * @param  Carbon|null  $since  Limit the candle window: include only candles with candle_time_utc >= $since. Null = walk everything.
      * @return array{
      *   rows: array<int, array<string, mixed>>,
-     *   totals: array{candles: int, stops: int, non_reboundable: int, tp_market_only: int, reboundable: int},
+     *   totals: array{candles: int, stops: int, inconclusive: int, tp_market_only: int, reboundable: int},
      *   meta: array<string, mixed>
      * }
      */
@@ -142,27 +141,30 @@ final class BacktestSimulator
             ? $this->findSingleCandleIndex($all, $specificCandle)
             : range(0, $all->count() - 1);
 
-        if (empty($startIndices)) {
-            return $this->emptyResult('No start candles matched the requested selector.');
+        // Trim entries inside the trailing buffer — sims started this close
+        // to now() can't resolve (walker has nothing to walk through), so
+        // they all come back inconclusive. Bypassed when the caller asks
+        // for a specific candle. The forward walker still uses these
+        // candles as forward data for older sims.
+        if ($specificCandle === null) {
+            $startCutoff = Carbon::now('UTC')->subDays(self::MIN_START_BUFFER_DAYS)->toDateTimeString();
+            $startIndices = array_values(array_filter(
+                $startIndices,
+                fn ($idx) => (string) $all[$idx]->candle_time_utc <= $startCutoff,
+            ));
         }
 
-        // Boundary for the non-rebound false-positive filter: start candles
-        // after this timestamp get their `non-reboundable` verdicts discarded
-        // (walker just ran out of data, not a real non-rebound). Other
-        // verdicts from the same zone still count. Specific-candle mode
-        // bypasses this rule — user explicitly asked for that candle.
-        $bufferCutoffStr = $specificCandle !== null
-            ? null
-            : Carbon::now('UTC')->subDays(self::MIN_FORWARD_WALK_DAYS)->toDateTimeString();
+        if (empty($startIndices)) {
+            return $this->emptyResult('No start candles outside the '.self::MIN_START_BUFFER_DAYS.'-day trailing buffer.');
+        }
 
         $rows = [];
         $totals = [
             'candles' => 0,
             'stops' => 0,
-            'non_reboundable' => 0,
             'tp_market_only' => 0,
             'reboundable' => 0,
-            'dropped_inconclusive' => 0,
+            'inconclusive' => 0,
         ];
 
         // Per-sim accumulators for the analytics we compute at the end.
@@ -185,7 +187,6 @@ final class BacktestSimulator
                 'to' => null,
                 'candles' => 0,
                 'stops' => 0,
-                'non_reboundable' => 0,
                 'tp_market_only' => 0,
                 'reboundable' => 0,
             ];
@@ -204,7 +205,6 @@ final class BacktestSimulator
             }
             $regimeBuckets[$bucketIdx]['to'] = $startCandleStr;
 
-            $inBuffer = $bufferCutoffStr !== null && $startCandleStr > $bufferCutoffStr;
             $suppress = $specificCandle === null
                 && Carbon::parse($startCandleStr)->gte($displayCutoff);
 
@@ -230,26 +230,16 @@ final class BacktestSimulator
 
                 $status = $result['status'];
 
-                // Inside the trailing buffer a non-rebound verdict is a
-                // walker-ran-out-of-data artifact, not a real outcome.
-                // Drop it from tallies + rows; count it separately so the
-                // caller can expose "N sims suppressed as inconclusive".
-                if ($inBuffer && $status === 'non-reboundable') {
-                    $totals['dropped_inconclusive']++;
-
-                    continue;
-                }
-
                 match ($status) {
                     'stopped_out' => $totals['stops']++,
-                    'non-reboundable' => $totals['non_reboundable']++,
                     'tp_hit_from_market_only' => $totals['tp_market_only']++,
                     'reboundable' => $totals['reboundable']++,
+                    'inconclusive' => $totals['inconclusive']++,
                     default => null,
                 };
 
                 // Skipped / error sims shouldn't pollute the analytics.
-                if (in_array($status, ['stopped_out', 'non-reboundable', 'tp_hit_from_market_only', 'reboundable'], true)) {
+                if (in_array($status, ['stopped_out', 'tp_hit_from_market_only', 'reboundable', 'inconclusive'], true)) {
                     $rung = (int) ($result['last_rung'] ?? 0);
                     if (isset($rungDistribution[$rung])) {
                         $rungDistribution[$rung]++;
@@ -268,11 +258,13 @@ final class BacktestSimulator
 
                     $bucketStatusKey = match ($status) {
                         'stopped_out' => 'stops',
-                        'non-reboundable' => 'non_reboundable',
                         'tp_hit_from_market_only' => 'tp_market_only',
                         'reboundable' => 'reboundable',
+                        'inconclusive' => null,
                     };
-                    $regimeBuckets[$bucketIdx][$bucketStatusKey]++;
+                    if ($bucketStatusKey !== null) {
+                        $regimeBuckets[$bucketIdx][$bucketStatusKey]++;
+                    }
                 }
 
                 if (! $suppress && $this->shouldIncludeRow($result, $limitHit)) {
@@ -303,7 +295,6 @@ final class BacktestSimulator
                 'total_candles_in_db' => $all->count(),
                 'display_cutoff' => $displayCutoff->toDateTimeString(),
                 'window_since' => $since?->toDateTimeString(),
-                'end_cutoff_days' => self::MIN_FORWARD_WALK_DAYS,
                 'tp_percent' => $tpPercent,
                 'sl_percent' => $slPercent,
                 'gap_long_percent' => $gapLongPercent ?? (string) $symbol->percentage_gap_long,
@@ -553,8 +544,10 @@ final class BacktestSimulator
             }
         }
 
-        // End of data — never recovered.
-        $note = 'Non-reboundable: no subsequent candle reached TP of '.($currentTpPrice ?? 'N/A');
+        // End of data — sim never resolved (no TP hit, no SL hit, no rung-N
+        // promotion path that would have triggered SL). Tagged "inconclusive"
+        // so the operator can see how many sims couldn't finish in the window.
+        $note = 'Inconclusive: walker ran out of forward data before TP or SL fired. Last TP target was '.($currentTpPrice ?? 'N/A');
         if ($closestPrice !== null && $closestCandle !== null) {
             $note .= sprintf(' (closest %s on %s)', $closestPrice, $this->ctString($closestCandle));
         }
@@ -568,7 +561,7 @@ final class BacktestSimulator
             'tp_price' => $currentTpPrice ?? 'N/A',
             'tp_hit_candle' => null,
             'candles_to_profit' => null,
-            'status' => 'non-reboundable',
+            'status' => 'inconclusive',
             'message' => $note,
             'mae_pct' => round($maeAbs * 100, 3),
         ];
@@ -749,17 +742,15 @@ final class BacktestSimulator
         array $regimeBuckets,
     ): array {
         $totalSims = ($totals['candles'] ?? 0) * 2;
-        $effectiveSims = max(1, $totalSims - ($totals['dropped_inconclusive'] ?? 0));
+        $effectiveSims = max(1, $totalSims - ($totals['inconclusive'] ?? 0));
 
         $stopsPct = ($totals['stops'] ?? 0) / $effectiveSims * 100;
-        $nonRebPct = ($totals['non_reboundable'] ?? 0) / $effectiveSims * 100;
         $avgRungDepth = $rungDepthCount > 0 ? $rungDepthSum / $rungDepthCount : 0.0;
 
-        // Composite risk score — lower is safer. Weights chosen so stops
-        // dominate (worst outcome: capital actually realised a loss),
-        // non-rebounds are half as bad (capital locked, not lost), rung
-        // depth adds a capital-exposure component in the 0-N range.
-        $riskScore = ($stopsPct * 3) + ($nonRebPct * 2) + $avgRungDepth;
+        // Composite risk score — lower is safer. Stops are the only "bad"
+        // outcome we care about now (real capital loss). Rung depth adds a
+        // capital-exposure component in the 0-N range.
+        $riskScore = ($stopsPct * 3) + $avgRungDepth;
 
         $candlesToProfit = array_values($candlesToProfit);
         sort($candlesToProfit);
@@ -774,7 +765,7 @@ final class BacktestSimulator
                 continue;
             }
             $pass = ($bucket['tp_market_only'] ?? 0) + ($bucket['reboundable'] ?? 0);
-            $fail = ($bucket['stops'] ?? 0) + ($bucket['non_reboundable'] ?? 0);
+            $fail = $bucket['stops'] ?? 0;
             $resolved = max(1, $pass + $fail);
             $passRate = $pass / $resolved * 100;
             $regimes[] = [
@@ -782,7 +773,6 @@ final class BacktestSimulator
                 'to' => $bucket['to'],
                 'candles' => $bucket['candles'],
                 'stops' => $bucket['stops'],
-                'non_reboundable' => $bucket['non_reboundable'],
                 'tp_market_only' => $bucket['tp_market_only'],
                 'reboundable' => $bucket['reboundable'],
                 'pass_rate' => round($passRate, 2),
@@ -790,18 +780,14 @@ final class BacktestSimulator
             $worstPassRate = $worstPassRate === null ? $passRate : min($worstPassRate, $passRate);
         }
 
-        // Overall token score — single comparable 0-100 value. Each analytic
-        // gets a weight proportional to how badly it hurts capital outcome:
-        // stops are real losses (heaviest), non-rebounds lock capital,
-        // rung depth = capital commitment, Max MAE = liquidation risk,
-        // worst-bucket = regime fragility. Totals are clamped so a single
-        // catastrophic metric can't drag the score negative.
+        // Overall token score — single comparable 0-100 value. Stops dominate
+        // (real losses); rung depth + Max MAE measure capital exposure;
+        // worst-bucket guards against regime fragility.
         $totalLimitOrders = max(1, count($rungDistribution) - 1);
         $rungDepthRatio = $avgRungDepth / $totalLimitOrders;
 
         $overallScore = 100.0
             - ($stopsPct * 15)
-            - ($nonRebPct * 8)
             - ($rungDepthRatio * 100 * 0.20)
             - (min($maeMax, 100.0) * 0.15)
             - ((100.0 - ($worstPassRate ?? 100.0)) * 0.5);
@@ -856,7 +842,7 @@ final class BacktestSimulator
             return false;
         }
 
-        return in_array($result['status'] ?? '', ['non-reboundable', 'stopped_out'], true);
+        return in_array($result['status'] ?? '', ['stopped_out', 'inconclusive'], true);
     }
 
     private function validate(string $timeframe, string $margin, int $leverage, int $totalLimitOrders, int $daysToIgnore): void
@@ -909,10 +895,9 @@ final class BacktestSimulator
             'totals' => [
                 'candles' => 0,
                 'stops' => 0,
-                'non_reboundable' => 0,
                 'tp_market_only' => 0,
                 'reboundable' => 0,
-                'dropped_inconclusive' => 0,
+                'inconclusive' => 0,
                 'overall_score' => null,
                 'grade' => null,
                 'verdict' => null,

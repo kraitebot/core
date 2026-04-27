@@ -26,7 +26,6 @@ use Kraite\Core\Database\Factories\ExchangeSymbolFactory;
  * @property array{cmc_api_called?: bool, taapi_verified?: bool, has_taapi_data?: bool} $api_statuses
  * @property int $api_system_id
  * @property bool|null $is_manually_enabled
- * @property bool $was_backtracking_analysed
  * @property bool $has_no_indicator_data
  * @property bool $has_price_trend_misalignment
  * @property bool $has_early_direction_change
@@ -82,7 +81,7 @@ final class ExchangeSymbol extends BaseModel
 
     protected $casts = [
         'is_manually_enabled' => 'boolean',
-        'was_backtracking_analysed' => 'boolean',
+        'was_backtesting_approved' => 'boolean',
         'has_no_indicator_data' => 'boolean',
         'has_price_trend_misalignment' => 'boolean',
         'has_early_direction_change' => 'boolean',

@@ -5,11 +5,60 @@ declare(strict_types=1);
 namespace Kraite\Core\Concerns\ExchangeSymbol;
 
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Collection;
 use Kraite\Core\Models\ApiSystem;
+use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 
 trait HasAccessors
 {
+    /**
+     * Look up the displayed trading pair by raw asset name and api_system_id.
+     * Used to convert exchange-specific formats (e.g., PF_XBTUSD) to clean display (e.g., XBT/USD).
+     *
+     * @param  string  $asset  The raw exchange asset name (e.g., PF_XBTUSD, BTCUSDT)
+     * @param  int  $apiSystemId  The API system ID to scope the lookup
+     * @return string|null The displayed trading pair (e.g., XBT/USD) or null if not found
+     */
+    public static function getDisplayedTradingPairByAsset(string $asset, int $apiSystemId): ?string
+    {
+        /** @var static|null $exchangeSymbol */
+        $exchangeSymbol = static::query()
+            ->where('asset', $asset)
+            ->where('api_system_id', $apiSystemId)
+            ->first(['token', 'quote']);
+
+        if (! $exchangeSymbol) {
+            return null;
+        }
+
+        return $exchangeSymbol->displayed_trading_pair;
+    }
+
+    /**
+     * Sibling exchange-symbol rows for the same underlying token, on
+     * OTHER exchanges (excludes self). Linkage is via `symbol_id` —
+     * the canonical FK that survived the 2025-12-08 architecture
+     * simplification (which dropped `base_asset_mappers`).
+     *
+     * Centralised here so any cross-exchange propagation (observer
+     * fan-out, bulk approval flips, audit traversals) goes through one
+     * shared definition.
+     *
+     * @return Collection<int, ExchangeSymbol>
+     */
+    public function getOthersFromExchanges(): Collection
+    {
+        if ($this->symbol_id === null) {
+            return ExchangeSymbol::query()->whereRaw('1 = 0')->get();
+        }
+
+        return ExchangeSymbol::query()
+            ->where('symbol_id', $this->symbol_id)
+            ->where('id', '!=', $this->id)
+            ->get();
+    }
+
     /**
      * Accessor for the `parsed_trading_pair` attribute.
      * Returns a unified trading pair string from token and quote.
@@ -101,28 +150,5 @@ trait HasAccessors
             ->first(['close']);
 
         return $latestCandle?->close;
-    }
-
-    /**
-     * Look up the displayed trading pair by raw asset name and api_system_id.
-     * Used to convert exchange-specific formats (e.g., PF_XBTUSD) to clean display (e.g., XBT/USD).
-     *
-     * @param  string  $asset  The raw exchange asset name (e.g., PF_XBTUSD, BTCUSDT)
-     * @param  int  $apiSystemId  The API system ID to scope the lookup
-     * @return string|null The displayed trading pair (e.g., XBT/USD) or null if not found
-     */
-    public static function getDisplayedTradingPairByAsset(string $asset, int $apiSystemId): ?string
-    {
-        /** @var static|null $exchangeSymbol */
-        $exchangeSymbol = static::query()
-            ->where('asset', $asset)
-            ->where('api_system_id', $apiSystemId)
-            ->first(['token', 'quote']);
-
-        if (! $exchangeSymbol) {
-            return null;
-        }
-
-        return $exchangeSymbol->displayed_trading_pair;
     }
 }

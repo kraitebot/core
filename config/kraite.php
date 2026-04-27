@@ -470,4 +470,42 @@ return [
             ],
         ],
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Market Regime — Black Swan Composite Score (BSCS)
+    |--------------------------------------------------------------------------
+    |
+    | Phase 1 telemetry only. Hourly job computes a portfolio-level fragility
+    | score from BTC + 4 reference alts on 1h klines and persists a snapshot.
+    | Phase 2 wires the score into HasTradingGuards + PreparePositionData.
+    |
+    | Spec: ~/docs/kraite/black-swan-logic.md
+    */
+    'market_regime' => [
+        'symbols' => explode(',', (string) env(
+            'MARKET_REGIME_SYMBOLS',
+            'BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT'
+        )),
+        'timeframe' => env('MARKET_REGIME_TIMEFRAME', '1h'),
+        'baseline_days' => (int) env('MARKET_REGIME_BASELINE_DAYS', 14),
+        'thresholds' => [
+            'vol_expansion' => (float) env('MARKET_REGIME_VOL_EXPANSION', 1.30),
+            'range_blowout' => (float) env('MARKET_REGIME_RANGE_BLOWOUT', 1.50),
+            'corr_regime' => (float) env('MARKET_REGIME_CORR_REGIME', 0.70),
+            'rejection_pct' => (float) env('MARKET_REGIME_REJECTION_PCT', -5.0),
+            'fut_vol' => (float) env('MARKET_REGIME_FUT_VOL', 1.20),
+        ],
+        'block_threshold' => (int) env('MARKET_REGIME_BLOCK_THRESHOLD', 80),
+        'freshness_max_seconds' => (int) env('MARKET_REGIME_FRESHNESS_MAX_SECONDS', 5400),
+        'fragile' => [
+            'lower_bound' => (int) env('MARKET_REGIME_FRAGILE_LOWER', 60),
+            'upper_bound' => (int) env('MARKET_REGIME_FRAGILE_UPPER', 79),
+            'max_reduction_pct' => (int) env('MARKET_REGIME_FRAGILE_MAX_REDUCTION', 50),
+        ],
+        'override' => [
+            'default_hours' => (int) env('MARKET_REGIME_OVERRIDE_DEFAULT_HOURS', 4),
+            'max_hours' => (int) env('MARKET_REGIME_OVERRIDE_MAX_HOURS', 24),
+        ],
+    ],
 ];

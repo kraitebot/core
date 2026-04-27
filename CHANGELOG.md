@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.7.0 - 2026-04-27
+
+### Features
+
+- [NEW FEATURE] **Black Swan Composite Score (BSCS) — Phase 1 telemetry.** Hourly job (`kraite:cron-compute-market-regime`, `:50`) computes a 0-100 portfolio-fragility score from BTC + 4 reference alts (ETH/SOL/BNB/XRP) on 1h klines. Five binary sub-signals × 20 = score, mapped into bands (calm/elevated/fragile/critical). Phase 1 persists snapshots and denormalises onto the `kraite` singleton — does NOT touch trading flow. New: `Enums\RegimeBand`, `Support\MarketRegime\RegimeCalculator`, `Models\MarketRegimeSnapshot`, `Jobs\Models\MarketRegime\ComputeMarketRegimeJob`, `Commands\Cronjobs\ComputeMarketRegimeCommand`, table `market_regime_snapshots`, 8 cols on `kraite`. 11 unit tests covering each sub-signal + threshold logic + band mapping. First production snapshot landed at 00:00 UTC: score=20, band=calm. Spec: `~/docs/kraite/black-swan-logic.md`. Phase 2 will wire the score into `HasTradingGuards` + Fragile-band margin scaler.
+- [NEW FEATURE] `exchange_symbols.was_backtesting_approved` boolean column (default false). Required-true gate in `isTradeable()` + the `Tradeable` Eloquent scope (both main + Binance-counterpart subquery sites). Trading is blocked until an operator flips this flag per token. **Existing positions stay open; only new opens are blocked.** Companion accessor `ExchangeSymbol::getOthersFromExchanges()` returns sibling rows on other exchanges via `symbol_id` FK (the canonical post-`base_asset_mappers`-drop linkage). The `ExchangeSymbolObserver::saved()` hook detects `wasChanged('was_backtesting_approved')` and propagates the new value to all siblings via `saveQuietly()` — symmetric (any exchange as source), no recursion fan-out, idempotent (skip if already match).
+- [NEW FEATURE] Three notification canonicals seeded (inert in Phase 1, `is_active=false`): `market_regime_critical`, `market_regime_recovered`, `market_regime_compute_stale`. Phase 2 will activate.
+
+### Fixes
+
+- [BUG FIX] `Bitget\MapsAccountQueryTrades::resolveQueryTradeResponse` now normalises `side` on `tradeSide=close` fills (Bitget hedge mode reports the original opening side on every fill — the open/close discriminator is `tradeSide`). Also reverses the fill list to oldest-first to match Binance's response convention. Without these two normalisations the cross-exchange `extractClosingPriceFromTrades` extractor never matched a close fill on Bitget and fell through to its `end($trades)` fallback — silently persisting an unrelated old-fill price as `closing_price` on every Bitget close (verified live against the SFPUSDT 2026-04-26 closes which all wrongly recorded $0.3435). Hedge-mode-only assumption documented inline.
+
+### Improvements
+
+- [IMPROVED] `DisableVolatileTokensCommand::ALLOWED_TOKENS` — `M` removed (operator decision).
+- [IMPROVED] `Support\Backtest\BacktestSimulator` — refinements to walk-forward simulator (~50 lines net change).
+- [IMPROVED] `Commands\Backtest\BacktestTokenCommand` — minor option tweaks.
+
 ## 1.6.2 - 2026-04-26
 
 ### Security

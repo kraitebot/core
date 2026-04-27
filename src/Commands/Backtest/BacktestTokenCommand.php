@@ -271,9 +271,8 @@ final class BacktestTokenCommand extends BaseCommand
         $this->line(sprintf('  TP hit from market-only: %d (%s%%)', $totals['tp_market_only'], $pct((int) $totals['tp_market_only'])));
         $this->line(sprintf('  Reboundable: %d (%s%%)', $totals['reboundable'], $pct((int) $totals['reboundable'])));
         $this->line(sprintf('  Stopped out: %d (%s%%)', $totals['stops'], $pct((int) $totals['stops'])));
-        $this->line(sprintf('  Non-reboundable: %d (%s%%)', $totals['non_reboundable'], $pct((int) $totals['non_reboundable'])));
-        if (! empty($totals['dropped_inconclusive'])) {
-            $this->line(sprintf('  Dropped (last 15d buffer, non-rebound false positives): %d', $totals['dropped_inconclusive']));
+        if (! empty($totals['inconclusive'])) {
+            $this->line(sprintf('  Inconclusive (walker ran out of forward data): %d', $totals['inconclusive']));
         }
         $this->line('');
         $this->line(sprintf('[ Candles in DB for %s / %s: %d ]', $symbol->parsed_trading_pair, $meta['timeframe'], $meta['total_candles_in_db'] ?? 0));

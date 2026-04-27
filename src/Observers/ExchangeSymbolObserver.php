@@ -108,6 +108,14 @@ final class ExchangeSymbolObserver
     {
         $model->sendDelistingNotificationIfNeeded();
 
+        // Symmetric propagation: backtest approval is a per-token decision,
+        // not per-exchange. Flipping it on ANY row fans out to siblings on
+        // every other exchange (linkage via `symbol_id`). updateQuietly()
+        // skips this observer on the siblings → no recursion fan-out.
+        if ($model->wasChanged('was_backtesting_approved')) {
+            $this->propagateBacktestingApprovalToSiblings($model);
+        }
+
         if (! $this->isBinanceSymbol($model)) {
             return;
         }
@@ -217,6 +225,26 @@ final class ExchangeSymbolObserver
         return once(function (): ?int {
             return ApiSystem::where('canonical', 'binance')->value('id');
         });
+    }
+
+    /**
+     * Sync `was_backtesting_approved` to every sibling exchange-symbol row
+     * for the same underlying token. Uses `updateQuietly` so the sibling
+     * save does NOT re-fire this observer (would otherwise produce a
+     * fan-out cascade with each sibling triggering N more updates).
+     */
+    private function propagateBacktestingApprovalToSiblings(ExchangeSymbol $model): void
+    {
+        $siblings = $model->getOthersFromExchanges();
+        $newValue = (bool) $model->was_backtesting_approved;
+
+        foreach ($siblings as $sibling) {
+            if ((bool) $sibling->was_backtesting_approved === $newValue) {
+                continue;
+            }
+            $sibling->was_backtesting_approved = $newValue;
+            $sibling->saveQuietly();
+        }
     }
 
     /**

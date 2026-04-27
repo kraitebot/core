@@ -52,6 +52,12 @@ trait HasStatuses
             return false;
         }
 
+        // Must have passed backtesting approval (operator-driven flag,
+        // propagates across all exchanges via ExchangeSymbolObserver).
+        if ($this->was_backtesting_approved !== true) {
+            return false;
+        }
+
         // Must have a concluded direction
         if ($this->direction === null) {
             return false;

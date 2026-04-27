@@ -52,6 +52,15 @@ final class Kraite extends BaseModel
         'allow_opening_positions' => 'boolean',
         'is_cooling_down' => 'boolean',
 
+        // BSCS (Black Swan Composite Score) — Phase 1 telemetry.
+        // Phase 2 wires `bscs_block_active` into HasTradingGuards.
+        'bscs_score' => 'integer',
+        'bscs_synced_at' => 'datetime',
+        'bscs_block_active' => 'boolean',
+        'bscs_block_threshold' => 'integer',
+        'bscs_freshness_max_seconds' => 'integer',
+        'bscs_override_until' => 'datetime',
+
         'binance_api_key' => 'encrypted',
         'binance_api_secret' => 'encrypted',
         'bybit_api_key' => 'encrypted',

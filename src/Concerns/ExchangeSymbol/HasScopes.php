@@ -36,6 +36,35 @@ trait HasScopes
     }
 
     /**
+     * Symbols that should receive price updates via WebSocket.
+     */
+    public function scopeNeedsPriceUpdates(Builder $query): Builder
+    {
+        return $query->where(static function ($q) {
+            // Has indicator data OR we're still trying to get it
+            $q->where('exchange_symbols.has_no_indicator_data', false)
+            // And not explicitly disabled by admin (NULL or true, but not false)
+                ->where(static function ($q2) {
+                    $q2->whereNull('exchange_symbols.is_manually_enabled')
+                        ->orWhere('exchange_symbols.is_manually_enabled', true);
+                });
+        });
+    }
+
+    /**
+     * Symbols that should attempt to fetch indicators.
+     * Only Binance symbols can query TAAPI - other exchanges receive copied results.
+     */
+    public function scopeNeedsIndicatorAttempt(Builder $query): Builder
+    {
+        return $query
+            ->where('exchange_symbols.api_statuses->has_taapi_data', true)
+            ->whereHas('apiSystem', static function ($q) {
+                $q->where('canonical', 'binance');
+            });
+    }
+
+    /**
      * Apply tradeable conditions to an Eloquent Builder.
      */
     private function applyTradeableConditions(Builder $query, string $table, string $correlationColumn): void
@@ -52,6 +81,7 @@ trait HasScopes
                 $q->whereNull("{$table}.is_manually_enabled")
                     ->orWhere("{$table}.is_manually_enabled", true);
             })
+            ->where("{$table}.was_backtesting_approved", true)
             ->whereNotNull("{$table}.direction")
             ->where(static function ($q) use ($table) {
                 $q->whereNull("{$table}.tradeable_at")
@@ -80,6 +110,7 @@ trait HasScopes
                 $q->whereNull("{$table}.is_manually_enabled")
                     ->orWhere("{$table}.is_manually_enabled", true);
             })
+            ->where("{$table}.was_backtesting_approved", true)
             ->whereNotNull("{$table}.direction")
             ->where(static function ($q) use ($table) {
                 $q->whereNull("{$table}.tradeable_at")
@@ -89,34 +120,5 @@ trait HasScopes
             ->whereRaw(
                 "JSON_EXTRACT({$table}.{$correlationColumn}, CONCAT('$.\"', {$table}.indicators_timeframe, '\"')) IS NOT NULL"
             );
-    }
-
-    /**
-     * Symbols that should receive price updates via WebSocket.
-     */
-    public function scopeNeedsPriceUpdates(Builder $query): Builder
-    {
-        return $query->where(static function ($q) {
-            // Has indicator data OR we're still trying to get it
-            $q->where('exchange_symbols.has_no_indicator_data', false)
-            // And not explicitly disabled by admin (NULL or true, but not false)
-                ->where(static function ($q2) {
-                    $q2->whereNull('exchange_symbols.is_manually_enabled')
-                        ->orWhere('exchange_symbols.is_manually_enabled', true);
-                });
-        });
-    }
-
-    /**
-     * Symbols that should attempt to fetch indicators.
-     * Only Binance symbols can query TAAPI - other exchanges receive copied results.
-     */
-    public function scopeNeedsIndicatorAttempt(Builder $query): Builder
-    {
-        return $query
-            ->where('exchange_symbols.api_statuses->has_taapi_data', true)
-            ->whereHas('apiSystem', static function ($q) {
-                $q->where('canonical', 'binance');
-            });
     }
 }
