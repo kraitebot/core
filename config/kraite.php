@@ -503,10 +503,37 @@ return [
             'upper_bound' => (int) env('MARKET_REGIME_FRAGILE_UPPER', 79),
             'max_reduction_pct' => (int) env('MARKET_REGIME_FRAGILE_MAX_REDUCTION', 50),
         ],
+        // Phase 2.1C — directional crowding multiplier. Downscales margin
+        // on the side of the book that already carries >= `threshold`
+        // share of the total notional exposure. Empty side stays NEUTRAL
+        // (1.0×) until backtest evidence justifies an upscale.
+        'crowding' => [
+            'threshold' => (float) env('MARKET_REGIME_CROWDING_THRESHOLD', 0.70),
+            'max_reduction_pct' => (float) env('MARKET_REGIME_CROWDING_MAX_REDUCTION', 50),
+        ],
         'override' => [
             'default_hours' => (int) env('MARKET_REGIME_OVERRIDE_DEFAULT_HOURS', 4),
             'max_hours' => (int) env('MARKET_REGIME_OVERRIDE_MAX_HOURS', 24),
         ],
+        // Fast cascade-in-progress detector. Distinct from BSCS (slow,
+        // hourly) — runs every minute on 15m klines for BTC + 4 alts to
+        // catch cliffs that the BSCS hourly cron would only see at the
+        // next :50 tick. When any rule fires, arms the SHARED
+        // `bscs_cooldown_until` column for `cooldown_hours` (default
+        // 24h, same as BSCS). Notification: `market_shock_circuit_breaker`
+        // — fires once per fresh arming, silent re-arm while a cooldown
+        // is already active to avoid double-pinging.
+        'shock' => [
+            'thresholds' => [
+                'btc_15m_pct' => (float) env('MARKET_SHOCK_BTC_15M_PCT', -3.0),
+                'btc_1h_pct' => (float) env('MARKET_SHOCK_BTC_1H_PCT', -5.0),
+                'alt_basket_1h_pct' => (float) env('MARKET_SHOCK_ALT_BASKET_1H_PCT', -7.0),
+                'corr_1h' => (float) env('MARKET_SHOCK_CORR_1H', 0.85),
+                'magnitude_pct' => (float) env('MARKET_SHOCK_MAGNITUDE_PCT', 3.0),
+            ],
+            'cooldown_hours' => (int) env('MARKET_SHOCK_COOLDOWN_HOURS', 24),
+        ],
+
         // Cooldown wired to `kraite:cron-analyse-bscs`. When the latest
         // composite score reaches or exceeds `cooldown_threshold` AND no
         // cooldown is currently active, the analyse cron sets
@@ -519,6 +546,19 @@ return [
         'cooldown' => [
             'threshold' => (int) env('MARKET_REGIME_COOLDOWN_THRESHOLD', 80),
             'hours' => (int) env('MARKET_REGIME_COOLDOWN_HOURS', 24),
+        ],
+        // Three-tier freshness model (Phase 2.1B).
+        //
+        //   age <= freshness_max_seconds (kraite singleton, default 6900)
+        //     → Fresh, gate runs normally.
+        //
+        //   freshness_max_seconds < age <= stale_hard_seconds
+        //     → StaleSoft, last cooldown state preserved, warn once.
+        //
+        //   age > stale_hard_seconds  (default 6h)
+        //     → StaleHard, gate fails open, market_regime_compute_stale fires.
+        'freshness' => [
+            'stale_hard_seconds' => (int) env('MARKET_REGIME_STALE_HARD_SECONDS', 21600),
         ],
     ],
 ];

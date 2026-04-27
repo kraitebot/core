@@ -850,6 +850,33 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'market_shock_circuit_breaker' => (function () use ($context) {
+                $rules = (string) ($context['rules'] ?? 'unknown');
+                $btc15m = (float) ($context['btc_15m_pct'] ?? 0.0);
+                $btc1h = (float) ($context['btc_1h_pct'] ?? 0.0);
+                $altBasket = (float) ($context['alt_basket_1h_pct'] ?? 0.0);
+                $corr = (float) ($context['corr_1h'] ?? 0.0);
+                $hours = (int) ($context['cooldown_hours'] ?? 24);
+                $hostname = is_string($context['hostname'] ?? null) ? $context['hostname'] : (string) gethostname();
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'title' => "Market shock detected — opens paused {$hours}h",
+                    'emailMessage' => "MarketShockCircuitBreaker fired ({$rules}).\n\n".
+                        "BTC 15m: {$btc15m}%   BTC 1h: {$btc1h}%   Alt basket 1h: {$altBasket}%   Corr 1h: {$corr}\n\n".
+                        "New position opens paused for {$hours} hours via the shared BSCS cooldown gate. ".
+                        "Existing positions untouched.\n\n".
+                        'Detector cadence is 1 minute on 15m klines for BTC + 4 alts; this is faster than the hourly BSCS compute would have noticed. '.
+                        "Cooldown will release automatically; if cascade keeps firing, the next detector run is silent (no spam).\n\n".
+                        "Operator escape hatch: set `bscs_override_until` on the kraite singleton to a future timestamp to force opens through.\n\n".
+                        "Server: {$hostname}",
+                    'pushoverMessage' => "Market shock ({$rules}) — opens paused {$hours}h. BTC 15m {$btc15m}% / 1h {$btc1h}%",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 1,
+                ];
+            })(),
+
             'market_regime_compute_stale' => (function () use ($context) {
                 $hours = (int) ($context['stale_hours'] ?? 0);
 

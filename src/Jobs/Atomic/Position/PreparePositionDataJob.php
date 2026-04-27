@@ -8,6 +8,9 @@ use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\MarketRegime\BlackSwanIndex;
+use Kraite\Core\Support\MarketRegime\CrowdingMultiplier;
+use Kraite\Core\Support\MarketRegime\FragileMarginMultiplier;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\TpSlResolver;
 
@@ -57,7 +60,23 @@ final class PreparePositionDataJob extends BaseQueueableJob
 
         // Direction is load-bearing here — LONG and SHORT read different
         // margin columns so the desk can size the two sides asymmetrically.
-        $margin = $this->calculateMarginWithSubscriptionCap($account, $direction);
+        $baseMargin = $this->calculateMarginWithSubscriptionCap($account, $direction);
+
+        // BSCS Phase 2.1C — multiplicative size adaptation.
+        //   - FragileMarginMultiplier: linear 1.0→0.5 across BSCS 60-79.
+        //   - CrowdingMultiplier:      downscales the side that already
+        //                              carries >= 70% of the book's notional
+        //                              risk (locked: empty side stays 1.0×).
+        // Both default to 1.0× outside their trigger windows, so the
+        // composition is a no-op in calm regimes / balanced books.
+        $index = BlackSwanIndex::current();
+        $fragileMultiplier = FragileMarginMultiplier::for($index->score());
+        $crowdingMultiplier = CrowdingMultiplier::for($direction, $index->portfolioRisk());
+        $sizingMultiplier = $fragileMultiplier * $crowdingMultiplier;
+
+        $margin = $sizingMultiplier === 1.0
+            ? $baseMargin
+            : Math::mul($baseMargin, (string) $sizingMultiplier);
 
         $this->hasValidMargin = Math::gt($margin, '0', 2);
 
@@ -67,6 +86,9 @@ final class PreparePositionDataJob extends BaseQueueableJob
                 'stopped' => true,
                 'reason' => 'Margin is zero or negative - no balance available',
                 'calculated_margin' => $margin,
+                'base_margin' => $baseMargin,
+                'fragile_multiplier' => $fragileMultiplier,
+                'crowding_multiplier' => $crowdingMultiplier,
             ];
         }
 
@@ -109,6 +131,9 @@ final class PreparePositionDataJob extends BaseQueueableJob
             'exchange_symbol' => $exchangeSymbol->parsed_trading_pair,
             'direction' => $direction,
             'margin' => $margin,
+            'base_margin' => $baseMargin,
+            'fragile_multiplier' => $fragileMultiplier,
+            'crowding_multiplier' => $crowdingMultiplier,
             'profit_percentage' => $profitPercentage,
             'stop_market_percentage' => $stopMarketPercentage,
             'indicators_timeframe' => $indicatorsTimeframe,

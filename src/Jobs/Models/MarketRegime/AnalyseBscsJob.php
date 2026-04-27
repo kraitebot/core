@@ -7,6 +7,7 @@ namespace Kraite\Core\Jobs\Models\MarketRegime;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Log;
 use Kraite\Core\Abstracts\BaseQueueableJob;
+use Kraite\Core\Enums\BscsStaleness;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Support\MarketRegime\BlackSwanIndex;
 use Kraite\Core\Support\NotificationService;
@@ -58,6 +59,17 @@ final class AnalyseBscsJob extends BaseQueueableJob
 
         if ($kraite === null) {
             return $this->result('noop_no_kraite_row', null, null);
+        }
+
+        // Stale-hard: the compute pipeline has been silent for >6h.
+        // Fire the operator-investigation notification (cache_duration
+        // throttles repeat firings) and bail. The gate already
+        // fail-opens via BlackSwanIndex::shouldBlockOpens() so we
+        // don't need to touch the cooldown column here.
+        if ($index->staleness() === BscsStaleness::StaleHard) {
+            $this->notifyComputeStale($index);
+
+            return $this->result('noop_compute_stale', $index->score(), $index->cooldownUntil()?->toIso8601String());
         }
 
         if ($index->isOverrideActive()) {
@@ -131,6 +143,26 @@ final class AnalyseBscsJob extends BaseQueueableJob
             );
         } catch (Throwable $e) {
             Log::warning('[AnalyseBscsJob] critical notification dispatch failed', [
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function notifyComputeStale(BlackSwanIndex $index): void
+    {
+        try {
+            $age = $index->ageSeconds();
+            $hours = $age === null ? null : (int) round($age / 3600);
+
+            NotificationService::send(
+                user: Kraite::admin(),
+                canonical: 'market_regime_compute_stale',
+                referenceData: [
+                    'stale_hours' => $hours ?? 0,
+                ],
+            );
+        } catch (Throwable $e) {
+            Log::warning('[AnalyseBscsJob] compute_stale notification dispatch failed', [
                 'message' => $e->getMessage(),
             ]);
         }

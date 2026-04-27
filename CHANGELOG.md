@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.7.10 - 2026-04-27
+
+### Features
+
+- [NEW FEATURE] **BSCS Phase 2.1C — Size adaptation** — multiplicative margin scaling on new opens during fragile regimes and crowded books.
+- [NEW FEATURE] `Support\MarketRegime\FragileMarginMultiplier` — linear ramp 1.0→0.5 across BSCS scores 60-79 (Fragile band). Returns 1.0× outside the band. Operator-tunable via `kraite.market_regime.fragile.{lower_bound,upper_bound,max_reduction_pct}`. 7 unit tests.
+- [NEW FEATURE] `Support\MarketRegime\CrowdingMultiplier` — reads `DirectionalBookRisk` + direction, downscales 1.0→0.5 across `largest_side_ratio` 0.7→1.0 ONLY when direction matches the dominant side. Empty side stays at 1.0× (locked policy: no upscale without backtest evidence). 8 unit tests.
+- [NEW FEATURE] `PreparePositionDataJob::compute()` now applies `final_margin = base_margin × fragileMultiplier × crowdingMultiplier` between the base-margin computation and the validity check. Step response includes `base_margin`, `fragile_multiplier`, `crowding_multiplier` for forensic visibility on every prepare step.
+- [NEW FEATURE] Config block `kraite.market_regime.crowding` with `threshold` (default 0.7) + `max_reduction_pct` (default 50).
+
+### Deferred (Phase 2.2 vs original 2.1C scope)
+
+- Blocked-open simulation log (`blocked_open_simulations` table + `LogBlockedOpenJob` + 24h/72h outcome evaluator) deferred. Non-trivial outcome-replay logic; not gating-critical. Will design with real cooldown-event data in Phase 2.2.
+
+## 1.7.9 - 2026-04-27
+
+### Features
+
+- [NEW FEATURE] **BSCS Phase 2.1B — DirectionalBookRisk + 3-tier staleness.**
+- [NEW FEATURE] `Support\MarketRegime\DirectionalBookRisk` — DTO computing portfolio shape from open positions (long/short counts, margin-at-risk per side measured by margin × leverage notional, largestSide, largestSideRatio, netDirectionalBias). Single-query factory `current()`. 9 unit tests pinning every accessor + the BALANCED-on-equal edge case + closed-position exclusion.
+- [NEW FEATURE] `BlackSwanIndex::portfolioRisk()` exposes the DTO; `toArray()` now includes a `portfolio_risk` block ready for the admin dashboard's "Book risk: LONG crowded — 8/10 positions, 73% of margin" line.
+- [NEW FEATURE] `Enums\BscsStaleness` — 3-tier model `Fresh` / `StaleSoft` / `StaleHard` replacing the binary fail-open. `BlackSwanIndex::staleness()` returns the verdict; `shouldBlockOpens()` now FAILS OPEN under `StaleHard` (score age > 6h or never computed) regardless of cooldown state — "missed pause" is preferable to "stuck halt" on a broken compute pipeline. `StaleSoft` (115min < age ≤ 6h) preserves the existing cooldown so a single missed cron doesn't whipsaw the gate.
+- [NEW FEATURE] `AnalyseBscsJob` now fires the `market_regime_compute_stale` notification when `staleness() === StaleHard`. Activated the canonical (was inert from Phase 1). Cache duration 3600s throttles repeat firings during a multi-hour outage.
+- [NEW FEATURE] Config `kraite.market_regime.freshness.stale_hard_seconds` default 21600 (6h, env: `MARKET_REGIME_STALE_HARD_SECONDS`).
+
+## 1.7.8 - 2026-04-27
+
+### Features
+
+- [NEW FEATURE] **BSCS Phase 2.1A — MarketShockCircuitBreaker (cascade-in-progress detector)**. New 1-minute cron `kraite:cron-detect-market-shock` reads recent 15m klines for BTC + 4 reference alts and arms the SHARED `bscs_cooldown_until` column when any of four trigger rules fires: BTC ≤ -3%/15m, BTC ≤ -5%/1h, alt-basket ≤ -7%/1h, or correlation ≥ 0.85 + |BTC 1h| ≥ 3%. Closes the hourly BSCS compute blind spot — worst-case latency from cliff-start to gate-arm drops from ~50 min to ~1-15 min.
+- [NEW FEATURE] `Support\MarketRegime\MarketShockCircuitBreaker` — pure-PHP value object computing the 4 trigger rules. 9 unit tests pinning each rule independently + the calm baseline + multi-rule fan-out + insufficient-data graceful no-fire.
+- [NEW FEATURE] `Jobs\Models\MarketRegime\DetectMarketShockJob` — loads klines from `candles` table, runs the breaker, arms the cooldown silently if one is already active (prevents Pushover spam during a cascade that keeps firing minute after minute), respects operator override, fires `market_shock_circuit_breaker` notification on fresh arming. 6 feature tests pin the state machine.
+- [NEW FEATURE] `Commands\Cronjobs\DetectMarketShockCommand` — thin step-dispatcher trigger.
+- [NEW FEATURE] New notification arm `market_shock_circuit_breaker` (active by default) — text describes which rule(s) fired + raw move percentages.
+- [NEW FEATURE] Config block `kraite.market_regime.shock` with 4 thresholds + `cooldown_hours` (default 24, same as BSCS).
+
 ## 1.7.7 - 2026-04-27
 
 ### Features

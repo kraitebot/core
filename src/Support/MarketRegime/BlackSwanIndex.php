@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\MarketRegime;
 
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Carbon;
+use Kraite\Core\Enums\BscsStaleness;
 use Kraite\Core\Enums\RegimeBand;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\MarketRegimeSnapshot;
@@ -124,6 +125,15 @@ final class BlackSwanIndex
             return false;
         }
 
+        // Stale-hard fails OPEN: the cooldown timestamp could be hours
+        // out-of-date and we'd rather miss a pause than lock out the
+        // autonomous bot on a broken signal. AnalyseBscsJob fires the
+        // `market_regime_compute_stale` notification so the operator
+        // notices.
+        if ($this->staleness() === BscsStaleness::StaleHard) {
+            return false;
+        }
+
         return $this->isCooldownActive();
     }
 
@@ -134,11 +144,33 @@ final class BlackSwanIndex
      */
     public function isStale(): bool
     {
+        return $this->staleness() !== BscsStaleness::Fresh;
+    }
+
+    /**
+     * Three-tier freshness verdict. See `BscsStaleness` for semantics
+     * and the spec section "Stale-soft mode" (Phase 2.1B) for the
+     * gate / notification policy that consumes this.
+     */
+    public function staleness(): BscsStaleness
+    {
         if ($this->syncedAt === null) {
-            return true;
+            return BscsStaleness::StaleHard;
         }
 
-        return $this->syncedAt->addSeconds($this->freshnessMaxSeconds)->isPast();
+        $now = CarbonImmutable::now();
+        $ageSeconds = $now->getTimestamp() - $this->syncedAt->getTimestamp();
+
+        if ($ageSeconds <= $this->freshnessMaxSeconds) {
+            return BscsStaleness::Fresh;
+        }
+
+        $staleHardSeconds = (int) (config('kraite.market_regime.freshness.stale_hard_seconds') ?? 21600);
+        if ($ageSeconds <= $staleHardSeconds) {
+            return BscsStaleness::StaleSoft;
+        }
+
+        return BscsStaleness::StaleHard;
     }
 
     public function ageSeconds(): ?int
@@ -176,6 +208,20 @@ final class BlackSwanIndex
     }
 
     /**
+     * Portfolio shape — long/short counts, margin-at-risk per side,
+     * largest-side ratio. Drives the dashboard "Book risk" line and
+     * Phase 2.1C's directional crowding multiplier.
+     *
+     * Computed on demand (one query against `positions`); the index
+     * doesn't memoise it because position state changes faster than
+     * the BSCS cadence.
+     */
+    public function portfolioRisk(): DirectionalBookRisk
+    {
+        return DirectionalBookRisk::current();
+    }
+
+    /**
      * Lossless dashboard payload. Includes the singleton state, the
      * derived booleans, and the latest snapshot's sub-signal grid so
      * the admin widget can render score + 5-signal table in one call.
@@ -199,6 +245,8 @@ final class BlackSwanIndex
             'freshness_max_seconds' => $this->freshnessMaxSeconds,
             'cooldown_threshold' => $this->cooldownThreshold,
             'cooldown_hours' => $this->cooldownHours,
+            'staleness' => $this->staleness()->value,
+            'portfolio_risk' => $this->portfolioRisk()->toArray(),
             'sub_signals' => $this->latestSnapshot === null ? null : [
                 'vol_expansion' => [
                     'value' => $this->latestSnapshot->vol_expansion_value,
