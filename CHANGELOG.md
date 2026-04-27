@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.7.7 - 2026-04-27
+
+### Features
+
+- [NEW FEATURE] `kraite:cron-fetch-klines --reference-set --canonical=<X>` mode. Fetches klines only for the BSCS reference basket (`config('kraite.market_regime.symbols')`, default BTC + ETH/SOL/BNB/XRP) on the chosen exchange, at the requested timeframe. Foundation for the upcoming 15-minute kline coverage that the cascade-detection cron (Phase 2.1A) will read. Missing tokens skipped silently; missing canonical fails loudly with --canonical required. No correlation/elasticity steps (reference set drives BSCS / cascade only — no per-pair correlation needed). 6 tests cover the full flag matrix.
+
 ## 1.7.6 - 2026-04-27
 
 ### Fixes

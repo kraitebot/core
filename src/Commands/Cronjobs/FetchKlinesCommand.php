@@ -25,6 +25,7 @@ final class FetchKlinesCommand extends BaseCommand
         {--exchange_symbol_id= : Fetch klines for a specific exchange symbol}
         {--canonical= : Filter by API system canonical (e.g., binance, bybit)}
         {--only-active-positions : Fetch klines only for symbols with active positions}
+        {--reference-set : Fetch klines only for the BSCS reference basket (config kraite.market_regime.symbols). Requires --canonical.}
         {--timeframe= : Candle timeframe (if not provided, uses timeframes from ApiSystem)}
         {--limit=5 : Number of candles to fetch}
         {--output : Output verbose information}';
@@ -63,6 +64,7 @@ final class FetchKlinesCommand extends BaseCommand
         $exchangeSymbolId = $this->option('exchange_symbol_id');
         $canonical = $this->option('canonical');
         $onlyActivePositions = $this->option('only-active-positions');
+        $referenceSet = (bool) $this->option('reference-set');
         $limit = (int) $this->option('limit');
 
         // Check if --timeframe option was explicitly provided
@@ -74,6 +76,17 @@ final class FetchKlinesCommand extends BaseCommand
 
         if ($onlyActivePositions) {
             return $this->handleActivePositionsOnly($explicitTimeframe, $limit);
+        }
+
+        if ($referenceSet) {
+            $canonicalString = is_string($canonical) ? $canonical : null;
+            if ($canonicalString === null || $canonicalString === '') {
+                $this->verboseError('--reference-set requires --canonical (the BSCS basket has the same tokens on multiple exchanges; pick one).');
+
+                return self::FAILURE;
+            }
+
+            return $this->handleReferenceSet($canonicalString, $explicitTimeframe, $limit);
         }
 
         /** @var string|null $canonicalString */
@@ -212,6 +225,120 @@ final class FetchKlinesCommand extends BaseCommand
         $this->verboseInfo("Total: {$totalBtcSteps} BTC + {$totalSymbolSteps} symbol + {$totalCorrelationSteps} correlation/elasticity steps");
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Fetch klines for the BSCS reference basket only — the small fixed
+     * symbol set used by the cascade detection cron and the hourly BSCS
+     * compute. Lets the 15-minute kline schedule cover BTC + 4 alts on
+     * Binance without touching the other ~600 symbols every quarter
+     * hour.
+     *
+     * Symbol list comes from `config('kraite.market_regime.symbols')` —
+     * defaults to BTCUSDT/ETHUSDT/SOLUSDT/BNBUSDT/XRPUSDT, matching the
+     * tokens validated through the 6-event Python backtest. Missing
+     * symbols (token absent on the chosen canonical) are silently
+     * skipped — the cron stays useful even if an exchange retires a
+     * listing.
+     *
+     * Unlike the bulk path, this does NOT chain correlation/elasticity
+     * jobs. The reference set drives BSCS / cascade detection only;
+     * those signals don't need per-pair correlation outputs against
+     * BTC (the calculator does its own in-memory correlation).
+     *
+     * @param  array<int, string>|null  $explicitTimeframe
+     */
+    private function handleReferenceSet(string $canonical, ?array $explicitTimeframe, int $limit): int
+    {
+        $apiSystem = ApiSystem::query()
+            ->where('canonical', $canonical)
+            ->where('is_exchange', true)
+            ->first();
+
+        if ($apiSystem === null) {
+            $this->verboseWarn("API system '{$canonical}' not found — nothing to do.");
+
+            return self::SUCCESS;
+        }
+
+        $timeframes = $this->getTimeframesForApiSystem($apiSystem, $explicitTimeframe);
+        if ($timeframes === null) {
+            return self::FAILURE;
+        }
+
+        $exchangeSymbolIds = $this->resolveReferenceSetSymbolIds($apiSystem);
+        if (empty($exchangeSymbolIds)) {
+            $this->verboseWarn("No reference symbols found on '{$canonical}' — skipping.");
+
+            return self::SUCCESS;
+        }
+
+        $blockUuid = Str::uuid()->toString();
+        foreach ($exchangeSymbolIds as $exchangeSymbolId) {
+            $this->createKlineStepsForTimeframes($blockUuid, $exchangeSymbolId, $timeframes, $limit, 1);
+        }
+
+        $stepsCreated = count($timeframes) * count($exchangeSymbolIds);
+        $this->verboseInfo("Reference set ({$canonical}): {$stepsCreated} kline steps queued for ".count($exchangeSymbolIds).' symbols × '.implode(',', $timeframes).'.');
+
+        return self::SUCCESS;
+    }
+
+    /**
+     * Resolve the configured BSCS basket (token+quote pairs like 'BTCUSDT')
+     * to existing exchange_symbol IDs on the chosen exchange. Pairs are
+     * split on a 3-or-4-letter quote suffix (USDT / USDC / USD / BUSD /
+     * EUR / GBP); callers that want a different parse should set the
+     * symbols entry to its native pair format already split via TokenMapper.
+     *
+     * @return array<int, int>
+     */
+    private function resolveReferenceSetSymbolIds(ApiSystem $apiSystem): array
+    {
+        /** @var array<int, string> $configured */
+        $configured = (array) config('kraite.market_regime.symbols', []);
+
+        $ids = [];
+        foreach ($configured as $pair) {
+            [$token, $quote] = $this->splitPair((string) $pair);
+            if ($token === null || $quote === null) {
+                continue;
+            }
+
+            $row = ExchangeSymbol::query()
+                ->where('api_system_id', $apiSystem->id)
+                ->where('token', $token)
+                ->where('quote', $quote)
+                ->first();
+
+            if ($row !== null) {
+                $ids[] = (int) $row->id;
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * Split a trading-pair string ('BTCUSDT') into [token, quote].
+     * Returns [null, null] if no recognised quote suffix matches.
+     *
+     * @return array{0: string|null, 1: string|null}
+     */
+    private function splitPair(string $pair): array
+    {
+        $pair = mb_strtoupper(trim($pair));
+        $quotes = ['USDT', 'USDC', 'BUSD', 'USD', 'EUR', 'GBP'];
+
+        foreach ($quotes as $quote) {
+            if (str_ends_with($pair, $quote)) {
+                $token = mb_substr($pair, 0, -mb_strlen($quote));
+
+                return [$token === '' ? null : $token, $quote];
+            }
+        }
+
+        return [null, null];
     }
 
     /** @param  array<int, string>|null  $explicitTimeframe */
