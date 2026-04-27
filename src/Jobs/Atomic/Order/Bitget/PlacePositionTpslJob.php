@@ -11,6 +11,7 @@ use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
+use Kraite\Core\Support\TpSlResolver;
 use Kraite\Core\Trading\Kraite;
 use RuntimeException;
 use Throwable;
@@ -92,13 +93,40 @@ final class PlacePositionTpslJob extends BaseApiableJob
             return false;
         }
 
-        // SL is snapshotted onto positions.stop_market_percentage at
-        // PreparePositionDataJob — must be present before placement.
-        if ($this->position->stop_market_percentage === null) {
+        // SL percentage must resolve to a non-null value. Snapshot is the
+        // canonical source; resolveStopLossPercentage() falls back to the
+        // account default for positions opened before the snapshot column
+        // existed (or for half-baked deploys where PrepareJob ran old code).
+        if ($this->resolveStopLossPercentage() === null) {
             return false;
         }
 
         return true;
+    }
+
+    /**
+     * Resolve the SL percentage. Mirror of the Binance PlaceStopLossOrderJob
+     * fallback — snapshot first, then live resolve through TpSlResolver.
+     * Bitget pairs TP+SL atomically through `place-pos-tpsl`, so the SL
+     * value here drives the same shared placement call.
+     */
+    public function resolveStopLossPercentage(): ?string
+    {
+        $snapshot = $this->position->stop_market_percentage;
+        if ($snapshot !== null && $snapshot !== '') {
+            return (string) $snapshot;
+        }
+
+        $account = $this->position->account;
+        if ($account->stop_market_initial_percentage === null) {
+            return null;
+        }
+
+        return TpSlResolver::resolve(
+            symbolValue: $this->position->exchangeSymbol?->stop_market_percentage,
+            accountOverride: (bool) $account->override_sl,
+            accountValue: (string) $account->stop_market_initial_percentage,
+        );
     }
 
     public function computeApiable()
@@ -141,7 +169,7 @@ final class PlacePositionTpslJob extends BaseApiableJob
         $stopLossData = Kraite::calculateStopLossOrder(
             direction: $direction,
             anchorPrice: $anchorPrice,
-            stopPercent: $this->position->stop_market_percentage,
+            stopPercent: $this->resolveStopLossPercentage(),
             currentQty: $this->position->quantity,
             exchangeSymbol: $exchangeSymbol,
         );

@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.7.2 - 2026-04-27
+
+### Features
+
+- [NEW FEATURE] `ExchangeSymbolObserver::propagateGapsToSiblings()` — asymmetric Binance→siblings fan-out for `percentage_gap_long` and `percentage_gap_short`. Same shape as the per-symbol TP/SL observer (saveQuietly recursion guard + precision-safe Math::equal idempotency check). Closes the gap-asymmetry bug observed on AGLD / HYPE / JUP where a Binance gap edit was not reflected on Bitget / Bybit / KuCoin sibling rows.
+- [NEW FEATURE] `propagateBacktestingReviewToSiblings()` (renamed from `propagateBacktestingApprovalToSiblings`) now propagates BOTH `was_backtesting_approved` AND the new `backtesting_review_status` admin-side review state. Symmetric (any source row), saveQuietly on siblings.
+
+### Fixes
+
+- [BUG FIX] `Jobs\Atomic\Order\PlaceStopLossOrderJob` and `Jobs\Atomic\Order\Bitget\PlacePositionTpslJob` now resolve SL through `resolveStopLossPercentage()` — snapshot first, with a TpSlResolver fallback to the account default when the snapshot is null. Closes the half-baked-deploy hazard where a worker running the new placer against a position prepared by an old `PreparePositionDataJob` (no snapshot) would silently skip SL placement via `startOrFail() === false`. Pre-migration positions also benefit — no backfill ever needed again.
+
 ## 1.7.1 - 2026-04-27
 
 ### Features

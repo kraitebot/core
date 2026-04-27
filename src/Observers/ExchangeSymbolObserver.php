@@ -109,12 +109,13 @@ final class ExchangeSymbolObserver
     {
         $model->sendDelistingNotificationIfNeeded();
 
-        // Symmetric propagation: backtest approval is a per-token decision,
-        // not per-exchange. Flipping it on ANY row fans out to siblings on
-        // every other exchange (linkage via `symbol_id`). updateQuietly()
-        // skips this observer on the siblings → no recursion fan-out.
-        if ($model->wasChanged('was_backtesting_approved')) {
-            $this->propagateBacktestingApprovalToSiblings($model);
+        // Symmetric propagation: backtesting is a per-token decision, not
+        // per-exchange. Both the boolean gate AND the admin-side review
+        // state fan out from any source to every sibling exchange row
+        // (linkage via `symbol_id`). saveQuietly() skips this observer on
+        // the siblings → no recursion fan-out.
+        if ($model->wasChanged(['was_backtesting_approved', 'backtesting_review_status'])) {
+            $this->propagateBacktestingReviewToSiblings($model);
         }
 
         if (! $this->isBinanceSymbol($model)) {
@@ -128,6 +129,14 @@ final class ExchangeSymbolObserver
         // observer would create.
         if ($model->wasChanged(['profit_percentage', 'stop_market_percentage'])) {
             $this->propagateTpSlOverridesToSiblings($model);
+        }
+
+        // Same asymmetric Binance→siblings shape for ladder gaps. Backtest
+        // tunes the gap on Binance candles; the resulting value applies to
+        // every exchange that lists the same token. Non-Binance edits stay
+        // local for the same deadlock-avoidance reason as TP/SL.
+        if ($model->wasChanged(['percentage_gap_long', 'percentage_gap_short'])) {
+            $this->propagateGapsToSiblings($model);
         }
 
         // Propagate tradeable-related fields if any of them changed
@@ -238,22 +247,71 @@ final class ExchangeSymbolObserver
     }
 
     /**
-     * Sync `was_backtesting_approved` to every sibling exchange-symbol row
-     * for the same underlying token. Uses `updateQuietly` so the sibling
-     * save does NOT re-fire this observer (would otherwise produce a
-     * fan-out cascade with each sibling triggering N more updates).
+     * Sync `was_backtesting_approved` AND `backtesting_review_status` to
+     * every sibling exchange-symbol row for the same underlying token.
+     * Both fields propagate together so the boolean gate and the admin-
+     * side review state never drift apart across exchanges. saveQuietly()
+     * on the sibling save skips this observer → no recursion fan-out.
      */
-    private function propagateBacktestingApprovalToSiblings(ExchangeSymbol $model): void
+    private function propagateBacktestingReviewToSiblings(ExchangeSymbol $model): void
     {
         $siblings = $model->getOthersFromExchanges();
-        $newValue = (bool) $model->was_backtesting_approved;
+        $newApproved = (bool) $model->was_backtesting_approved;
+        $newStatus = $model->backtesting_review_status;
 
         foreach ($siblings as $sibling) {
-            if ((bool) $sibling->was_backtesting_approved === $newValue) {
-                continue;
+            $dirty = false;
+
+            if ((bool) $sibling->was_backtesting_approved !== $newApproved) {
+                $sibling->was_backtesting_approved = $newApproved;
+                $dirty = true;
             }
-            $sibling->was_backtesting_approved = $newValue;
-            $sibling->saveQuietly();
+
+            if ($sibling->backtesting_review_status !== $newStatus) {
+                $sibling->backtesting_review_status = $newStatus;
+                $dirty = true;
+            }
+
+            if ($dirty) {
+                $sibling->saveQuietly();
+            }
+        }
+    }
+
+    /**
+     * Sync ladder-gap percentages (`percentage_gap_long`, `percentage_gap_short`)
+     * from a Binance row down to every sibling exchange row. Caller already
+     * gated this on `isBinanceSymbol === true`, so this method assumes
+     * Binance is the source — non-Binance rows never reach here, which
+     * makes the propagation strictly one-directional.
+     *
+     * Decimal columns are returned by the driver as strings — `'9.50'` and
+     * `'9.5'` are numerically equal but `===` would mismatch them, so we
+     * normalise via Math::equal to keep idempotent saves a no-op (no
+     * useless DB write, no `updated_at` flap on siblings).
+     */
+    private function propagateGapsToSiblings(ExchangeSymbol $model): void
+    {
+        $siblings = $model->getOthersFromExchanges();
+        $newLong = $model->percentage_gap_long;
+        $newShort = $model->percentage_gap_short;
+
+        foreach ($siblings as $sibling) {
+            $dirty = false;
+
+            if (! $this->decimalsEqual($sibling->percentage_gap_long, $newLong)) {
+                $sibling->percentage_gap_long = $newLong;
+                $dirty = true;
+            }
+
+            if (! $this->decimalsEqual($sibling->percentage_gap_short, $newShort)) {
+                $sibling->percentage_gap_short = $newShort;
+                $dirty = true;
+            }
+
+            if ($dirty) {
+                $sibling->saveQuietly();
+            }
         }
     }
 
