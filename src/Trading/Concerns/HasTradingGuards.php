@@ -6,12 +6,26 @@ namespace Kraite\Core\Trading\Concerns;
 
 use Kraite\Core\Models\Kraite as KraiteModel;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\MarketRegime\BlackSwanIndex;
 
 trait HasTradingGuards
 {
     /**
-     * Global guard for opening positions.
-     * Checks the allow_opening_positions flag from the martingalian singleton.
+     * Global guard for opening positions. Two cascading gates:
+     *
+     *   1. `kraite.allow_opening_positions` — operator-controlled hard
+     *      switch. False = opens off everywhere, no exceptions.
+     *
+     *   2. `BlackSwanIndex::shouldBlockOpens()` — system cooldown driven
+     *      by `AnalyseBscsJob`. Returns true while `bscs_cooldown_until`
+     *      is in the future, AND no operator override is active. The
+     *      override (`bscs_override_until` in the future) flips the
+     *      cooldown off temporarily so an operator can manually force
+     *      opens through during a regime they've assessed as safe.
+     *
+     * Existing positions are never touched — this gate only affects new
+     * `kraite:cron-create-positions` cycles. WAP, sync, close, lifecycle
+     * observers run normally regardless of regime.
      */
     public function canOpenPositions(): bool
     {
@@ -21,7 +35,15 @@ trait HasTradingGuards
             return false;
         }
 
-        return $engine->allow_opening_positions;
+        if (! $engine->allow_opening_positions) {
+            return false;
+        }
+
+        if (BlackSwanIndex::current()->shouldBlockOpens()) {
+            return false;
+        }
+
+        return true;
     }
 
     /**

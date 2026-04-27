@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.7.5 - 2026-04-27
+
+### Features
+
+- [NEW FEATURE] **`Kraite\Core\Support\MarketRegime\BlackSwanIndex`** — read-side façade exposing the BSCS state through one ergonomic API: `score()`, `band()`, `shouldBlockOpens()`, `isCooldownActive()`, `isOverrideActive()`, `isStale()`, `ageSeconds()`, `toArray()` (full dashboard payload including the latest snapshot's sub-signal grid). Single static `current()` factory loads kraite singleton + latest snapshot in one place.
+- [NEW FEATURE] **System cooldown gate (Phase 2)** wired through `HasTradingGuards::canOpenPositions()`. When the BSCS score reaches the configured threshold (default 80), the new `kraite:cron-analyse-bscs` cron arms a 24h cooldown that pauses new opens at the global guard. On natural expiry, score is re-evaluated: still high → re-arm another window, recovered → release. Operator override (`bscs_override_until` in the future) bypasses the cooldown.
+- [NEW FEATURE] **`AnalyseBscsJob` + `kraite:cron-analyse-bscs`** at `:55` past the hour (5 min after the BSCS compute cron). State machine: cooldown_armed / cooldown_already_active / cooldown_rearmed / cooldown_released / noop_below_threshold / noop_override_active.
+- [NEW FEATURE] Activated `market_regime_critical` and `market_regime_recovered` notifications (was inert in Phase 1). Critical fires once per cooldown arming, recovered fires when the system releases. Notification text rewritten to describe the actual cooldown semantics instead of the old Phase 1 "telemetry only" wording.
+- [NEW FEATURE] Migration adds `kraite.bscs_cooldown_until` (datetime, nullable). Distinct from `bscs_override_until` — system-driven (lower opens) vs operator-driven (raise opens).
+
+### Configuration
+
+- [NEW FEATURE] `config/kraite.php` `market_regime.cooldown` block with `threshold` (default 80, env: `MARKET_REGIME_COOLDOWN_THRESHOLD`) and `hours` (default 24, env: `MARKET_REGIME_COOLDOWN_HOURS`).
+
+### Tests
+
+- [NEW FEATURE] `tests/Unit/Support/MarketRegime/BlackSwanIndexTest` — 10 cases pinning the read-side façade contract (score / band / cooldown / override / stale / payload, plus the override-beats-cooldown precedence rule).
+- [NEW FEATURE] `tests/Feature/MarketRegime/AnalyseBscsJobTest` — 7 cases pinning the cooldown state machine (arm, no-op while active, re-arm on expiry with high score, release on expiry with recovered score, no-op below threshold, no-op while override active, configured cooldown_hours window).
+- [NEW FEATURE] `tests/Feature/HasTradingGuardsBscsGateTest` — 5 cases pinning the gate wiring (allow when no cooldown, block when cooldown future, override beats cooldown, allow_opening_positions=false still wins, allow when cooldown expired).
+
 ## 1.7.4 - 2026-04-27
 
 ### Fixes

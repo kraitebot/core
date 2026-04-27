@@ -507,5 +507,18 @@ return [
             'default_hours' => (int) env('MARKET_REGIME_OVERRIDE_DEFAULT_HOURS', 4),
             'max_hours' => (int) env('MARKET_REGIME_OVERRIDE_MAX_HOURS', 24),
         ],
+        // Cooldown wired to `kraite:cron-analyse-bscs`. When the latest
+        // composite score reaches or exceeds `cooldown_threshold` AND no
+        // cooldown is currently active, the analyse cron sets
+        // `kraite.bscs_cooldown_until = now() + cooldown_hours` and emits
+        // the `market_regime_critical` notification once. While the
+        // timestamp is in the future, `HasTradingGuards::canOpenPositions()`
+        // blocks new opens. On natural expiry the next analyse run
+        // re-checks: still high → another `cooldown_hours` window;
+        // recovered → cooldown ends and `market_regime_recovered` fires.
+        'cooldown' => [
+            'threshold' => (int) env('MARKET_REGIME_COOLDOWN_THRESHOLD', 80),
+            'hours' => (int) env('MARKET_REGIME_COOLDOWN_HOURS', 24),
+        ],
     ],
 ];

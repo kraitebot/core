@@ -60,6 +60,7 @@ final class Kraite extends BaseModel
         'bscs_block_threshold' => 'integer',
         'bscs_freshness_max_seconds' => 'integer',
         'bscs_override_until' => 'datetime',
+        'bscs_cooldown_until' => 'datetime',
 
         'binance_api_key' => 'encrypted',
         'binance_api_secret' => 'encrypted',

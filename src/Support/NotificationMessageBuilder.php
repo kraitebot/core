@@ -815,13 +815,20 @@ final class NotificationMessageBuilder
 
             'market_regime_critical' => (function () use ($context) {
                 $score = (int) ($context['score'] ?? 0);
+                $hours = (int) ($context['cooldown_hours'] ?? 24);
                 $hostname = is_string($context['hostname'] ?? null) ? $context['hostname'] : (string) gethostname();
 
                 return [
                     'severity' => NotificationSeverity::High,
-                    'title' => "BSCS Critical — {$score}/100",
-                    'emailMessage' => "Black Swan Composite Score crossed into Critical band (score={$score}, threshold≥80).\n\nNew position opens are paused until the score recedes (Phase 2 — currently telemetry-only). Existing positions untouched.\n\nServer: {$hostname}\n\nReview the regime dashboard for sub-signal breakdown.",
-                    'pushoverMessage' => "BSCS Critical {$score}/100 — opens paused (Phase 2)",
+                    'title' => "BSCS Critical — {$score}/100, opens paused {$hours}h",
+                    'emailMessage' => "Black Swan Composite Score crossed the cooldown threshold (score={$score}).\n\n".
+                        "New position opens paused for {$hours} hours via the system cooldown gate. ".
+                        "Existing positions untouched (no auto-close, no SL move).\n\n".
+                        "If the score is still high when the cooldown expires, another {$hours}h window arms automatically. ".
+                        "If recovered, the gate releases and you'll receive a `market_regime_recovered` notification.\n\n".
+                        "Operator escape hatch: set `bscs_override_until` on the kraite singleton to a future timestamp to force opens through.\n\n".
+                        "Server: {$hostname}",
+                    'pushoverMessage' => "BSCS Critical {$score}/100 — opens paused for {$hours}h",
                     'actionUrl' => null,
                     'actionLabel' => null,
                     'priority' => 1,
@@ -833,9 +840,10 @@ final class NotificationMessageBuilder
 
                 return [
                     'severity' => NotificationSeverity::Info,
-                    'title' => "BSCS Recovered — {$score}/100",
-                    'emailMessage' => "Black Swan Composite Score has fallen out of Critical (score={$score}). Position opens resume on the next cron tick (Phase 2).",
-                    'pushoverMessage' => "BSCS recovered to {$score}/100",
+                    'title' => "BSCS Recovered — {$score}/100, opens resumed",
+                    'emailMessage' => "Black Swan Composite Score has fallen below the cooldown threshold (score={$score}). ".
+                        'The system cooldown has been released; new position opens resume on the next `kraite:cron-create-positions` tick.',
+                    'pushoverMessage' => "BSCS recovered to {$score}/100 — opens resumed",
                     'actionUrl' => null,
                     'actionLabel' => null,
                     'priority' => -1,

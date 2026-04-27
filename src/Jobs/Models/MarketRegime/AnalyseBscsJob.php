@@ -1,0 +1,155 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Kraite\Core\Jobs\Models\MarketRegime;
+
+use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\Log;
+use Kraite\Core\Abstracts\BaseQueueableJob;
+use Kraite\Core\Models\Kraite;
+use Kraite\Core\Support\MarketRegime\BlackSwanIndex;
+use Kraite\Core\Support\NotificationService;
+use Throwable;
+
+/**
+ * AnalyseBscsJob — system-driven BSCS cooldown gate.
+ *
+ * Reads the latest score from the kraite singleton (populated by
+ * `ComputeMarketRegimeJob`) and decides whether to arm, re-arm,
+ * release, or no-op the system cooldown that blocks new opens.
+ *
+ * State machine:
+ *
+ *   1. score ≥ cooldown_threshold AND no cooldown active
+ *      → arm: bscs_cooldown_until = now() + cooldown_hours,
+ *        notify `market_regime_critical` once.
+ *
+ *   2. score ≥ cooldown_threshold AND cooldown expired in the past
+ *      → re-arm: another cooldown_hours window.
+ *
+ *   3. score < cooldown_threshold AND cooldown expired in the past
+ *      → release: notify `market_regime_recovered`, opens resume.
+ *
+ *   4. cooldown still in the future
+ *      → no-op (already armed, nothing to do).
+ *
+ *   5. operator override active (`bscs_override_until > now()`)
+ *      → no-op (escape hatch wins, don't arm a cooldown that the
+ *        gate would ignore anyway — also avoids a phantom notification).
+ *
+ * @see BlackSwanIndex
+ * @see ~/docs/kraite/black-swan-logic.md
+ */
+final class AnalyseBscsJob extends BaseQueueableJob
+{
+    public function relatable(): ?Kraite
+    {
+        return Kraite::find(1);
+    }
+
+    /**
+     * @return array{action: string, score: int|null, cooldown_until: string|null}
+     */
+    public function compute(): array
+    {
+        $index = BlackSwanIndex::current();
+        $kraite = Kraite::find(1);
+
+        if ($kraite === null) {
+            return $this->result('noop_no_kraite_row', null, null);
+        }
+
+        if ($index->isOverrideActive()) {
+            return $this->result('noop_override_active', $index->score(), $index->cooldownUntil()?->toIso8601String());
+        }
+
+        $threshold = (int) (config('kraite.market_regime.cooldown.threshold', 80));
+        $hours = (int) (config('kraite.market_regime.cooldown.hours', 24));
+        $score = $index->score() ?? 0;
+        $cooldownActive = $index->isCooldownActive();
+        $hadCooldown = $index->cooldownUntil() !== null;
+
+        // Future cooldown — already armed, leave it alone.
+        if ($cooldownActive) {
+            return $this->result('cooldown_already_active', $score, $index->cooldownUntil()?->toIso8601String());
+        }
+
+        if ($score >= $threshold) {
+            $newCooldown = CarbonImmutable::now()->addHours($hours);
+            $kraite->updateSaving([
+                'bscs_cooldown_until' => $newCooldown,
+                'bscs_block_active' => true,
+            ]);
+
+            $this->notifyCritical($score, $hours);
+
+            return $this->result(
+                $hadCooldown ? 'cooldown_rearmed' : 'cooldown_armed',
+                $score,
+                $newCooldown->toIso8601String(),
+            );
+        }
+
+        // Score below threshold. If a cooldown was just expiring, mark
+        // recovered. Otherwise nothing to do.
+        if ($hadCooldown) {
+            $kraite->updateSaving([
+                'bscs_block_active' => false,
+            ]);
+
+            $this->notifyRecovered($score);
+
+            return $this->result('cooldown_released', $score, $index->cooldownUntil()?->toIso8601String());
+        }
+
+        return $this->result('noop_below_threshold', $score, null);
+    }
+
+    /**
+     * @return array{action: string, score: int|null, cooldown_until: string|null}
+     */
+    private function result(string $action, ?int $score, ?string $cooldownUntil): array
+    {
+        return [
+            'action' => $action,
+            'score' => $score,
+            'cooldown_until' => $cooldownUntil,
+        ];
+    }
+
+    private function notifyCritical(int $score, int $hours): void
+    {
+        try {
+            NotificationService::send(
+                user: Kraite::admin(),
+                canonical: 'market_regime_critical',
+                referenceData: [
+                    'score' => $score,
+                    'cooldown_hours' => $hours,
+                ],
+            );
+        } catch (Throwable $e) {
+            Log::warning('[AnalyseBscsJob] critical notification dispatch failed', [
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function notifyRecovered(int $score): void
+    {
+        try {
+            NotificationService::send(
+                user: Kraite::admin(),
+                canonical: 'market_regime_recovered',
+                referenceData: [
+                    'score' => $score,
+                ],
+            );
+        } catch (Throwable $e) {
+            Log::warning('[AnalyseBscsJob] recovered notification dispatch failed', [
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+}

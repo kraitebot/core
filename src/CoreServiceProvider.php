@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
 use Kraite\Core\Commands\Backtest\BacktestTokenCommand;
+use Kraite\Core\Commands\Cronjobs\AnalyseBscsCommand;
 use Kraite\Core\Commands\Cronjobs\ComputeMarketRegimeCommand;
 use Kraite\Core\Commands\Cronjobs\ConcludeSymbolsDirectionCommand;
 use Kraite\Core\Commands\Cronjobs\CreatePositionsCommand;
@@ -75,6 +76,7 @@ final class CoreServiceProvider extends ServiceProvider
             SafeToRestartCommand::class,
             UpdateRecvwindowSafetyDurationCommand::class,
             BacktestTokenCommand::class,
+            AnalyseBscsCommand::class,
             ComputeMarketRegimeCommand::class,
             ConcludeSymbolsDirectionCommand::class,
             CreatePositionsCommand::class,
