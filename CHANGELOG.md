@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.7.11 - 2026-04-27
+
+### Fixes
+
+- [BUG FIX] **WAP silent failure on one-way mode accounts** — `CalculateWapAndModifyProfitOrderJob::buildPositionKey()` now honours `account.on_hedge_mode`. Hedge mode keys remain `<symbol>:LONG`/`<symbol>:SHORT`; one-way mode keys become `<symbol>:BOTH` to match `MapsPositionsQuery` snapshot keys. Pre-fix, every WAP attempt on a one-way account threw `NonNotifiableException` and silently aborted, leaving stale TP at the original opening price after limit fills. Affected Binance Only Account (id 5) on 2026-04-27 (JTO/USDT pos 289 — repaired manually).
+- [BUG FIX] Bitget shares the same fix via inheritance — one-way Bitget accounts would have been affected identically had any been live.
+
 ## 1.7.10 - 2026-04-27
 
 ### Features

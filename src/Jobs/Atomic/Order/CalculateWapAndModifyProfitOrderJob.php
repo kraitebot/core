@@ -380,6 +380,32 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
     }
 
     /**
+     * Build the position key for `account-positions` snapshot lookup.
+     *
+     * The snapshot is keyed by `<symbol>:<positionSide>` per
+     * `MapsPositionsQuery::resolveQueryPositionsResponse`. Binance returns
+     * `positionSide` differently per trading mode:
+     *
+     *   - Hedge mode (`accounts.on_hedge_mode = true`):  LONG / SHORT
+     *   - One-way mode (`on_hedge_mode = false`):        BOTH
+     *
+     * Always-using-direction (the prior implementation) silently broke
+     * WAP on every one-way-mode account: the lookup never matched the
+     * `:BOTH` key, the job threw NonNotifiableException, and the
+     * position was left with stale TP at the original opening price.
+     * Pinned by `CalculateWapBuildPositionKeyTest`.
+     */
+    protected function buildPositionKey(): string
+    {
+        $symbol = $this->position->parsed_trading_pair;
+        $segment = $this->position->account?->on_hedge_mode
+            ? mb_strtoupper((string) $this->position->direction)
+            : 'BOTH';
+
+        return "{$symbol}:{$segment}";
+    }
+
+    /**
      * Fire the `position_wap_applied` Pushover notification (priority 1 /
      * high — bypasses quiet hours) so the owner sees that DCA fills have
      * aggregated and the TP has been repositioned. Cache-throttled at 30s
@@ -416,21 +442,6 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
             relatable: $this->position,
             cacheKeys: ['position' => $this->position->id],
         );
-    }
-
-    /**
-     * Build the position key for snapshot lookup.
-     *
-     * Format varies by exchange:
-     * - Binance: "BTCUSDT:LONG" or "BTCUSDT:SHORT"
-     * - Others: "BTCUSDT"
-     */
-    protected function buildPositionKey(): string
-    {
-        $symbol = $this->position->parsed_trading_pair;
-        $direction = mb_strtoupper((string) $this->position->direction);
-
-        return "{$symbol}:{$direction}";
     }
 
     /**
