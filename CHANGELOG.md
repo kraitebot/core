@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.7.4 - 2026-04-27
+
+### Fixes
+
+- [BUG FIX] **`range_blowout` formula corrected** to per-day comparison per spec intent. Was implemented as `max of 24 individual hourly ranges ÷ mean of 14d × 24 = 336 hourly ranges` which over-fired because almost any day has at least one hourly bar beating the global mean (signal stuck at ~3× threshold in production, score pinned at 40/elevated all day). Now reads as `today's full 24h range ÷ mean of past 14 daily 24h ranges` — matches the spec's "intraday range exploding — cascade signature" description. First post-fix snapshot dropped from chronic 40 to 20 (band: calm).
+- [BUG FIX] **Phase 1 invariant: `bscs_block_active` always written FALSE.** Previously the compute job set the flag based on `score >= threshold` even during the observation window, which would have flipped the (currently-disconnected) gate the moment any score crossed 80. Pinned by feature test. Phase 2 will reintroduce the threshold logic as part of wiring `HasTradingGuards`.
+- [BUG FIX] **`bscs_freshness_max_seconds` default bumped 5400 → 6900** (90 → 115 min). Cron stamps `synced_at` at `xx:00` but runs at `xx:50` of next hour; natural age was 60–110 min between successful runs, leaving only 30 min margin under the old default. New ceiling tolerates one missed tick. Includes a migration that bumps existing rows still on the old default while leaving operator-tuned values alone.
+
+### Improvements
+
+- [IMPROVED] Spec doc `~/docs/kraite/black-swan-logic.md` updated with Phase 1 implementation notes — sub-signal formulas now state the implementation behaviour explicitly (per-day for `range_blowout`, daily-average denominator for `fut_vol_hot`), Phase 1 observed deviations from original spec text are documented with rationale, and Phase 2 / dashboard / override-UI work is enumerated as still-deferred.
+
+### Tests
+
+- [NEW FEATURE] `tests/Unit/Support/MarketRegime/RegimeCalculatorTest` — 2 new regression guards on `range_blowout`: (a) fires when today's daily range balloons even with all hourly bars staying narrow individually, (b) stays under threshold when day-by-day ranges are uniform (no spurious fire from per-hour granularity).
+- [NEW FEATURE] `tests/Feature/MarketRegime/ComputeMarketRegimeJobTest` — 5 cases pinning the Phase 1 contract: snapshot row written with all 5 sub-signals, kraite singleton denormalised, **Phase 1 invariant `bscs_block_active=false` regardless of score or pre-state**, insufficient-history graceful skip, modelLog audit trail.
+
 ## 1.7.3 - 2026-04-27
 
 ### Fixes

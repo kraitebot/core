@@ -497,7 +497,7 @@ return [
             'fut_vol' => (float) env('MARKET_REGIME_FUT_VOL', 1.20),
         ],
         'block_threshold' => (int) env('MARKET_REGIME_BLOCK_THRESHOLD', 80),
-        'freshness_max_seconds' => (int) env('MARKET_REGIME_FRESHNESS_MAX_SECONDS', 5400),
+        'freshness_max_seconds' => (int) env('MARKET_REGIME_FRESHNESS_MAX_SECONDS', 6900),
         'fragile' => [
             'lower_bound' => (int) env('MARKET_REGIME_FRAGILE_LOWER', 60),
             'upper_bound' => (int) env('MARKET_REGIME_FRAGILE_UPPER', 79),

@@ -175,6 +175,12 @@ final class BacktestSimulator
         $maeMax = 0.0;
         $maeCount = 0;
         $candlesToProfit = [];
+        // Per-direction list of extra-SL deltas across stopped sims. Used to
+        // compute coverage percentiles (25/50/75/100%) — operator sees what
+        // SL setting would have absorbed each tier of stops, separately for
+        // LONG and SHORT (a token can have very different bleed profiles
+        // up vs down).
+        $extraSlByDirection = ['LONG' => [], 'SHORT' => []];
 
         // Regime buckets — slice the window into N equal time chunks so we
         // can see whether a config is stable or just averaging bull + bear.
@@ -238,6 +244,13 @@ final class BacktestSimulator
                     default => null,
                 };
 
+                if ($status === 'stopped_out' && isset($result['extra_sl_pct']) && $result['extra_sl_pct'] !== null) {
+                    $dirKey = $result['direction'] ?? null;
+                    if ($dirKey === 'LONG' || $dirKey === 'SHORT') {
+                        $extraSlByDirection[$dirKey][] = (float) $result['extra_sl_pct'];
+                    }
+                }
+
                 // Skipped / error sims shouldn't pollute the analytics.
                 if (in_array($status, ['stopped_out', 'tp_hit_from_market_only', 'reboundable', 'inconclusive'], true)) {
                     $rung = (int) ($result['last_rung'] ?? 0);
@@ -285,9 +298,19 @@ final class BacktestSimulator
             $regimeBuckets,
         );
 
+        // SL coverage tiers per direction — for each of 25/50/75/100%, what
+        // SL setting (absolute + delta from form input) would have absorbed
+        // that share of stops. Built from the sorted extra-SL values seen in
+        // simulation; `total: X%` means setting SL to X% covers ALL stops.
+        $slPercentFloat = (float) $slPercent;
+        $slCoverage = [
+            'LONG' => $this->buildSlCoverageTiers($extraSlByDirection['LONG'], $slPercentFloat),
+            'SHORT' => $this->buildSlCoverageTiers($extraSlByDirection['SHORT'], $slPercentFloat),
+        ];
+
         return [
             'rows' => $rows,
-            'totals' => array_merge($totals, $analytics['totals']),
+            'totals' => array_merge($totals, $analytics['totals'], ['sl_coverage' => $slCoverage]),
             'regimes' => $analytics['regimes'],
             'meta' => [
                 'symbol' => $symbol->parsed_trading_pair,
@@ -521,6 +544,67 @@ final class BacktestSimulator
             // we don't false-positive the stopped_out tally.
             if ($cachedSlPrice !== false && $cachedSlPrice !== null && $i > $lastTouchIdx) {
                 if ($this->slHit($direction, $c, $cachedSlPrice)) {
+                    // After SL fires the position is closed — no further
+                    // exposure. But the operator still wants to know how
+                    // bad the bleed would have continued: walk every
+                    // remaining candle for the worst adverse price (low
+                    // for LONG, high for SHORT). Surfaces SL timing —
+                    // tight SLs that fired right before recovery vs SLs
+                    // that fired into a continued crash.
+                    [$maxPainPrice, $maxPainCandle] = $this->trackMaxPainAfterSl(
+                        $direction,
+                        $allCandles,
+                        $i,
+                    );
+
+                    // Format with the exchange's price precision so trailing
+                    // zeros from the candle decimal column don't pollute the
+                    // UI / message ("0.078850000000" → "0.07885").
+                    $maxPainFormatted = $maxPainPrice !== null
+                        ? api_format_price($maxPainPrice, $symbol)
+                        : null;
+
+                    // Extra SL % the operator would have needed (on top of the
+                    // current slPercent) to absorb the post-SL bleed. Anchored
+                    // off the rung-N price — same reference the live SL uses —
+                    // so the number stacks directly on slPercent: "current 3.5%
+                    // + needed 3.11% = 6.61% to have stayed in".
+                    $extraSlPct = null;
+                    if ($maxPainPrice !== null) {
+                        $anchor = (float) $priceByRung[$totalLimitOrders];
+                        $sl = (float) $cachedSlPrice;
+                        $pain = (float) $maxPainPrice;
+                        if ($anchor > 0.0) {
+                            $deltaFromAnchor = $direction === 'LONG'
+                                ? ($sl - $pain) / $anchor * 100.0
+                                : ($pain - $sl) / $anchor * 100.0;
+                            if ($deltaFromAnchor > 0.0) {
+                                $extraSlPct = round($deltaFromAnchor, 2);
+                            }
+                        }
+                    }
+
+                    // Bold prices via inline <b> tags — the row note column
+                    // renders this with x-html so the SL and max-pain numbers
+                    // pop. Message is fully server-generated (no user input)
+                    // so the HTML embed is safe.
+                    $painSegment = $maxPainFormatted !== null
+                        ? ('max pain: <b>'.$maxPainFormatted.'</b>'
+                            .($extraSlPct !== null ? sprintf(', SL needed: +%s%%', $extraSlPct) : ''))
+                        : null;
+
+                    $slLabel = $painSegment !== null
+                        ? sprintf('<b>%s</b> (%s)', $cachedSlPrice, $painSegment)
+                        : sprintf('<b>%s</b>', $cachedSlPrice);
+
+                    $message = sprintf(
+                        'Stopped out at %s on %s after last rung (N=%d) touched at %s.',
+                        $slLabel,
+                        $this->ctString($c->candle_time_utc),
+                        $totalLimitOrders,
+                        $this->ctString($allCandles[$lastTouchIdx]->candle_time_utc)
+                    );
+
                     return [
                         'direction' => $direction,
                         'start_candle' => $this->ctString($start->candle_time_utc),
@@ -531,14 +615,13 @@ final class BacktestSimulator
                         'tp_hit_candle' => null,
                         'candles_to_profit' => null,
                         'status' => 'stopped_out',
-                        'message' => sprintf(
-                            'Stopped out at %s on %s after last rung (N=%d) touched at %s.',
-                            $cachedSlPrice,
-                            $this->ctString($c->candle_time_utc),
-                            $totalLimitOrders,
-                            $this->ctString($allCandles[$lastTouchIdx]->candle_time_utc)
-                        ),
+                        'message' => $message,
                         'mae_pct' => round($maeAbs * 100, 3),
+                        'sl_price' => $cachedSlPrice,
+                        'sl_candle' => $this->ctString($c->candle_time_utc),
+                        'max_pain_price' => $maxPainFormatted,
+                        'max_pain_candle' => $maxPainCandle !== null ? $this->ctString($maxPainCandle) : null,
+                        'extra_sl_pct' => $extraSlPct,
                     ];
                 }
             }
@@ -631,6 +714,96 @@ final class BacktestSimulator
         }
 
         return $deepest;
+    }
+
+    /**
+     * Build SL-coverage tiers from the per-direction list of extra-SL %
+     * values observed across stopped sims. Each tier reports the SL setting
+     * (absolute + delta from form input) that would have absorbed that share
+     * of stops. Empty list → null tiers (no stops to cover).
+     *
+     * @param  array<int, float>  $extras  Sorted-by-value extra-SL deltas
+     * @return array<string, array{pct: float|null, delta: float|null}>
+     */
+    private function buildSlCoverageTiers(array $extras, float $slPercentInput): array
+    {
+        sort($extras);
+        $count = count($extras);
+
+        $emptyTier = ['pct' => null, 'delta' => null];
+        $tiers = [
+            'p25' => $emptyTier,
+            'p50' => $emptyTier,
+            'p75' => $emptyTier,
+            'p100' => $emptyTier,
+            'count' => $count,
+        ];
+
+        if ($count === 0) {
+            return $tiers;
+        }
+
+        $pickAt = function (float $coverage) use ($extras, $count): float {
+            // Smallest extra-SL value that covers `coverage` share of stops
+            // when set as the SL. coverage=0.25 → ceil(N*0.25)-1 index.
+            $idx = max(0, (int) ceil($count * $coverage) - 1);
+            $idx = min($count - 1, $idx);
+
+            return $extras[$idx];
+        };
+
+        // Sequential array — PHP truncates float keys to int (0.25→0, 0.50→0,
+        // 0.75→0) and silently collapses them, so we iterate pairs instead.
+        $tierSpecs = [
+            ['key' => 'p25', 'coverage' => 0.25],
+            ['key' => 'p50', 'coverage' => 0.50],
+            ['key' => 'p75', 'coverage' => 0.75],
+            ['key' => 'p100', 'coverage' => 1.00],
+        ];
+        foreach ($tierSpecs as $spec) {
+            $delta = $pickAt($spec['coverage']);
+            $tiers[$spec['key']] = [
+                'pct' => round($slPercentInput + $delta, 2),
+                'delta' => round($delta, 2),
+            ];
+        }
+
+        return $tiers;
+    }
+
+    /**
+     * Track the worst adverse price after SL fires through end of dataset.
+     * For LONG: lowest low. For SHORT: highest high. Compared in plain float
+     * since the metric is informational, not used in fill decisions — full
+     * Math::lt precision would be overkill.
+     *
+     * @return array{0: string|null, 1: mixed}  [max-pain price, candle_time of that bar]
+     */
+    private function trackMaxPainAfterSl(string $direction, Collection $allCandles, int $slFireIdx): array
+    {
+        $painPrice = null;
+        $painCandle = null;
+
+        for ($j = $slFireIdx; $j < $allCandles->count(); $j++) {
+            /** @var Candle $cc */
+            $cc = $allCandles[$j];
+
+            if ($direction === 'LONG') {
+                $candidate = (float) $cc->low;
+                if ($painPrice === null || $candidate < (float) $painPrice) {
+                    $painPrice = (string) $cc->low;
+                    $painCandle = $cc->candle_time_utc;
+                }
+            } else {
+                $candidate = (float) $cc->high;
+                if ($painPrice === null || $candidate > (float) $painPrice) {
+                    $painPrice = (string) $cc->high;
+                    $painCandle = $cc->candle_time_utc;
+                }
+            }
+        }
+
+        return [$painPrice, $painCandle];
     }
 
     private function tpHit(string $direction, Candle $c, string $tpPrice): bool

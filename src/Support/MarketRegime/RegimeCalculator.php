@@ -137,30 +137,57 @@ final class RegimeCalculator
     }
 
     /**
-     * Sub-signal #2: max( (high-low) / low ) over last 24 bars / mean of
-     * the same over last 14 days. Intraday range exploding above baseline.
+     * Sub-signal #2: today's full 24h range (max high − min low, expressed
+     * as a fraction of the min low) ÷ mean of the past 14 daily 24h ranges.
+     * A cascade signature: today's daily range explodes above the baseline
+     * of typical day ranges.
+     *
+     * Per-day, NOT per-hour — a single volatile hour shouldn't dominate
+     * the read. The question is whether the day AS A WHOLE swung wider
+     * than usual. The previous per-hour-max formulation was over-sensitive
+     * (almost any day has at least one volatile hour beating the global
+     * mean of 336 hourly bars), causing the signal to fire on benign
+     * drifts and stay stuck near 3× threshold in production.
      *
      * @param  list<array<string, mixed>>  $btc
      */
     private static function rangeBlowout(array $btc): float
     {
-        $bars = array_slice($btc, -self::HOURS_PER_DAY * self::BASELINE_DAYS);
-        if (count($bars) < self::HOURS_PER_DAY * self::BASELINE_DAYS) {
+        $needed = self::HOURS_PER_DAY * (self::BASELINE_DAYS + 1);
+        $bars = array_slice($btc, -$needed);
+        if (count($bars) < $needed) {
             return 0.0;
         }
 
-        $rangePcts = [];
-        foreach ($bars as $bar) {
-            $high = (float) $bar['high'];
-            $low = (float) $bar['low'];
-            $rangePcts[] = $low > 0.0 ? ($high - $low) / $low : 0.0;
-        }
+        // Group into 24-bar day buckets, aligned from the latest bar back.
+        // Today = the final 24 bars; baseline = the 14 prior 24-bar windows.
+        $days = array_chunk($bars, self::HOURS_PER_DAY);
+        $todayBars = array_pop($days);
+        $today = self::dailyRangePct($todayBars);
 
-        $last24 = array_slice($rangePcts, -self::HOURS_PER_DAY);
-        $max24 = max($last24);
-        $mean14d = array_sum($rangePcts) / count($rangePcts);
+        $baselineRanges = array_map(
+            static fn (array $dayBars): float => self::dailyRangePct($dayBars),
+            $days,
+        );
+        $baseline = array_sum($baselineRanges) / count($baselineRanges);
 
-        return $mean14d > 0.0 ? $max24 / $mean14d : 0.0;
+        return $baseline > 0.0 ? $today / $baseline : 0.0;
+    }
+
+    /**
+     * Compute (max high − min low) / min low across a 24-bar window,
+     * expressed as a fraction (0.025 = 2.5% daily range).
+     *
+     * @param  list<array<string, mixed>>  $bars
+     */
+    private static function dailyRangePct(array $bars): float
+    {
+        $highs = array_map(static fn (array $b): float => (float) $b['high'], $bars);
+        $lows = array_map(static fn (array $b): float => (float) $b['low'], $bars);
+        $maxHigh = max($highs);
+        $minLow = min($lows);
+
+        return $minLow > 0.0 ? ($maxHigh - $minLow) / $minLow : 0.0;
     }
 
     /**

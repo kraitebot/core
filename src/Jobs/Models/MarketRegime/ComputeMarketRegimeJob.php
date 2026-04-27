@@ -203,15 +203,22 @@ final class ComputeMarketRegimeJob extends BaseQueueableJob
             return;
         }
 
-        $blockThreshold = (int) ($kraite->bscs_block_threshold ?? 80);
-        $overrideActive = $kraite->bscs_override_until !== null
-            && $kraite->bscs_override_until->isFuture();
-
+        // Phase 1 invariant: bscs_block_active stays FALSE.
+        //
+        // The 4-week observation window per spec requires the gate to be
+        // observed but never enforced — operators read the dashboard, eyeball
+        // the score against actual market regime, and tune thresholds before
+        // any flag flips trading flow off. Phase 2 will switch this to:
+        //
+        //   $score >= $kraite->bscs_block_threshold
+        //       && ! ($kraite->bscs_override_until?->isFuture() ?? false)
+        //
+        // and wire HasTradingGuards::canOpenPositions() to read it.
         $kraite->updateSaving([
             'bscs_score' => $score,
             'bscs_band' => $band->value,
             'bscs_synced_at' => $computedAt,
-            'bscs_block_active' => $score >= $blockThreshold && ! $overrideActive,
+            'bscs_block_active' => false,
         ]);
     }
 }
