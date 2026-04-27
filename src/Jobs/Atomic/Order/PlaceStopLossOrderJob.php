@@ -18,7 +18,7 @@ use Throwable;
  *
  * Calculation:
  * - Anchor price: Last limit order price (highest rung index)
- * - Percentage: account.stop_market_initial_percentage
+ * - Percentage: position.stop_market_percentage (snapshotted at PreparePositionDataJob via TpSlResolver)
  * - Quantity: position.quantity (stored for reference)
  * - Side: opposite of entry (LONG → SELL, SHORT → BUY)
  *
@@ -78,8 +78,9 @@ final class PlaceStopLossOrderJob extends BaseApiableJob
             return false;
         }
 
-        // Account must have stop_market_initial_percentage configured
-        if ($this->position->account->stop_market_initial_percentage === null) {
+        // SL is snapshotted onto positions.stop_market_percentage at
+        // PreparePositionDataJob — must be present before placement.
+        if ($this->position->stop_market_percentage === null) {
             return false;
         }
 
@@ -90,7 +91,6 @@ final class PlaceStopLossOrderJob extends BaseApiableJob
     {
         $exchangeSymbol = $this->position->exchangeSymbol;
         $direction = $this->position->direction;
-        $account = $this->position->account;
 
         // Side is opposite to close position
         $side = $direction === 'LONG' ? 'SELL' : 'BUY';
@@ -103,7 +103,7 @@ final class PlaceStopLossOrderJob extends BaseApiableJob
         $stopLossData = Kraite::calculateStopLossOrder(
             direction: $direction,
             anchorPrice: $anchorPrice,
-            stopPercent: $account->stop_market_initial_percentage,
+            stopPercent: $this->position->stop_market_percentage,
             currentQty: $this->position->quantity,
             exchangeSymbol: $exchangeSymbol,
         );
@@ -131,7 +131,7 @@ final class PlaceStopLossOrderJob extends BaseApiableJob
             'price' => $stopLossData['price'],
             'quantity' => $stopLossData['quantity'],
             'anchor_price' => $anchorPrice,
-            'stop_percentage' => $account->stop_market_initial_percentage,
+            'stop_percentage' => $this->position->stop_market_percentage,
             'message' => 'Stop-loss order placed on exchange',
         ];
     }

@@ -20,6 +20,7 @@ use Kraite\Core\Commands\Cronjobs\CreatePositionsCommand;
 use Kraite\Core\Commands\Cronjobs\DisableVolatileTokensCommand;
 use Kraite\Core\Commands\Cronjobs\FetchKlinesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeCandlesCommand;
+use Kraite\Core\Commands\Cronjobs\PurgeFailedBacktestedKlinesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeModelLogsCommand;
 use Kraite\Core\Commands\Cronjobs\RefreshExchangeSymbolsCommand;
 use Kraite\Core\Commands\Cronjobs\StoreAccountsBalancesCommand;
@@ -80,6 +81,7 @@ final class CoreServiceProvider extends ServiceProvider
             DisableVolatileTokensCommand::class,
             FetchKlinesCommand::class,
             PurgeCandlesCommand::class,
+            PurgeFailedBacktestedKlinesCommand::class,
             PurgeModelLogsCommand::class,
             RefreshExchangeSymbolsCommand::class,
             StoreAccountsBalancesCommand::class,

@@ -72,6 +72,8 @@ final class Account extends BaseModel
         'can_trade' => 'boolean',
         'is_active' => 'boolean',
         'on_hedge_mode' => 'boolean',
+        'override_tp' => 'boolean',
+        'override_sl' => 'boolean',
         'position_leverage_long' => 'integer',
         'position_leverage_short' => 'integer',
         'margin_mode' => 'string',

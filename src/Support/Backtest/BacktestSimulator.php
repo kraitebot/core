@@ -786,11 +786,17 @@ final class BacktestSimulator
         $totalLimitOrders = max(1, count($rungDistribution) - 1);
         $rungDepthRatio = $avgRungDepth / $totalLimitOrders;
 
+        // Stops are the dominant signal — they're real $ losses. Other
+        // factors are tiebreakers among configs with similar stop rates.
+        // Calibration target: ~10% stops should land in F (≤30), ~5% in
+        // D (~60), ~2% in B (~80), ~0.5% in A (~90+). Old 3× weight let
+        // 12% stops still grade B because depth/MAE/worst-bucket chipped
+        // tiny deductions and stops alone weren't decisive.
         $overallScore = 100.0
-            - ($stopsPct * 15)
-            - ($rungDepthRatio * 100 * 0.20)
-            - (min($maeMax, 100.0) * 0.15)
-            - ((100.0 - ($worstPassRate ?? 100.0)) * 0.5);
+            - ($stopsPct * 5)
+            - ($rungDepthRatio * 100 * 0.05)
+            - (min($maeMax, 100.0) * 0.10)
+            - ((100.0 - ($worstPassRate ?? 100.0)) * 0.3);
 
         $overallScore = max(0.0, min(100.0, $overallScore));
 

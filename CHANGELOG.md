@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.7.1 - 2026-04-27
+
+### Features
+
+- [NEW FEATURE] **Per-symbol TP/SL overrides with account fallback.** `exchange_symbols.profit_percentage` (decimal(6,3) null) + `exchange_symbols.stop_market_percentage` (decimal(5,2) null) hold backtest-validated overrides. `accounts.override_tp` + `accounts.override_sl` (boolean, default false) act as kill-switches. Resolution rule (independent for TP and SL): symbol-NULL → use account; account override true → use account; otherwise use symbol value. Snapshotted onto `positions.profit_percentage` + new `positions.stop_market_percentage` at `PreparePositionDataJob` so mid-life symbol/account edits never retroactively rewrite an open position's exit policy.
+- [NEW FEATURE] `Support\TpSlResolver::resolve()` — pure-string helper that encodes the resolution rule. String-in / string-out (no float casts — preserves decimal precision for downstream Math comparators). 8 unit tests covering the full matrix (null/empty/value × override true/false).
+- [NEW FEATURE] `ExchangeSymbolObserver::propagateTpSlOverridesToSiblings()` — asymmetric Binance→siblings fan-out for `profit_percentage` + `stop_market_percentage`. Only Binance edits propagate (prevents Bitget→Binance→others deadlock that a symmetric observer would create). Precision-safe `Math::equal` comparison skips idempotent re-saves.
+- [NEW FEATURE] `kraite:cron-purge-failed-backtested-klines` hourly command (`Commands\Cronjobs\PurgeFailedBacktestedKlinesCommand`). Purges candles for ExchangeSymbols whose backtest review was rejected.
+
+### Improvements
+
+- [IMPROVED] `Support\Backtest\BacktestSimulator` overall-score weights recalibrated. Stops are the dominant signal now: `stops × 5` (was 15), `rung_depth × 0.05` (was 0.20), `MAE_max × 0.10` (was 0.15), `worst-bucket × 0.3` (was 0.5). Calibration target: ~10% stops → F (≤30), ~5% → D (~60), ~2% → B (~80), ~0.5% → A (~90+). Old weights let 12% stops still grade B because depth/MAE/worst-bucket chipped tiny deductions and stops alone weren't decisive.
+- [IMPROVED] `Jobs\Atomic\Order\PlaceStopLossOrderJob` + `Jobs\Atomic\Order\Bitget\PlacePositionTpslJob` now read `position->stop_market_percentage` (snapshot) instead of `account->stop_market_initial_percentage`. Doc updated.
+
 ## 1.7.0 - 2026-04-27
 
 ### Features

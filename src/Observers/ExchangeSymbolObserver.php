@@ -8,6 +8,7 @@ use Illuminate\Support\Once;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\TokenMapper;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\TradingMapperProxy;
 
 final class ExchangeSymbolObserver
@@ -118,6 +119,15 @@ final class ExchangeSymbolObserver
 
         if (! $this->isBinanceSymbol($model)) {
             return;
+        }
+
+        // Asymmetric propagation: per-symbol TP/SL overrides are pinned
+        // by Binance backtesting data, so only Binance edits fan out.
+        // Edits on Bitget / KuCoin / Kraken stay local — prevents the
+        // Bitget→Binance→others re-propagation deadlock that a symmetric
+        // observer would create.
+        if ($model->wasChanged(['profit_percentage', 'stop_market_percentage'])) {
+            $this->propagateTpSlOverridesToSiblings($model);
         }
 
         // Propagate tradeable-related fields if any of them changed
@@ -245,6 +255,57 @@ final class ExchangeSymbolObserver
             $sibling->was_backtesting_approved = $newValue;
             $sibling->saveQuietly();
         }
+    }
+
+    /**
+     * Sync per-symbol TP/SL overrides from a Binance row down to every
+     * sibling exchange row (same underlying token). Caller already gated
+     * this on `isBinanceSymbol === true`, so this method assumes Binance
+     * is the source. saveQuietly() bypasses observer re-firing on the
+     * siblings, keeping propagation strictly one-directional.
+     *
+     * Decimal columns are returned by the driver as strings — comparing
+     * raw via `===` would mismatch `'0.500'` vs `'0.50'` even though
+     * numerically equal. We normalise both sides through Math::equal so
+     * an idempotent re-save doesn't trigger a useless DB write.
+     */
+    private function propagateTpSlOverridesToSiblings(ExchangeSymbol $model): void
+    {
+        $siblings = $model->getOthersFromExchanges();
+        $newProfit = $model->profit_percentage;
+        $newStop = $model->stop_market_percentage;
+
+        foreach ($siblings as $sibling) {
+            $dirty = false;
+
+            if (! $this->decimalsEqual($sibling->profit_percentage, $newProfit)) {
+                $sibling->profit_percentage = $newProfit;
+                $dirty = true;
+            }
+
+            if (! $this->decimalsEqual($sibling->stop_market_percentage, $newStop)) {
+                $sibling->stop_market_percentage = $newStop;
+                $dirty = true;
+            }
+
+            if ($dirty) {
+                $sibling->saveQuietly();
+            }
+        }
+    }
+
+    /**
+     * Compare two nullable decimal strings safely. NULL on either side
+     * counts as a state change; otherwise we use Math::equal for
+     * precision-safe equality (avoids '0.500' vs '0.50' mismatch).
+     */
+    private function decimalsEqual(?string $a, ?string $b): bool
+    {
+        if ($a === null || $b === null) {
+            return $a === $b;
+        }
+
+        return Math::equal($a, $b);
     }
 
     /**

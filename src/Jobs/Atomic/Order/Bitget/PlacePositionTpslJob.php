@@ -92,8 +92,9 @@ final class PlacePositionTpslJob extends BaseApiableJob
             return false;
         }
 
-        // Account must have stop_market_initial_percentage configured
-        if ($this->position->account->stop_market_initial_percentage === null) {
+        // SL is snapshotted onto positions.stop_market_percentage at
+        // PreparePositionDataJob — must be present before placement.
+        if ($this->position->stop_market_percentage === null) {
             return false;
         }
 
@@ -140,7 +141,7 @@ final class PlacePositionTpslJob extends BaseApiableJob
         $stopLossData = Kraite::calculateStopLossOrder(
             direction: $direction,
             anchorPrice: $anchorPrice,
-            stopPercent: $account->stop_market_initial_percentage,
+            stopPercent: $this->position->stop_market_percentage,
             currentQty: $this->position->quantity,
             exchangeSymbol: $exchangeSymbol,
         );

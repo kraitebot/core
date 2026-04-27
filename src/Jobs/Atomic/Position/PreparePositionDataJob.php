@@ -9,6 +9,7 @@ use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
+use Kraite\Core\Support\TpSlResolver;
 
 /**
  * PreparePositionDataJob (Atomic)
@@ -69,7 +70,23 @@ final class PreparePositionDataJob extends BaseQueueableJob
             ];
         }
 
-        $profitPercentage = $account->profit_percentage;
+        // TP and SL are resolved through the per-symbol overrides chain:
+        // symbol-NULL falls back to account, account override forces account,
+        // otherwise symbol value wins. Snapshot both onto the position so
+        // mid-life edits to either side never retroactively rewrite an
+        // open position's exit policy.
+        $profitPercentage = TpSlResolver::resolve(
+            symbolValue: $exchangeSymbol->profit_percentage,
+            accountOverride: (bool) $account->override_tp,
+            accountValue: (string) $account->profit_percentage,
+        );
+
+        $stopMarketPercentage = TpSlResolver::resolve(
+            symbolValue: $exchangeSymbol->stop_market_percentage,
+            accountOverride: (bool) $account->override_sl,
+            accountValue: (string) $account->stop_market_initial_percentage,
+        );
+
         $indicatorsValues = $exchangeSymbol->indicators_values;
         $indicatorsTimeframe = $exchangeSymbol->indicators_timeframe;
         $totalLimitOrders = $exchangeSymbol->total_limit_orders ?? 4;
@@ -79,6 +96,7 @@ final class PreparePositionDataJob extends BaseQueueableJob
         $this->position->updateSaving([
             'margin' => $margin,
             'profit_percentage' => $profitPercentage,
+            'stop_market_percentage' => $stopMarketPercentage,
             'indicators_values' => $indicatorsValues,
             'indicators_timeframe' => $indicatorsTimeframe,
             'total_limit_orders' => $totalLimitOrders,
@@ -91,7 +109,8 @@ final class PreparePositionDataJob extends BaseQueueableJob
             'exchange_symbol' => $exchangeSymbol->parsed_trading_pair,
             'direction' => $direction,
             'margin' => $margin,
-            'profit_percentage' => (string) $profitPercentage,
+            'profit_percentage' => $profitPercentage,
+            'stop_market_percentage' => $stopMarketPercentage,
             'indicators_timeframe' => $indicatorsTimeframe,
             'total_limit_orders' => $totalLimitOrders,
             'was_fast_traded' => $this->position->was_fast_traded,
