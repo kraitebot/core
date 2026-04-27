@@ -147,7 +147,7 @@ final class BlackSwanIndex
             return null;
         }
 
-        return (int) CarbonImmutable::now()->diffInSeconds($this->syncedAt);
+        return (int) abs(CarbonImmutable::now()->diffInSeconds($this->syncedAt));
     }
 
     public function blockThreshold(): int

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.7.6 - 2026-04-27
+
+### Fixes
+
+- [BUG FIX] `BlackSwanIndex::ageSeconds()` now returns the absolute diff. Carbon's `diffInSeconds()` is signed by direction; the call was returning negative values when `synced_at` was in the past (which is always the steady-state case). Caller-facing: dashboards / freshness logic that consumed the raw value would compare a negative number against a positive `freshness_max_seconds` and silently mis-classify staleness.
+
 ## 1.7.5 - 2026-04-27
 
 ### Features
