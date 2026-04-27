@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.7.3 - 2026-04-27
+
+### Fixes
+
+- [BUG FIX] `ExchangeSymbolObserver::decimalsEqual()` now accepts `string|int|float|null` instead of strict `?string`. Closes a TypeError that surfaced from the admin BacktrackingController where `(float)` casting on the gap input poisoned the observer mid-fan-out. Symptom: every admin save that changed a gap value silently logged an exception and aborted propagation, leaving sibling rows un-synced. Math::equal already accepts the broader spectrum — only the wrapper signature was too tight.
+
 ## 1.7.2 - 2026-04-27
 
 ### Features

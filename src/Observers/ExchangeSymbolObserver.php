@@ -353,11 +353,16 @@ final class ExchangeSymbolObserver
     }
 
     /**
-     * Compare two nullable decimal strings safely. NULL on either side
-     * counts as a state change; otherwise we use Math::equal for
-     * precision-safe equality (avoids '0.500' vs '0.50' mismatch).
+     * Compare two nullable decimal values safely across the string/int/float
+     * spectrum. Eloquent returns decimal columns as strings by default, but
+     * callers (e.g. admin controllers) may cast to float before assignment;
+     * accepting all three keeps the observer crash-free regardless of the
+     * write path. NULL on either side counts as a state change; otherwise
+     * we delegate to Math::equal for precision-safe equality (avoids the
+     * '0.500' vs '0.50' false-mismatch and the 9 vs '9.50' float-vs-decimal
+     * false-mismatch).
      */
-    private function decimalsEqual(?string $a, ?string $b): bool
+    private function decimalsEqual(string|int|float|null $a, string|int|float|null $b): bool
     {
         if ($a === null || $b === null) {
             return $a === $b;
