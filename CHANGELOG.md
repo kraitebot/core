@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.9.0 - 2026-04-29
+
+### Features
+
+- [NEW FEATURE] **Crypto subscription billing — engine** (sans payment-gateway webhook). Per-user wallet, daily-deduct cron, rolling subscription, ledger-backed audit trail. Webhook integration deferred.
+- [NEW FEATURE] Schema additions:
+  - `subscriptions.daily_rate_usdt` + `subscriptions.trial_days` — tier billing config, live-tunable from the table.
+  - `users.wallet_balance_usdt`, `users.trial_started_at`, `users.active_account_id`, `users.trial_days_override` — per-user billing state.
+  - `wallet_transactions` table — append-only ledger with type, signed amount, post-write `balance_after` snapshot, description, JSON meta. Customer-dispute resolution reads top-to-bottom.
+- [NEW FEATURE] `Kraite\Core\Models\WalletTransaction` — model with `TYPE_*` constants (debit_subscription, credit_topup, credit_topup_bonus, credit_admin, debit_admin) and `isCredit/isDebit` helpers.
+- [NEW FEATURE] `Kraite\Core\Support\Billing\Wallet` service — single point of mutation. `credit()` / `debit()` open a transaction, lock the user row (`lockForUpdate`), update the balance and write the ledger row atomically. `bonusPercentFor(amount)` static helper (50→5%, 100→10%, 500→15%). `InsufficientFundsException` on debit underflow.
+- [NEW FEATURE] `Kraite\Core\Models\User` billing helpers — `effectiveTrialDays()` (per-user override → tier default), `isTrialActive`, `isTrialExpired`, `walletRunwayDays`, `isInClosingMode`, `subscription` / `activeAccount` / `walletTransactions` relations.
+- [NEW FEATURE] `Kraite\Core\Commands\Cronjobs\DeductSubscriptionsCommand` (`kraite:cron-deduct-subscriptions`) — daily cron, deduct-before-usage. Skips trial-active users; on insufficient funds fires `subscription_closing_mode` notification (no row written, balance untouched). On low runway (< 7 days) post-debit fires `subscription_low_balance`. Reads tier rate live every run — Christmas-promo price changes apply immediately. Supports `--dry-run` and `--output`.
+- [NEW FEATURE] Trading-guard billing gate — `HasTradingGuards::canOpenNewPositions()` extended to block opens when user is in closing-mode, and (on Starter / 1-account tier) restrict opens to the designated `active_account_id`. Existing positions wind down naturally — only new opens gated.
+- [NEW FEATURE] Four billing notification canonicals seeded via migration: `subscription_low_balance`, `subscription_closing_mode`, `subscription_trial_ending`, `subscription_topup_confirmed`. Match arms added to `NotificationMessageBuilder`.
+
+### Improvements
+
+- [IMPROVED] `KraiteSeeder::seedSubscriptions()` no longer references billing columns (`daily_rate_usdt`, `trial_days`) so it remains callable from inside the create-subscriptions migration before those columns exist.
+
 ## 1.8.0 - 2026-04-28
 
 ### Features

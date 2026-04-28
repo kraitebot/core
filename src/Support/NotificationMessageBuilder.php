@@ -891,6 +891,76 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'subscription_low_balance' => (static function () use ($context) {
+                $days = (int) ($context['runway_days'] ?? 0);
+                $balance = (float) ($context['balance_usdt'] ?? 0);
+                $rate = (float) ($context['daily_rate_usdt'] ?? 0);
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'title' => "Wallet runway: ~{$days} days remaining",
+                    'emailMessage' => "Your Kraite wallet covers approximately {$days} more days at the current daily rate of {$rate} USDT/day.\n\n".
+                        "Current balance: {$balance} USDT.\n\n".
+                        "Top up before the runway runs out to avoid the bot pausing new positions. Existing positions will continue to TP/SL regardless.",
+                    'pushoverMessage' => "Kraite wallet ~{$days} days left ({$balance} USDT). Top up to avoid pause.",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                ];
+            })(),
+
+            'subscription_closing_mode' => (static function () use ($context) {
+                $rate = (float) ($context['daily_rate_usdt'] ?? 0);
+                $balance = (float) ($context['balance_usdt'] ?? 0);
+
+                return [
+                    'severity' => NotificationSeverity::Critical,
+                    'title' => 'Wallet exhausted — closing-positions mode',
+                    'emailMessage' => "Your Kraite wallet ({$balance} USDT) cannot cover today's daily rate ({$rate} USDT/day).\n\n".
+                        "The bot is now in closing-positions mode for your accounts:\n".
+                        "  • New positions are blocked.\n".
+                        "  • Existing positions continue trading their full lifecycle to TP/SL — they are not closed early.\n\n".
+                        'Top up your wallet to resume new opens on the next daily run.',
+                    'pushoverMessage' => 'Kraite wallet empty — new opens paused, existing trades unaffected. Top up to resume.',
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 1,
+                ];
+            })(),
+
+            'subscription_trial_ending' => (static function () use ($context) {
+                $hoursLeft = (int) ($context['hours_left'] ?? 24);
+
+                return [
+                    'severity' => NotificationSeverity::Info,
+                    'title' => "Trial ending in ~{$hoursLeft}h",
+                    'emailMessage' => "Your free Kraite trial expires in approximately {$hoursLeft} hours.\n\n".
+                        "Top up your wallet before then to keep the bot running without interruption. Once the trial ends, the daily rate kicks in and your wallet must cover at least one day's debit for new positions to keep opening.",
+                    'pushoverMessage' => "Kraite trial ends in ~{$hoursLeft}h — top up to keep trading.",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                ];
+            })(),
+
+            'subscription_topup_confirmed' => (static function () use ($context) {
+                $amount = (float) ($context['amount_usdt'] ?? 0);
+                $bonus = (float) ($context['bonus_usdt'] ?? 0);
+                $balance = (float) ($context['balance_after'] ?? 0);
+                $source = is_string($context['source'] ?? null) ? $context['source'] : 'top-up';
+
+                return [
+                    'severity' => NotificationSeverity::Info,
+                    'title' => "Top-up credited: {$amount} USDT",
+                    'emailMessage' => "Your Kraite wallet has been credited.\n\n".
+                        "Source: {$source}\n".
+                        "Amount: {$amount} USDT\n".
+                        ($bonus > 0 ? "Bonus: {$bonus} USDT\n" : '').
+                        "New balance: {$balance} USDT",
+                    'pushoverMessage' => trim("Kraite +{$amount} USDT".($bonus > 0 ? " (+{$bonus} bonus)" : '')." → balance {$balance} USDT"),
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                ];
+            })(),
+
             // Proactive 5-minute drift spotter — fires when an active position
             // disagrees with the exchange after the 10-minute quiet window.
             // The reactive cron (kraite:cron-sync-orders) is the primary

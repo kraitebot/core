@@ -33,10 +33,16 @@ use RuntimeException;
  * @property bool $have_distinct_position_tokens_on_all_accounts
  * @property bool $is_active
  * @property bool $is_admin
+ * @property string $wallet_balance_usdt
+ * @property \Illuminate\Support\Carbon|null $trial_started_at
+ * @property int|null $trial_days_override
+ * @property int|null $active_account_id
  * @property \Illuminate\Support\Carbon $created_at
  * @property \Illuminate\Support\Carbon $updated_at
  * @property string|null $_temp_delivery_group
  * @property bool $is_virtual
+ * @property-read Subscription|null $subscription
+ * @property-read Account|null $activeAccount
  */
 final class User extends Authenticatable
 {
@@ -60,11 +66,14 @@ final class User extends Authenticatable
         'email_verified_at' => 'datetime',
         'last_logged_in_at' => 'datetime',
         'previous_logged_in_at' => 'datetime',
+        'trial_started_at' => 'datetime',
 
         'can_trade' => 'boolean',
         'have_distinct_position_tokens_on_all_accounts' => 'boolean',
         'is_active' => 'boolean',
         'is_admin' => 'boolean',
+
+        'wallet_balance_usdt' => 'decimal:4',
 
         'password' => 'hashed',
         'pushover_key' => 'encrypted',
@@ -89,11 +98,108 @@ final class User extends Authenticatable
     }
 
     /**
+     * @return BelongsTo<Account, $this>
+     */
+    public function activeAccount(): BelongsTo
+    {
+        return $this->belongsTo(Account::class, 'active_account_id');
+    }
+
+    /**
+     * @return HasMany<WalletTransaction, $this>
+     */
+    public function walletTransactions(): HasMany
+    {
+        return $this->hasMany(WalletTransaction::class);
+    }
+
+    /**
      * @return HasMany<Account, $this>
      */
     public function accounts(): HasMany
     {
         return $this->hasMany(Account::class);
+    }
+
+    /**
+     * Effective trial duration in days. Per-user override wins; falls
+     * back to the user's subscription tier default; zero if neither is
+     * set.
+     */
+    public function effectiveTrialDays(): int
+    {
+        if ($this->trial_days_override !== null) {
+            return (int) $this->trial_days_override;
+        }
+
+        return (int) ($this->subscription?->trial_days ?? 0);
+    }
+
+    /**
+     * Trial is active when trial_started_at is set and the configured
+     * trial duration hasn't elapsed yet.
+     */
+    public function isTrialActive(): bool
+    {
+        if ($this->trial_started_at === null) {
+            return false;
+        }
+
+        $trialDays = $this->effectiveTrialDays();
+
+        if ($trialDays <= 0) {
+            return false;
+        }
+
+        return $this->trial_started_at->copy()->addDays($trialDays)->isFuture();
+    }
+
+    /**
+     * Trial was started but has elapsed. Distinct from "trial never
+     * started" so callers (e.g. trial-ending notifier) can identify
+     * users who consumed their trial vs. those who never engaged.
+     */
+    public function isTrialExpired(): bool
+    {
+        if ($this->trial_started_at === null) {
+            return false;
+        }
+
+        return ! $this->isTrialActive();
+    }
+
+    /**
+     * Days of runway remaining at the current daily rate. Returns null
+     * when the user has no active subscription / daily rate is zero.
+     */
+    public function walletRunwayDays(): ?int
+    {
+        $rate = (float) ($this->subscription?->daily_rate_usdt ?? 0);
+
+        if ($rate <= 0) {
+            return null;
+        }
+
+        return (int) floor(((float) $this->wallet_balance_usdt) / $rate);
+    }
+
+    /**
+     * True when the wallet cannot cover one more day at the current
+     * tier rate. Used by trading guards to enter closing-mode.
+     */
+    public function isInClosingMode(): bool
+    {
+        if ($this->isTrialActive()) {
+            return false;
+        }
+
+        $rate = (float) ($this->subscription?->daily_rate_usdt ?? 0);
+
+        if ($rate <= 0) {
+            return false;
+        }
+
+        return ((float) $this->wallet_balance_usdt) < $rate;
     }
 
     /**

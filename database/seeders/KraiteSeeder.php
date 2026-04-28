@@ -915,6 +915,9 @@ final class KraiteSeeder extends Seeder
      */
     public function seedSubscriptions(): void
     {
+        // Billing columns (daily_rate_usdt, trial_days) are seeded by a
+        // later migration — omitted here so the create-subscriptions
+        // migration's seed call works before those columns exist.
         Subscription::updateOrCreate(
             ['canonical' => 'starter'],
             [
