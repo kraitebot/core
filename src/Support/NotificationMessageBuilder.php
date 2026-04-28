@@ -891,6 +891,114 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            // Proactive 5-minute drift spotter — fires when an active position
+            // disagrees with the exchange after the 10-minute quiet window.
+            // The reactive cron (kraite:cron-sync-orders) is the primary
+            // healer; this notification means the spotter found something
+            // the reactive loop missed for ≥10 minutes and dispatched a
+            // sync-orders pass to recover.
+            'position_drift_detected' => (static function () use ($context) {
+                $pair = is_string($context['pair'] ?? null) ? $context['pair'] : 'unknown';
+                $direction = is_string($context['direction'] ?? null) ? $context['direction'] : '?';
+                $accountName = is_string($context['account_name'] ?? null) ? $context['account_name'] : 'account';
+                $exchange = is_string($context['exchange'] ?? null) ? $context['exchange'] : 'exchange';
+                $pairStatus = is_string($context['pair_status'] ?? null) ? $context['pair_status'] : 'drift';
+                $positionDriftFields = is_array($context['position_drift_fields'] ?? null) ? $context['position_drift_fields'] : [];
+                $orderDrifts = is_array($context['order_drifts'] ?? null) ? $context['order_drifts'] : [];
+                $positionId = isset($context['position_id']) ? (int) $context['position_id'] : null;
+
+                $orderDriftLines = [];
+                foreach ($orderDrifts as $od) {
+                    $type = is_string($od['type'] ?? null) ? $od['type'] : '?';
+                    $status = is_string($od['status'] ?? null) ? $od['status'] : '?';
+                    $fields = is_array($od['drift_fields'] ?? null) ? implode(',', $od['drift_fields']) : '';
+                    $orderDriftLines[] = "  • {$type} ({$status})".($fields !== '' ? " — fields: {$fields}" : '');
+                }
+                $orderDriftBody = empty($orderDriftLines) ? '(none)' : implode("\n", $orderDriftLines);
+
+                $positionDriftBody = empty($positionDriftFields)
+                    ? '(none)'
+                    : implode(', ', $positionDriftFields);
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'title' => 'Position Drift Detected',
+                    'emailMessage' => "Drift detected on position #{$positionId} {$pair} {$direction}.\n\n".
+                        "Account: {$accountName} ({$exchange})\n".
+                        "Pair status: {$pairStatus}\n".
+                        "Position-level drift fields: {$positionDriftBody}\n\n".
+                        "Order-level drifts:\n{$orderDriftBody}\n\n".
+                        "The spotter has dispatched `PrepareSyncOrdersJob` for position #{$positionId}. Sync-orders handles the heal.\n\n".
+                        "Inspect:\n[CMD]SELECT id, type, side, status, price, quantity, updated_at FROM orders WHERE position_id = {$positionId} ORDER BY id;[/CMD]",
+                    'pushoverMessage' => "Drift: {$pair} {$direction} ({$accountName}) — ".count($orderDrifts).' order drift(s); sync-orders dispatched',
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 0,
+                ];
+            })(),
+
+            // Orphan open orders attached to a non-active position (closed,
+            // cancelled, or failed). The spotter splits orphans into two
+            // tracks at detection:
+            //   • Ghost (no exchange_order_id) — never reached the
+            //     exchange. Marked CANCELLED in DB inline by the spotter
+            //     since apiCancel has nothing to act on.
+            //   • Real algo (is_algo + exchange_order_id) — the spotter
+            //     dispatches CancelSingleAlgoOrderJob to clean them on
+            //     the exchange.
+            // The notification reports BOTH counts so the operator sees
+            // what the spotter took care of automatically vs what was
+            // dispatched async to Horizon.
+            'position_orphan_orders_detected' => (static function () use ($context) {
+                $pair = is_string($context['pair'] ?? null) ? $context['pair'] : 'unknown';
+                $direction = is_string($context['direction'] ?? null) ? $context['direction'] : '?';
+                $accountName = is_string($context['account_name'] ?? null) ? $context['account_name'] : 'account';
+                $exchange = is_string($context['exchange'] ?? null) ? $context['exchange'] : 'exchange';
+                $positionStatus = is_string($context['position_status'] ?? null) ? $context['position_status'] : 'closed';
+                $orphanOrders = is_array($context['orphan_orders'] ?? null) ? $context['orphan_orders'] : [];
+                $positionId = isset($context['position_id']) ? (int) $context['position_id'] : null;
+                $ghostsCancelled = isset($context['ghosts_cancelled_in_db']) ? (int) $context['ghosts_cancelled_in_db'] : 0;
+                $lifecycleDispatched = ! empty($context['cancel_lifecycle_dispatched']);
+
+                $orderLines = [];
+                foreach ($orphanOrders as $oo) {
+                    $oid = isset($oo['id']) ? (int) $oo['id'] : 0;
+                    $type = is_string($oo['type'] ?? null) ? $oo['type'] : '?';
+                    $side = is_string($oo['side'] ?? null) ? $oo['side'] : '?';
+                    $status = is_string($oo['status'] ?? null) ? $oo['status'] : '?';
+                    $isGhost = ! empty($oo['is_ghost']);
+                    $tag = $isGhost ? ' [ghost]' : '';
+                    $orderLines[] = "  • #{$oid} {$type} {$side} ({$status}){$tag}";
+                }
+                $orderBody = empty($orderLines) ? '(none)' : implode("\n", $orderLines);
+                $count = count($orphanOrders);
+
+                $actions = [];
+                if ($ghostsCancelled > 0) {
+                    $actions[] = "{$ghostsCancelled} marked CANCELLED in DB (ghosts — never on exchange)";
+                }
+                if ($lifecycleDispatched) {
+                    $actions[] = 'cancel-orphan-orders lifecycle dispatched (covers regular + algo orders)';
+                }
+                $actionsBody = empty($actions)
+                    ? '(none — orders surfaced for manual review)'
+                    : "\n  • ".implode("\n  • ", $actions);
+                $actionsSummary = empty($actions) ? 'no auto-action' : implode(' + ', $actions);
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'title' => 'Orphan Orders Detected',
+                    'emailMessage' => "Position #{$positionId} {$pair} {$direction} is `{$positionStatus}` but still carries {$count} open order(s) in our DB.\n\n".
+                        "Account: {$accountName} ({$exchange})\n\n".
+                        "Orphan orders:\n{$orderBody}\n\n".
+                        "Spotter actions:{$actionsBody}",
+                    'pushoverMessage' => "Orphan: {$pair} {$direction} ({$accountName}) — {$count} order(s); {$actionsSummary}",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 0,
+                ];
+            })(),
+
             // Fail loud on unknown canonicals. Previously this returned a
             // generic placeholder notification — meaning a typo at a call
             // site shipped an incoherent live notification with no runtime

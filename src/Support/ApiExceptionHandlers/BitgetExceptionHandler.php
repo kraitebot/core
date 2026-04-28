@@ -32,9 +32,22 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
 
     /**
      * Errors that should be ignored (no action needed).
-     * BitGet uses HTTP 200 with "code" field for some edge cases.
+     *
+     * BitGet uses HTTP 200 with a `code` field carrying a STRING vendor
+     * code (unlike Binance/Bybit which return ints). The codes here use
+     * the string form so the base `containsHttpExceptionIn` strict
+     * comparison matches.
+     *
+     * 200 / "22001": "no order to cancel" — the cancel target was
+     *   already removed (filled, manually cancelled, expired). The
+     *   drift spotter's orphan-cleanup path needs this classified as
+     *   ignorable so a stale orphan cancel completes cleanly.
+     * 200 / "43001": "Order does not exist" — sibling code returned by
+     *   certain plan-order cancel paths.
      */
-    public array $ignorableHttpCodes = [];
+    public array $ignorableHttpCodes = [
+        200 => ['22001', '43001'],
+    ];
 
     /**
      * Errors that can be retried (transient issues).

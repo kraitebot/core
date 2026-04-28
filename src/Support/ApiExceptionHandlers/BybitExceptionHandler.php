@@ -6,7 +6,6 @@ namespace Kraite\Core\Support\ApiExceptionHandlers;
 
 use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Carbon;
-
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Concerns\ApiExceptionHelpers;
 use Kraite\Core\Support\Throttlers\BybitThrottler;
@@ -47,11 +46,18 @@ final class BybitExceptionHandler extends BaseExceptionHandler
             20006,   // Duplicate request ID
             10014,   // Invalid duplicate request
             34040,   // Not modified (value already set TP/SL)
+            110001,  // Order does not exist or too late to cancel (futures cancel)
             110025,  // Position mode not modified
             110026,  // Cross/isolated margin mode unchanged
             110027,  // Margin unchanged
             110030,  // Duplicate order ID
             110043,  // Set leverage not modified
+            // 170213 ("Order does not exist") is intentionally left in
+            // retryableHttpCodes only — on the spot endpoints it
+            // typically signals eventual-consistency lag right after a
+            // place rather than a true missing order. The futures
+            // cancel idempotency we need for the spotter is fully
+            // covered by 110001 above.
         ],
     ];
 
@@ -424,7 +430,7 @@ final class BybitExceptionHandler extends BaseExceptionHandler
      * @param  ResponseInterface  $response  The HTTP 200 response to check
      * @param  RequestInterface  $request  The original request (needed for RequestException)
      *
-     * @throws RequestException  If retCode !== 0 (API-level error)
+     * @throws RequestException If retCode !== 0 (API-level error)
      */
     public function shouldThrowExceptionFromHTTP200(ResponseInterface $response, RequestInterface $request): void
     {

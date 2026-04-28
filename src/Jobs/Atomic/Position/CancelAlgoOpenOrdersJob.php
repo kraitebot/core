@@ -7,6 +7,7 @@ namespace Kraite\Core\Jobs\Atomic\Position;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Position;
+use Throwable;
 
 /**
  * CancelAlgoOpenOrdersJob (Atomic)
@@ -68,21 +69,49 @@ final class CancelAlgoOpenOrdersJob extends BaseApiableJob
         }
 
         $cancelled = [];
+        $idempotent = [];
 
         foreach ($algoOrders as $order) {
-            $apiResponse = $order->apiCancel();
-            $cancelled[] = [
-                'order_id' => $order->id,
-                'type' => $order->type,
-                'result' => $apiResponse->result,
-            ];
+            try {
+                $apiResponse = $order->apiCancel();
+                $cancelled[] = [
+                    'order_id' => $order->id,
+                    'type' => $order->type,
+                    'result' => $apiResponse->result,
+                ];
+            } catch (Throwable $e) {
+                // The exchange may have already cancelled / forgotten the
+                // order between the spotter's read and now (Binance
+                // -2011 "Unknown order sent" is the canonical case).
+                // Per-exchange handlers classify those as ignorable; we
+                // mark the row CANCELLED locally and move to the next
+                // order so a single stale row doesn't kill the rest of
+                // the batch. Anything non-ignorable bubbles up so the
+                // framework's normal retry / fail path runs.
+                if ($this->exceptionHandler->ignoreException($e)) {
+                    $order->updateSaving(['status' => 'CANCELLED']);
+                    $idempotent[] = [
+                        'order_id' => $order->id,
+                        'type' => $order->type,
+                        'reason' => 'Order already gone on exchange; DB reconciled.',
+                    ];
+
+                    continue;
+                }
+
+                throw $e;
+            }
         }
+
+        $totalProcessed = count($cancelled) + count($idempotent);
 
         return [
             'position_id' => $this->position->id,
             'cancelled_count' => count($cancelled),
+            'idempotent_count' => count($idempotent),
             'cancelled' => $cancelled,
-            'message' => count($cancelled) > 0
+            'idempotent' => $idempotent,
+            'message' => $totalProcessed > 0
                 ? 'Algo orders cancelled'
                 : 'No active algo orders to cancel',
         ];

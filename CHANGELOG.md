@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.8.0 - 2026-04-28
+
+### Features
+
+- [NEW FEATURE] **Drift Spotter** — proactive 5-minute audit on top of the every-minute reactive sync. New command `Kraite\Core\Commands\Cronjobs\CheckDriftsCommand` (`kraite:cron-check-drifts`).
+  - Scope 1: drifted active positions (10-minute quiet-window filter, dispatches existing `PrepareSyncOrdersJob`).
+  - Scope 2: orphan open orders on closed/cancelled/failed parents — ghosts (no `exchange_order_id`) marked `CANCELLED` in DB inline; real orphans dispatch a new lifecycle wrapper.
+- [NEW FEATURE] `Kraite\Core\Support\Drift\DriftCheckService` + `DriftChecker` interface + `AccountDriftReport` / `PositionDriftReport` / `OrderDriftReport` value objects. Algorithm ported from `admin.kraite.com`'s drift dashboard. Account-level batched API roundtrip; pure pairing/comparison split out as `analyse()` for testability.
+- [NEW FEATURE] `Kraite\Core\Jobs\Lifecycles\Position\PrepareCancelOrphanOrdersJob` — wrapper that hands off to the existing `CancelPositionOpenOrders` lifecycle (used by ClosePositionJob). Reuses the production bulk-cancel + algo-cancel paths end-to-end, including Bitget's per-order fallback.
+- [NEW FEATURE] Two new notification canonicals registered in `NotificationMessageBuilder`: `position_drift_detected`, `position_orphan_orders_detected`. Migration `2026_04_28_010000_seed_drift_spotter_notifications.php` seeds them with 60s cache_duration / per-position cache_key (no over-firing within a cycle, fresh fire every 5 minutes per position while drift persists).
+- [NEW FEATURE] Backtest sample-size penalty in `Support\Backtest\BacktestSimulator` — overall score now scales linearly down for backtests with under 180 candles. -30 at 0 candles ramping to 0 at 180+. Prevents overstated grades on statistically thin runs (~half a year of 1d data or ~7.5 days of 1h data is the floor).
+
+### Improvements
+
+- [IMPROVED] `CancelSingleAlgoOrderJob`:
+  - `startOrFail()` now accepts non-active position statuses (orphan-cleanup) and rejects null `exchange_order_id` (ghost guard) — defense-in-depth against the spotter's own filter.
+  - `computeApiable()` catches ignorable apiCancel exceptions (Binance -2011 etc.), marks the order CANCELLED locally, sets a private `idempotentlyResolved` flag.
+  - `doubleCheck()` skips apiSync when the idempotent flag is set — apiSync would throw the same not-found error and turn an idempotent success into a verification failure.
+- [IMPROVED] `Atomic\Position\CancelAlgoOpenOrdersJob` foreach now wraps each `apiCancel` in try/catch — ignorable exceptions mark CANCELLED locally and continue to the next order, no longer killing the rest of the batch on a single stale row.
+- [IMPROVED] `BitgetExceptionHandler::ignorableHttpCodes` populated with `200/"22001"` ("no order to cancel") and `200/"43001"` ("Order does not exist"). Cancel-of-missing-order now flows through the idempotent path on Bitget. String form because Bitget body codes are string-typed (unlike Binance/Bybit ints).
+- [IMPROVED] `BybitExceptionHandler::ignorableHttpCodes` adds `200/110001` (futures cancel of missing order). `170213` intentionally kept retryable-only — documented in code (eventual-consistency lag on spot place is more common than true missing order; promoting to ignorable would silently swallow legitimate retry-worthy cases).
+- [IMPROVED] `BybitApiClient` no longer ships `X-BAPI-API-KEY` on public requests. The header now lives only on signed requests (alongside `X-BAPI-TIMESTAMP` / `X-BAPI-SIGN` / `X-BAPI-RECV-WINDOW`). Public `/v5/market/*` calls now use Bybit's IP rate-limit bucket instead of the much smaller per-key bucket — fixes the 02:05 retCode 10006 originally mislabelled as a Binance issue.
+- [IMPROVED] `NotificationMessageBuilder` registers the two new canonicals with action-breakdown email body (per-order list with `[ghost]` tag) and pushover summary listing both inline DB cancellations and lifecycle dispatches.
+- [IMPROVED] `CoreServiceProvider`:
+  - Registers `CheckDriftsCommand` in the boot commands array.
+  - Binds `DriftChecker` interface → `DriftCheckService` implementation.
+
 ## 1.7.11 - 2026-04-27
 
 ### Fixes

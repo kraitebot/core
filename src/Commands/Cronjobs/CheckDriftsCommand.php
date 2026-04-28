@@ -1,0 +1,350 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Kraite\Core\Commands\Cronjobs;
+
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Illuminate\Support\Carbon;
+use Kraite\Core\Jobs\Lifecycles\Order\PrepareSyncOrdersJob;
+use Kraite\Core\Jobs\Lifecycles\Position\PrepareCancelOrphanOrdersJob;
+use Kraite\Core\Models\Account;
+use Kraite\Core\Models\Kraite;
+use Kraite\Core\Models\Order;
+use Kraite\Core\Models\Position;
+use Kraite\Core\Support\Drift\DriftChecker;
+use Kraite\Core\Support\Drift\OrderDriftReport;
+use Kraite\Core\Support\Drift\PositionDriftReport;
+use Kraite\Core\Support\NotificationService;
+use StepDispatcher\Models\Step;
+use StepDispatcher\Support\BaseCommand;
+
+/**
+ * CheckDriftsCommand
+ *
+ * Proactive 5-minute "spotter" that audits the bot's view of the world
+ * against the exchange's view. Runs on top of the reactive sync-orders
+ * cron (which fires every minute) — not as a replacement, but as a
+ * safety net for the cases where the reactive loop missed something.
+ *
+ * Two scopes per cycle:
+ *
+ * Scope 1 — Active position drift:
+ *   - Iterates positions in `active` status that have been QUIET for the
+ *     last 10 minutes (no order with updated_at within the window).
+ *   - Per account, batches a single drift-check call.
+ *   - For every position that comes back as drift / db_only, dispatches
+ *     PrepareSyncOrdersJob and sends one `position_drift_detected`
+ *     pushover.
+ *   - exchange_only pairs (exchange has positions we don't track) and
+ *     transient/synced pairs are intentionally skipped.
+ *
+ * Scope 2 — Orphan open orders:
+ *   - Finds orders in NEW / PARTIALLY_FILLED whose parent position is in
+ *     closed / cancelled / failed AND has no order touched in the last
+ *     10 minutes.
+ *   - Per parent position, dispatches CancelSingleAlgoOrderJob for every
+ *     orphan and sends one summary `position_orphan_orders_detected`
+ *     pushover.
+ *
+ * The 10-minute quiet window exists so the spotter never fires a
+ * concurrent heal while the reactive cron is mid-write on the same
+ * position. Both scopes apply that filter.
+ */
+final class CheckDriftsCommand extends BaseCommand
+{
+    public const QUIET_WINDOW_MINUTES = 10;
+
+    /**
+     * Position statuses considered "non-active" for orphan detection.
+     */
+    public const ORPHAN_PARENT_STATUSES = ['closed', 'cancelled', 'failed'];
+
+    /**
+     * Order statuses considered open on the exchange.
+     */
+    public const ORPHAN_ORDER_STATUSES = ['NEW', 'PARTIALLY_FILLED'];
+
+    /**
+     * Position-level pair statuses that warrant a heal dispatch.
+     */
+    private const HEAL_PAIR_STATUSES = [
+        PositionDriftReport::STATUS_DRIFT,
+        PositionDriftReport::STATUS_DB_ONLY,
+    ];
+
+    protected $signature = 'kraite:cron-check-drifts
+                            {--account_id= : Limit the audit to a single account}
+                            {--output : Display command output (silent by default)}';
+
+    protected $description = 'Proactive 5-minute drift spotter — audits active positions and orphan orders, dispatches existing healers, notifies admin.';
+
+    public function __construct(private readonly DriftChecker $driftService)
+    {
+        parent::__construct();
+    }
+
+    public function handle(): int
+    {
+        $cutoff = Carbon::now()->subMinutes(self::QUIET_WINDOW_MINUTES);
+
+        $accountId = $this->option('account_id');
+        $accountFilter = $accountId ? (int) $accountId : null;
+
+        $this->auditActivePositionDrift($cutoff, $accountFilter);
+        $this->auditOrphanOrders($cutoff, $accountFilter);
+
+        return self::SUCCESS;
+    }
+
+    /**
+     * Scope 1 — drift on active positions.
+     */
+    private function auditActivePositionDrift(Carbon $cutoff, ?int $accountFilter): void
+    {
+        $quietPositions = Position::query()
+            ->where('status', 'active')
+            ->whereDoesntHave('orders', fn ($q) => $q->where('updated_at', '>=', $cutoff))
+            ->when($accountFilter, fn ($q) => $q->where('account_id', $accountFilter))
+            ->get();
+
+        if ($quietPositions->isEmpty()) {
+            $this->verboseInfo('Drift audit: no quiet active positions to inspect.');
+
+            return;
+        }
+
+        // Group quiet positions by account so we can batch one
+        // drift-check API roundtrip per account regardless of how many
+        // positions sit underneath it.
+        $byAccount = $quietPositions->groupBy('account_id');
+
+        $this->verboseInfo("Drift audit: {$quietPositions->count()} quiet position(s) across {$byAccount->count()} account(s).");
+
+        foreach ($byAccount as $accountId => $positions) {
+            /** @var Account|null $account */
+            $account = Account::find($accountId);
+            if (! $account) {
+                continue;
+            }
+
+            $report = $this->driftService->analyseAccount($account);
+
+            $quietIds = $positions->pluck('id')->all();
+
+            foreach ($report->positions as $pair) {
+                if (! in_array($pair->status, self::HEAL_PAIR_STATUSES, true)) {
+                    continue;
+                }
+                if ($pair->positionId === null || ! in_array($pair->positionId, $quietIds, true)) {
+                    // Either the pair has no DB row (exchange_only — already
+                    // filtered above) or the DB row didn't pass the
+                    // 10-minute quiet window. Skip.
+                    continue;
+                }
+
+                $this->dispatchSyncOrders($pair->positionId);
+                $this->notifyDrift($account, $pair);
+            }
+        }
+    }
+
+    /**
+     * Scope 2 — orphan open orders on non-active positions.
+     */
+    private function auditOrphanOrders(Carbon $cutoff, ?int $accountFilter): void
+    {
+        $orphanOrders = Order::query()
+            ->whereIn('status', self::ORPHAN_ORDER_STATUSES)
+            ->whereHas('position', function ($q) use ($accountFilter) {
+                $q->whereIn('status', self::ORPHAN_PARENT_STATUSES);
+                if ($accountFilter !== null) {
+                    $q->where('account_id', $accountFilter);
+                }
+            })
+            ->with(['position.account.apiSystem'])
+            ->get();
+
+        if ($orphanOrders->isEmpty()) {
+            $this->verboseInfo('Orphan audit: nothing to clean up.');
+
+            return;
+        }
+
+        $byPosition = $orphanOrders->groupBy('position_id');
+
+        $this->verboseInfo("Orphan audit: {$orphanOrders->count()} orphan order(s) across {$byPosition->count()} position(s).");
+
+        foreach ($byPosition as $positionId => $orders) {
+            // Skip the whole position if ANY of its orphan orders was
+            // touched within the quiet window — the reactive cleanup may
+            // still be racing with us.
+            $touchedRecently = $orders->contains(fn (Order $o) => $o->updated_at !== null && $o->updated_at->greaterThanOrEqualTo($cutoff));
+            if ($touchedRecently) {
+                $this->verboseComment("  Position #{$positionId}: skipped (orphan order touched in last ".self::QUIET_WINDOW_MINUTES.'min)');
+
+                continue;
+            }
+
+            $position = $orders->first()->position ?? null;
+            if (! $position) {
+                continue;
+            }
+
+            // Two-track cleanup, per orphan parent:
+            //
+            //  1. Ghost orphans (no exchange_order_id) — these never made
+            //     it to the exchange, so apiCancel has nothing to cancel.
+            //     The DB row is the only place they exist. We mark them
+            //     CANCELLED locally, no API call. Without this they'd
+            //     trip the orphan notification forever.
+            //
+            //  2. Real orphans (with exchange_order_id) — delegate to
+            //     the production close-workflow cancel machinery. ONE
+            //     PrepareCancelOrphanOrdersJob spawns the existing
+            //     CancelPositionOpenOrders lifecycle, which in turn
+            //     handles bulk cancel-all for non-algo orders + per-order
+            //     cancel for algo orders. Reuses 100% of the cancel
+            //     path the close workflow already exercises in
+            //     production (Bitget per-order fallback, exchange-
+            //     specific algo endpoints, observer suppression).
+            //
+            //  When ALL orphans on the parent are ghosts (already
+            //  reconciled inline), we skip the lifecycle dispatch —
+            //  there's nothing left for it to do.
+            $ghosts = $orders->filter(
+                static fn (Order $o): bool => $o->exchange_order_id === null || $o->exchange_order_id === ''
+            );
+            $reals = $orders->filter(
+                static fn (Order $o): bool => $o->exchange_order_id !== null && $o->exchange_order_id !== ''
+            );
+
+            $ghostsCancelledInDb = 0;
+            if ($ghosts->isNotEmpty()) {
+                $ghostsCancelledInDb = Order::query()
+                    ->whereIn('id', $ghosts->pluck('id')->all())
+                    ->update(['status' => 'CANCELLED', 'updated_at' => Carbon::now()]);
+                $this->verboseComment("  Position #{$position->id}: marked {$ghostsCancelledInDb} ghost order(s) CANCELLED in DB");
+            }
+
+            $lifecycleDispatched = false;
+            if ($reals->isNotEmpty()) {
+                $this->dispatchCancelOrphanLifecycle($position->id);
+                $lifecycleDispatched = true;
+            }
+
+            $this->notifyOrphans(
+                position: $position,
+                orders: $orders,
+                ghostsCancelledInDb: $ghostsCancelledInDb,
+                cancelLifecycleDispatched: $lifecycleDispatched,
+            );
+        }
+    }
+
+    /**
+     * Drop a top-level Step into the queue that the reactive sync-orders
+     * cron uses. The step-dispatcher promotes it to Pending on the next
+     * tick and the lifecycle does the heal.
+     */
+    private function dispatchSyncOrders(int $positionId): void
+    {
+        Step::create([
+            'class' => PrepareSyncOrdersJob::class,
+            'queue' => 'positions',
+            'arguments' => ['positionId' => $positionId],
+        ]);
+
+        $this->verboseComment("  Position #{$positionId}: dispatched PrepareSyncOrdersJob");
+    }
+
+    /**
+     * Hand the orphan parent off to the existing close-workflow cancel
+     * machinery. The wrapper Step spawns the
+     * CancelPositionOpenOrders lifecycle (bulk-cancel + algo-cancel)
+     * the close path already uses, so we get full coverage of regular
+     * AND algo orders without re-implementing per-exchange cancel
+     * routing here.
+     */
+    private function dispatchCancelOrphanLifecycle(int $positionId): void
+    {
+        Step::create([
+            'class' => PrepareCancelOrphanOrdersJob::class,
+            'queue' => 'positions',
+            'arguments' => ['positionId' => $positionId],
+        ]);
+
+        $this->verboseComment("  Position #{$positionId}: dispatched PrepareCancelOrphanOrdersJob");
+    }
+
+    private function notifyDrift(Account $account, PositionDriftReport $pair): void
+    {
+        $orderDrifts = array_map(
+            static fn (OrderDriftReport $o): array => [
+                'id' => is_array($o->db) ? ($o->db['id'] ?? null) : null,
+                'type' => is_array($o->db) ? ($o->db['type'] ?? null) : ($o->exchange['type'] ?? null),
+                'status' => $o->status,
+                'drift_fields' => $o->driftFields,
+            ],
+            $pair->driftedOrders(),
+        );
+
+        NotificationService::send(
+            user: Kraite::admin(),
+            canonical: 'position_drift_detected',
+            referenceData: [
+                'account_id' => $account->id,
+                'account_name' => $account->name,
+                'exchange' => $account->apiSystem?->canonical,
+                'position_id' => $pair->positionId,
+                'pair' => $pair->symbol,
+                'direction' => $pair->direction,
+                'pair_status' => $pair->status,
+                'position_drift_fields' => $pair->positionDriftFields,
+                'order_drifts' => $orderDrifts,
+            ],
+            relatable: $account,
+            cacheKeys: ['position' => $pair->positionId],
+        );
+    }
+
+    /**
+     * @param  EloquentCollection<int, Order>  $orders
+     */
+    private function notifyOrphans(
+        Position $position,
+        EloquentCollection $orders,
+        int $ghostsCancelledInDb = 0,
+        bool $cancelLifecycleDispatched = false,
+    ): void {
+        $account = $position->account;
+
+        $orphanList = $orders->map(fn (Order $o) => [
+            'id' => $o->id,
+            'type' => $o->type,
+            'side' => $o->side,
+            'status' => $o->status,
+            'is_algo' => (bool) $o->is_algo,
+            'is_ghost' => $o->exchange_order_id === null || $o->exchange_order_id === '',
+        ])->all();
+
+        NotificationService::send(
+            user: Kraite::admin(),
+            canonical: 'position_orphan_orders_detected',
+            referenceData: [
+                'account_id' => $account?->id,
+                'account_name' => $account?->name,
+                'exchange' => $account?->apiSystem?->canonical,
+                'position_id' => $position->id,
+                'pair' => $position->parsed_trading_pair,
+                'direction' => $position->direction,
+                'position_status' => $position->status,
+                'orphan_orders' => $orphanList,
+                'ghosts_cancelled_in_db' => $ghostsCancelledInDb,
+                'cancel_lifecycle_dispatched' => $cancelLifecycleDispatched,
+            ],
+            relatable: $position,
+            cacheKeys: ['position' => $position->id],
+        );
+    }
+}

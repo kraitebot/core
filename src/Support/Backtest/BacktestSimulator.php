@@ -965,11 +965,21 @@ final class BacktestSimulator
         // D (~60), ~2% in B (~80), ~0.5% in A (~90+). Old 3× weight let
         // 12% stops still grade B because depth/MAE/worst-bucket chipped
         // tiny deductions and stops alone weren't decisive.
+        //
+        // Sample-size penalty: a backtest over 50 candles is statistically
+        // unreliable regardless of how clean the rest of the metrics look —
+        // ramp from -30 at 0 candles to 0 at 180+. 180 = ~half a year of 1d
+        // data or ~7.5 days of 1h data; below that the score should reflect
+        // "not enough evidence" rather than overstated confidence.
+        $candles = (int) ($totals['candles'] ?? 0);
+        $sampleSizePenalty = $candles >= 180 ? 0.0 : (180 - $candles) / 180.0 * 30.0;
+
         $overallScore = 100.0
             - ($stopsPct * 5)
             - ($rungDepthRatio * 100 * 0.05)
             - (min($maeMax, 100.0) * 0.10)
-            - ((100.0 - ($worstPassRate ?? 100.0)) * 0.3);
+            - ((100.0 - ($worstPassRate ?? 100.0)) * 0.3)
+            - $sampleSizePenalty;
 
         $overallScore = max(0.0, min(100.0, $overallScore));
 
@@ -999,6 +1009,8 @@ final class BacktestSimulator
                 'rung_distribution' => $rungDistribution,
                 'avg_mae_pct' => $maeCount > 0 ? round($maeSum / $maeCount, 3) : 0.0,
                 'max_mae_pct' => round($maeMax, 3),
+                'sample_size_penalty' => round($sampleSizePenalty, 1),
+                'sample_size_threshold' => 180,
                 'avg_candles_to_profit' => $avgCtp !== null ? round($avgCtp, 2) : null,
                 'p95_candles_to_profit' => $p95Ctp,
                 'worst_bucket_pass_rate' => $worstPassRate !== null ? round($worstPassRate, 2) : null,

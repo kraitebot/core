@@ -48,7 +48,12 @@ final class BybitApiClient extends BaseApiClient
             $this->credentials->get('api_secret')
         );
 
-        // Add Bybit-specific headers
+        // Bybit V5 attaches the per-API-key (UID) rate-limit bucket whenever
+        // X-BAPI-API-KEY is present, even on public endpoints. The API key
+        // and signature stack live ONLY on signed requests so that public
+        // calls (e.g. /v5/market/kline) are billed against the much larger
+        // public IP bucket instead of exhausting the per-key quota (10006).
+        $apiRequest->properties->set('headers.X-BAPI-API-KEY', $this->credentials->get('api_key'));
         $apiRequest->properties->set('headers.X-BAPI-TIMESTAMP', $timestamp);
         $apiRequest->properties->set('headers.X-BAPI-SIGN', $signature);
         $apiRequest->properties->set('headers.X-BAPI-RECV-WINDOW', $recvWindow);
@@ -59,7 +64,6 @@ final class BybitApiClient extends BaseApiClient
     public function getHeaders(): array
     {
         return [
-            'X-BAPI-API-KEY' => $this->credentials->get('api_key'),
             'Content-Type' => 'application/json',
         ];
     }

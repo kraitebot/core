@@ -24,11 +24,22 @@ use Throwable;
  * Note: reference_status should be pre-set to 'CANCELLED' by the calling job
  * to prevent OrderObserver from triggering replacement workflows.
  */
-class CancelSingleAlgoOrderJob extends BaseApiableJob
+final class CancelSingleAlgoOrderJob extends BaseApiableJob
 {
     public Position $position;
 
     public Order $order;
+
+    /**
+     * Set when apiCancel fails with an "order already gone" signal that
+     * the exchange-specific exception handler classifies as ignorable
+     * (Binance -2011 "Unknown order sent" is the canonical example).
+     * The exchange has nothing left to cancel — we treat it as success
+     * and reconcile DB state. doubleCheck() reads this flag to skip
+     * apiSync (which would throw the same not-found error) and accept
+     * the DB's CANCELLED state as the truth.
+     */
+    private bool $idempotentlyResolved = false;
 
     public function __construct(int $positionId, int $orderId)
     {
@@ -50,11 +61,26 @@ class CancelSingleAlgoOrderJob extends BaseApiableJob
 
     /**
      * Verify order can be cancelled.
+     *
+     * Two valid call sites:
+     *  - Active workflow (modify-correction): position is in activeStatuses().
+     *  - Orphan-cleanup (drift spotter): position is in nonActiveStatuses()
+     *    and still has open orders the original cleanup left behind.
+     *
+     * Both paths target the same operation — issue a cancel on the
+     * exchange — so the guard accepts either "open" or "non-active"
+     * states. Anything mid-flight (closing/cancelling) is rejected
+     * because the dispatcher is mid-write and a competing cancel could
+     * race the active workflow.
      */
     public function startOrFail(): bool
     {
-        // Position must be in an active status
-        if (! in_array($this->position->status, $this->position->activeStatuses(), true)) {
+        $allowedStatuses = array_merge(
+            $this->position->activeStatuses(),
+            $this->position->nonActiveStatuses(),
+        );
+
+        if (! in_array($this->position->status, $allowedStatuses, true)) {
             return false;
         }
 
@@ -73,6 +99,18 @@ class CancelSingleAlgoOrderJob extends BaseApiableJob
             return false;
         }
 
+        // Ghost guard. Exchange-specific cancel mappers (Binance algo,
+        // Bitget plan, Bybit cancel) all require the exchange-side id
+        // (algo_id / orderId) to build the request — when our DB row
+        // never made it to the exchange (placement failed, observer
+        // wrote NEW but apiPlace threw), exchange_order_id stays null.
+        // Without this guard the job reaches the mapper, fails its
+        // input validation, and returns Failed every cycle. Cleaner to
+        // skip up front: nothing to cancel on the exchange anyway.
+        if ($this->order->exchange_order_id === null || $this->order->exchange_order_id === '') {
+            return false;
+        }
+
         return true;
     }
 
@@ -81,8 +119,32 @@ class CancelSingleAlgoOrderJob extends BaseApiableJob
      */
     public function computeApiable(): array
     {
-        // Cancel the algo order via exchange-specific endpoint
-        $apiResponse = $this->order->apiCancel();
+        try {
+            $apiResponse = $this->order->apiCancel();
+        } catch (Throwable $e) {
+            // The exchange may have already forgotten the order — common
+            // for stale orphans the spotter is sweeping (Binance returns
+            // -2011 "Unknown order sent" for a cancel against a missing
+            // order). Per-exchange exception handlers classify these
+            // codes as ignorable; when they do, this is an idempotent
+            // success: nothing left on the exchange to cancel, just
+            // reconcile our DB to match reality.
+            if ($this->exceptionHandler->ignoreException($e)) {
+                $this->order->updateSaving(['status' => 'CANCELLED']);
+                $this->idempotentlyResolved = true;
+
+                return [
+                    'position_id' => $this->position->id,
+                    'order_id' => $this->order->id,
+                    'type' => $this->order->type,
+                    'exchange_order_id' => $this->order->exchange_order_id,
+                    'message' => 'Order already gone on exchange; DB reconciled to CANCELLED.',
+                    'idempotent' => true,
+                ];
+            }
+
+            throw $e;
+        }
 
         // Update local status
         $this->order->updateSaving(['status' => 'CANCELLED']);
@@ -107,6 +169,15 @@ class CancelSingleAlgoOrderJob extends BaseApiableJob
      */
     public function doubleCheck(): bool
     {
+        // computeApiable's idempotent branch already discovered the order
+        // is gone server-side and reconciled the DB to CANCELLED. Calling
+        // apiSync here would throw the same not-found error and turn a
+        // legitimate idempotent success into a verification failure. The
+        // DB row is the truth post-reconciliation; accept it.
+        if ($this->idempotentlyResolved) {
+            return $this->order->status === 'CANCELLED';
+        }
+
         // Sync order to get current status from exchange
         $apiResponse = $this->order->apiSync();
         $this->order->refresh();
@@ -136,7 +207,7 @@ class CancelSingleAlgoOrderJob extends BaseApiableJob
     public function resolveException(Throwable $e): void
     {
         $this->position->updateSaving([
-            'error_message' => 'Algo order cancel failed: ' . $e->getMessage(),
+            'error_message' => 'Algo order cancel failed: '.$e->getMessage(),
         ]);
     }
 }

@@ -15,6 +15,7 @@ use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
 use Kraite\Core\Commands\Backtest\BacktestTokenCommand;
 use Kraite\Core\Commands\Cronjobs\AnalyseBscsCommand;
+use Kraite\Core\Commands\Cronjobs\CheckDriftsCommand;
 use Kraite\Core\Commands\Cronjobs\ComputeMarketRegimeCommand;
 use Kraite\Core\Commands\Cronjobs\ConcludeSymbolsDirectionCommand;
 use Kraite\Core\Commands\Cronjobs\CreatePositionsCommand;
@@ -78,6 +79,7 @@ final class CoreServiceProvider extends ServiceProvider
             UpdateRecvwindowSafetyDurationCommand::class,
             BacktestTokenCommand::class,
             AnalyseBscsCommand::class,
+            CheckDriftsCommand::class,
             ComputeMarketRegimeCommand::class,
             DetectMarketShockCommand::class,
             ConcludeSymbolsDirectionCommand::class,
@@ -160,6 +162,14 @@ final class CoreServiceProvider extends ServiceProvider
         $this->mergeConfigFrom(
             __DIR__.'/../config/kraite.php',
             'kraite'
+        );
+
+        // Bind the drift-spotter contract to its production implementation.
+        // The interface seam exists so tests can swap in canned reports
+        // without going through the real exchange API.
+        $this->app->bind(
+            Support\Drift\DriftChecker::class,
+            Support\Drift\DriftCheckService::class,
         );
     }
 
