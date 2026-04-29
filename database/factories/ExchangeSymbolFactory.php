@@ -7,7 +7,6 @@ namespace Kraite\Core\Database\Factories;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
-use Kraite\Core\Models\Symbol;
 
 /**
  * @extends \Illuminate\Database\Eloquent\Factories\Factory<\Kraite\Core\Models\ExchangeSymbol>
@@ -22,11 +21,16 @@ final class ExchangeSymbolFactory extends Factory
     public function definition(): array
     {
         return [
-            'token' => strtoupper(fake()->lexify('???')),
+            'token' => mb_strtoupper(fake()->lexify('???')),
             'quote' => 'USDT',
             'symbol_id' => null,
             'api_system_id' => ApiSystem::factory(),
             'is_manually_enabled' => true,
+            // Default factory state mirrors the implicit "fully eligible" assumption
+            // most test fixtures use. The DB column default is false (added 2026-04-27)
+            // so production rows start unapproved until the operator promotes them;
+            // tests asserting the unapproved-blocking path should override to false.
+            'was_backtesting_approved' => true,
             'has_no_indicator_data' => false,
             'has_price_trend_misalignment' => false,
             'has_early_direction_change' => false,

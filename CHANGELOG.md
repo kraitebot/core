@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 ### Improvements
 
 - [IMPROVED] New `Bitget\CalculateWapAndModifyProfitOrderJob::findSiblingStopLossOrder()` helper — mirrors the convention from `Bitget\ModifyAlgoOrderJob::findSiblingAlgoOrder()`.
+- [IMPROVED] `ExchangeSymbolFactory` default state now sets `was_backtesting_approved=true`. The DB column default is still `false` (added 2026-04-27), so production rows still need explicit operator approval — only the test/factory shorthand assumes a fully-eligible symbol unless a test explicitly overrides to `false`. Unblocks ~30 token-discovery and assignment tests that were silently filtered out by `scopeTradeable()` after the column landed.
 
 ## 1.9.0 - 2026-04-29
 
