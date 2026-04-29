@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.10.0 - 2026-04-29
+
+### Features
+
+- [NEW FEATURE] **Monthly subscription billing — full pivot from daily debit.** `subscription_renews_at` (renewal anchor) is the single source of truth for cycle position. Renewal cron debits one tier rate and pushes the anchor +1 month. No daily debits, no runway-days framing.
+- [NEW FEATURE] `Kraite\Core\Commands\Cronjobs\RenewSubscriptionsCommand` (`kraite:cron-renew-subscriptions`) — daily midnight cron with three responsibilities: process due renewals, fire `subscription_low_balance` 7 days before each renewal (only if wallet short), fire `subscription_trial_ending` 2 days before trial expiry (only if wallet short, one-shot lifetime). Replaces the retired `DeductSubscriptionsCommand`.
+- [NEW FEATURE] `Kraite\Core\Support\Billing\Wallet::runRenewal(User, ?CarbonInterface)` — atomic monthly renewal. Locks the user row, debits the tier rate, pushes `subscription_renews_at` forward by 1 month (or to an explicit anchor passed by callers like the read-only-unlock path: `now + 1 month - 1 day`).
+- [NEW FEATURE] `Kraite\Core\Models\User` pause/resume helpers — `isPaused()`, `pause()` (sets `subscription_paused_at`), `resume()` (clears the timestamp + pushes `subscription_renews_at` forward by the pause duration). Trial keeps wall-clock during pause.
+- [NEW FEATURE] `Kraite\Core\Models\User` renewal helpers — `subscriptionCoversNextRenewal(): bool`, `renewalShortfallUsdt(): float`, rewritten `isInClosingMode()` (paused → true; trial active → false; renews_at null or past → true). Drops `walletRunwayDays()`.
+- [NEW FEATURE] **NOWPayments integration — first pass.**
+  - `Kraite\Core\Models\Payment` — append-only payment-tracking model with status constants (`pending`, `waiting`, `confirming`, `confirmed`, `sending`, `partially_paid`, `finished`, `failed`, `refunded`, `expired`) and `CREDITABLE_STATUSES` (finished, partially_paid).
+  - `Kraite\Core\Support\Billing\NowPaymentsClient` — thin Http wrapper for the gateway API. `createInvoice(price_amount, order_id, ipn_callback_url, success_url, cancel_url, order_description, customer_email)` returns hosted invoice URL. `getPayment()` for admin reconcile. Static `fromConfig()` factory pulls credentials from `services.nowpayments`.
+- [NEW FEATURE] `WalletTransaction::TYPE_CREDIT_PRORATE_REFUND` — new ledger type for the refund credit written when a user changes plan mid-cycle.
+
+### Improvements
+
+- [IMPROVED] `Kraite\Core\Support\NotificationMessageBuilder` — all 4 billing arms rewritten for renewal-anchored timing. `subscription_low_balance` reads `renews_at` + `monthly_rate_usdt` + `shortfall_usdt`. `subscription_closing_mode` reads `monthly_rate_usdt` + `shortfall_usdt`. `subscription_trial_ending` reads `monthly_rate_usdt` + `shortfall_usdt`. `subscription_topup_confirmed` extended with `renewal_ran` flag — three message branches: renewal applied, balance covers next renewal, still short.
+- [IMPROVED] `Kraite\Core\Support\Billing\Wallet::bonusPercentFor()` removed — bonus ladder killed in the monthly model. `WalletTransaction::TYPE_CREDIT_TOPUP_BONUS` constant retained for ledger-history compatibility, but no new rows of that type are written.
+
+### Schema
+
+- [NEW FEATURE] `2026_04_29_120000_switch_subscriptions_to_monthly_rate.php` — renames `subscriptions.daily_rate_usdt` → `monthly_rate_usdt`, multiplies existing values by 30. Reversible.
+- [NEW FEATURE] `2026_04_29_120100_add_renewal_columns_to_users.php` — adds `users.subscription_renews_at` + `users.subscription_paused_at` (nullable timestamps).
+- [NEW FEATURE] `2026_04_29_130000_create_payments_table.php` — `payments` table tracking each top-up with user_id, nowpayments_payment_id (unique), order_id, pay_currency, pay_amount, price_amount, outcome_amount, outcome_currency, status, invoice_url, credited_at, raw_payload (json).
+
 ## 1.9.1 - 2026-04-29
 
 ### Fixes

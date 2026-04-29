@@ -892,35 +892,39 @@ final class NotificationMessageBuilder
             })(),
 
             'subscription_low_balance' => (static function () use ($context) {
-                $days = (int) ($context['runway_days'] ?? 0);
+                $renewsAt = is_string($context['renews_at'] ?? null) ? $context['renews_at'] : null;
                 $balance = (float) ($context['balance_usdt'] ?? 0);
-                $rate = (float) ($context['daily_rate_usdt'] ?? 0);
+                $rate = (float) ($context['monthly_rate_usdt'] ?? 0);
+                $shortfall = (float) ($context['shortfall_usdt'] ?? 0);
+
+                $renewsLabel = $renewsAt ?? 'soon';
 
                 return [
                     'severity' => NotificationSeverity::High,
-                    'title' => "Wallet runway: ~{$days} days remaining",
-                    'emailMessage' => "Your Kraite wallet covers approximately {$days} more days at the current daily rate of {$rate} USDT/day.\n\n".
-                        "Current balance: {$balance} USDT.\n\n".
-                        "Top up before the runway runs out to avoid the bot pausing new positions. Existing positions will continue to TP/SL regardless.",
-                    'pushoverMessage' => "Kraite wallet ~{$days} days left ({$balance} USDT). Top up to avoid pause.",
+                    'title' => 'Renewal in 7 days — wallet short',
+                    'emailMessage' => "Your Kraite subscription renews on {$renewsLabel} at the current monthly rate of {$rate} USDT.\n\n".
+                        "Current balance: {$balance} USDT — short {$shortfall} USDT for the next renewal.\n\n".
+                        "Top up before the renewal date to avoid the bot pausing new positions. Existing positions will continue to TP/SL regardless.",
+                    'pushoverMessage' => "Kraite renews {$renewsLabel} — wallet {$balance} USDT, short {$shortfall}. Top up to avoid pause.",
                     'actionUrl' => null,
                     'actionLabel' => null,
                 ];
             })(),
 
             'subscription_closing_mode' => (static function () use ($context) {
-                $rate = (float) ($context['daily_rate_usdt'] ?? 0);
+                $rate = (float) ($context['monthly_rate_usdt'] ?? 0);
                 $balance = (float) ($context['balance_usdt'] ?? 0);
+                $shortfall = (float) ($context['shortfall_usdt'] ?? 0);
 
                 return [
                     'severity' => NotificationSeverity::Critical,
-                    'title' => 'Wallet exhausted — closing-positions mode',
-                    'emailMessage' => "Your Kraite wallet ({$balance} USDT) cannot cover today's daily rate ({$rate} USDT/day).\n\n".
-                        "The bot is now in closing-positions mode for your accounts:\n".
+                    'title' => 'Renewal failed — read-only mode',
+                    'emailMessage' => "Your Kraite wallet ({$balance} USDT) cannot cover the monthly renewal rate ({$rate} USDT). You need {$shortfall} USDT more.\n\n".
+                        "The bot is now in read-only mode for your accounts:\n".
                         "  • New positions are blocked.\n".
                         "  • Existing positions continue trading their full lifecycle to TP/SL — they are not closed early.\n\n".
-                        'Top up your wallet to resume new opens on the next daily run.',
-                    'pushoverMessage' => 'Kraite wallet empty — new opens paused, existing trades unaffected. Top up to resume.',
+                        'Top up your wallet to resume new opens. The renewal will retry the moment the balance covers the monthly rate.',
+                    'pushoverMessage' => 'Kraite renewal failed — read-only mode. New opens paused, existing trades unaffected. Top up to resume.',
                     'actionUrl' => null,
                     'actionLabel' => null,
                     'priority' => 1,
@@ -928,14 +932,17 @@ final class NotificationMessageBuilder
             })(),
 
             'subscription_trial_ending' => (static function () use ($context) {
-                $hoursLeft = (int) ($context['hours_left'] ?? 24);
+                $rate = (float) ($context['monthly_rate_usdt'] ?? 0);
+                $shortfall = (float) ($context['shortfall_usdt'] ?? 0);
+                $balance = (float) ($context['balance_usdt'] ?? 0);
 
                 return [
                     'severity' => NotificationSeverity::Info,
-                    'title' => "Trial ending in ~{$hoursLeft}h",
-                    'emailMessage' => "Your free Kraite trial expires in approximately {$hoursLeft} hours.\n\n".
-                        "Top up your wallet before then to keep the bot running without interruption. Once the trial ends, the daily rate kicks in and your wallet must cover at least one day's debit for new positions to keep opening.",
-                    'pushoverMessage' => "Kraite trial ends in ~{$hoursLeft}h — top up to keep trading.",
+                    'title' => 'Trial ends in 2 days — wallet short',
+                    'emailMessage' => "Your free Kraite trial ends in 2 days.\n\n".
+                        "After the trial, the bot debits the monthly subscription rate of {$rate} USDT once per renewal cycle. Your current wallet balance is {$balance} USDT — {$shortfall} USDT short of the first renewal.\n\n".
+                        'Top up before the trial ends to keep the bot running without interruption. If your wallet is short at the first renewal tick, your accounts go into read-only mode (existing positions continue, no new opens) until you top up.',
+                    'pushoverMessage' => "Kraite trial ends in 2 days — wallet {$balance} USDT, short {$shortfall}. Top up to keep trading.",
                     'actionUrl' => null,
                     'actionLabel' => null,
                 ];
@@ -943,9 +950,18 @@ final class NotificationMessageBuilder
 
             'subscription_topup_confirmed' => (static function () use ($context) {
                 $amount = (float) ($context['amount_usdt'] ?? 0);
-                $bonus = (float) ($context['bonus_usdt'] ?? 0);
                 $balance = (float) ($context['balance_after'] ?? 0);
                 $source = is_string($context['source'] ?? null) ? $context['source'] : 'top-up';
+                $rate = (float) ($context['monthly_rate_usdt'] ?? 0);
+                $shortfall = (float) ($context['shortfall_usdt'] ?? 0);
+                $renewalRan = (bool) ($context['renewal_ran'] ?? false);
+                $sufficient = $shortfall <= 0;
+
+                $statusLine = match (true) {
+                    $renewalRan => 'Renewal applied immediately — accounts back in write-mode.',
+                    $sufficient => 'Balance now covers the next renewal.',
+                    default => "Still {$shortfall} USDT short of the next renewal.",
+                };
 
                 return [
                     'severity' => NotificationSeverity::Info,
@@ -953,9 +969,10 @@ final class NotificationMessageBuilder
                     'emailMessage' => "Your Kraite wallet has been credited.\n\n".
                         "Source: {$source}\n".
                         "Amount: {$amount} USDT\n".
-                        ($bonus > 0 ? "Bonus: {$bonus} USDT\n" : '').
-                        "New balance: {$balance} USDT",
-                    'pushoverMessage' => trim("Kraite +{$amount} USDT".($bonus > 0 ? " (+{$bonus} bonus)" : '')." → balance {$balance} USDT"),
+                        "New balance: {$balance} USDT\n".
+                        "Monthly rate: {$rate} USDT\n\n".
+                        $statusLine,
+                    'pushoverMessage' => "Kraite +{$amount} USDT → balance {$balance} USDT. {$statusLine}",
                     'actionUrl' => null,
                     'actionLabel' => null,
                 ];

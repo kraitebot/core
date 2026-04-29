@@ -12,7 +12,7 @@ use Kraite\Core\Abstracts\BaseModel;
  * @property string $name
  * @property string $canonical
  * @property string|null $description
- * @property string $daily_rate_usdt
+ * @property string $monthly_rate_usdt
  * @property int $trial_days
  * @property int|null $max_accounts
  * @property int|null $max_exchanges
@@ -28,7 +28,7 @@ final class Subscription extends BaseModel
         'max_accounts' => 'integer',
         'max_exchanges' => 'integer',
         'max_balance' => 'decimal:2',
-        'daily_rate_usdt' => 'decimal:4',
+        'monthly_rate_usdt' => 'decimal:4',
         'trial_days' => 'integer',
     ];
 

@@ -31,6 +31,8 @@ final class WalletTransaction extends BaseModel
 
     public const TYPE_CREDIT_TOPUP_BONUS = 'credit_topup_bonus';
 
+    public const TYPE_CREDIT_PRORATE_REFUND = 'credit_prorate_refund';
+
     public const TYPE_CREDIT_ADMIN = 'credit_admin';
 
     public const TYPE_DEBIT_ADMIN = 'debit_admin';

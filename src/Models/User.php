@@ -36,6 +36,8 @@ use RuntimeException;
  * @property string $wallet_balance_usdt
  * @property \Illuminate\Support\Carbon|null $trial_started_at
  * @property int|null $trial_days_override
+ * @property \Illuminate\Support\Carbon|null $subscription_renews_at
+ * @property \Illuminate\Support\Carbon|null $subscription_paused_at
  * @property int|null $active_account_id
  * @property \Illuminate\Support\Carbon $created_at
  * @property \Illuminate\Support\Carbon $updated_at
@@ -67,6 +69,8 @@ final class User extends Authenticatable
         'last_logged_in_at' => 'datetime',
         'previous_logged_in_at' => 'datetime',
         'trial_started_at' => 'datetime',
+        'subscription_renews_at' => 'datetime',
+        'subscription_paused_at' => 'datetime',
 
         'can_trade' => 'boolean',
         'have_distinct_position_tokens_on_all_accounts' => 'boolean',
@@ -169,37 +173,106 @@ final class User extends Authenticatable
     }
 
     /**
-     * Days of runway remaining at the current daily rate. Returns null
-     * when the user has no active subscription / daily rate is zero.
+     * True when the user has voluntarily paused their subscription.
      */
-    public function walletRunwayDays(): ?int
+    public function isPaused(): bool
     {
-        $rate = (float) ($this->subscription?->daily_rate_usdt ?? 0);
-
-        if ($rate <= 0) {
-            return null;
-        }
-
-        return (int) floor(((float) $this->wallet_balance_usdt) / $rate);
+        return $this->subscription_paused_at !== null;
     }
 
     /**
-     * True when the wallet cannot cover one more day at the current
-     * tier rate. Used by trading guards to enter closing-mode.
+     * True when the wallet covers the current monthly tier rate. Used
+     * by the billing UI to render the green/red coverage badge.
+     */
+    public function subscriptionCoversNextRenewal(): bool
+    {
+        $rate = (float) ($this->subscription?->monthly_rate_usdt ?? 0);
+
+        if ($rate <= 0) {
+            return true;
+        }
+
+        return ((float) $this->wallet_balance_usdt) >= $rate;
+    }
+
+    /**
+     * USDT short of the next monthly renewal. Returns 0 when the
+     * wallet already covers the rate.
+     */
+    public function renewalShortfallUsdt(): float
+    {
+        $rate = (float) ($this->subscription?->monthly_rate_usdt ?? 0);
+
+        if ($rate <= 0) {
+            return 0.0;
+        }
+
+        return max(0.0, $rate - (float) $this->wallet_balance_usdt);
+    }
+
+    /**
+     * Read-only mode gate. The trading guards consult this before
+     * opening new positions; existing positions are never affected.
+     *
+     *  - Paused → always closing (pause overrides everything).
+     *  - Trial active → not closing.
+     *  - No renewal anchor set (post-trial user with no cycle) →
+     *    closing until first renewal lands.
+     *  - Renewal anchor in the past → closing (cron has not yet
+     *    successfully renewed, or wallet is short).
      */
     public function isInClosingMode(): bool
     {
+        if ($this->isPaused()) {
+            return true;
+        }
+
         if ($this->isTrialActive()) {
             return false;
         }
 
-        $rate = (float) ($this->subscription?->daily_rate_usdt ?? 0);
-
-        if ($rate <= 0) {
-            return false;
+        if ($this->subscription_renews_at === null) {
+            return true;
         }
 
-        return ((float) $this->wallet_balance_usdt) < $rate;
+        return $this->subscription_renews_at->isPast();
+    }
+
+    /**
+     * Pause the subscription. All accounts go read-only until resume.
+     * No-op if already paused.
+     */
+    public function pause(): void
+    {
+        if ($this->isPaused()) {
+            return;
+        }
+
+        $this->subscription_paused_at = now();
+        $this->save();
+    }
+
+    /**
+     * Resume from pause. Pushes the renewal anchor forward by the
+     * pause duration so the user gets back the days they paid for.
+     * No-op if not paused.
+     */
+    public function resume(): void
+    {
+        if (! $this->isPaused()) {
+            return;
+        }
+
+        $pauseDays = (int) floor($this->subscription_paused_at->diffInDays(now()));
+
+        if ($this->subscription_renews_at !== null && $pauseDays > 0) {
+            $this->subscription_renews_at = $this->subscription_renews_at
+                ->copy()
+                ->addDays($pauseDays);
+        }
+
+        $this->subscription_paused_at = null;
+        $this->save();
     }
 
     /**

@@ -19,7 +19,7 @@ use Kraite\Core\Commands\Cronjobs\CheckDriftsCommand;
 use Kraite\Core\Commands\Cronjobs\ComputeMarketRegimeCommand;
 use Kraite\Core\Commands\Cronjobs\ConcludeSymbolsDirectionCommand;
 use Kraite\Core\Commands\Cronjobs\CreatePositionsCommand;
-use Kraite\Core\Commands\Cronjobs\DeductSubscriptionsCommand;
+use Kraite\Core\Commands\Cronjobs\RenewSubscriptionsCommand;
 use Kraite\Core\Commands\Cronjobs\DetectMarketShockCommand;
 use Kraite\Core\Commands\Cronjobs\DisableVolatileTokensCommand;
 use Kraite\Core\Commands\Cronjobs\FetchKlinesCommand;
@@ -85,7 +85,7 @@ final class CoreServiceProvider extends ServiceProvider
             DetectMarketShockCommand::class,
             ConcludeSymbolsDirectionCommand::class,
             CreatePositionsCommand::class,
-            DeductSubscriptionsCommand::class,
+            RenewSubscriptionsCommand::class,
             DisableVolatileTokensCommand::class,
             FetchKlinesCommand::class,
             PurgeCandlesCommand::class,
