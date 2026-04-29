@@ -6,19 +6,31 @@ namespace Kraite\Core\Jobs\Atomic\Order\Bitget;
 
 use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Jobs\Atomic\Order\CalculateWapAndModifyProfitOrderJob as BaseCalculateWapAndModifyProfitOrderJob;
+use Kraite\Core\Models\Order;
 use Kraite\Core\Support\Math;
+use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 use RuntimeException;
 use Throwable;
 
 /**
  * CalculateWapAndModifyProfitOrderJob (Atomic) - Bitget
  *
- * Bitget-specific implementation for WAP calculation and profit order modification.
+ * Bitget-specific WAP recalculation. Diverges from the Binance base in
+ * two ways:
  *
- * Key difference from Binance:
- * - Uses apiModifyTpsl() instead of apiModify()
- * - Bitget position-level TP/SL can only modify the trigger price, not quantity
- * - The position quantity is already updated from the exchange snapshot via $this->positionQty
+ *   1. Bitget pos_profit / pos_loss orders are attached to the position
+ *      and cannot be modified through any per-order endpoint. The
+ *      `modify-tpsl-order` endpoint returns HTTP 400 / code 400172
+ *      ("trigger price cannot be empty") for these orders across every
+ *      field-name combination tried (verified live 2026-04-26 via
+ *      tinker, confirmed again 2026-04-29 on production position #792).
+ *      The only proven write path is `place-pos-tpsl`, which atomically
+ *      overwrites BOTH legs while preserving the existing plan-order IDs.
+ *
+ *   2. `place-pos-tpsl` is intrinsically a paired call. Modifying just
+ *      the TP requires reading the sibling SL leg's current price and
+ *      sending it through unchanged. Same pattern as
+ *      `Bitget\ModifyAlgoOrderJob` (drift-correction flow).
  *
  * Bitget Futures position response includes:
  * - symbol: e.g. "BTCUSDT"
@@ -29,28 +41,24 @@ use Throwable;
 final class CalculateWapAndModifyProfitOrderJob extends BaseCalculateWapAndModifyProfitOrderJob
 {
     /**
-     * Calculate WAP and modify profit order using apiModifyTpsl().
+     * Calculate WAP and rewrite the position's TP via place-pos-tpsl.
      *
      * @return array<string, mixed>
      */
     public function computeApiable(): array
     {
         $scale = 8;
+        $account = $this->position->account;
 
-        // 1) Read the latest account-positions snapshot
-        $positions = \Kraite\Core\Models\ApiSnapshot::getFrom($this->position->account, 'account-positions');
+        $positions = \Kraite\Core\Models\ApiSnapshot::getFrom($account, 'account-positions');
 
-        // 2) Build position key and find in snapshot
-        // BitGet format: "BTCUSDT:LONG" or "BTCUSDT:SHORT"
         $positionKey = $this->buildPositionKey();
 
-        // Try keyed lookup first
         $positionFromExchange = null;
         if (is_array($positions)) {
             if (array_key_exists($positionKey, $positions)) {
                 $positionFromExchange = $positions[$positionKey];
             } else {
-                // Fallback: search by symbol (simpler format: just symbol key)
                 $symbolKey = $this->position->parsed_trading_pair;
                 if (array_key_exists($symbolKey, $positions)) {
                     $positionFromExchange = $positions[$symbolKey];
@@ -65,14 +73,12 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseCalculateWapAndModif
             );
         }
 
-        // 3) Extract breakEvenPrice and positionAmt
         $this->breakEvenPrice = (string) ($positionFromExchange['breakEvenPrice'] ?? '0');
         $rawQty = (string) ($positionFromExchange['positionAmt']
             ?? $positionFromExchange['size']
             ?? $positionFromExchange['qty']
             ?? '0');
 
-        // Validate breakEvenPrice
         if (Math::lte($this->breakEvenPrice, '0')) {
             throw new RuntimeException(
                 "Invalid breakEvenPrice={$this->breakEvenPrice} for position {$positionKey}. ".
@@ -87,7 +93,6 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseCalculateWapAndModif
             );
         }
 
-        // Absolute quantity (SHORT may arrive negative on some exchanges)
         $this->positionQty = Math::lt($rawQty, '0')
             ? Math::mul($rawQty, '-1', $scale)
             : $rawQty;
@@ -110,51 +115,63 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseCalculateWapAndModif
             ));
         }
 
-        // 4) Calculate target price
-        $profitPct = (string) $this->position->profit_percentage;  // e.g. "0.350"
-        $fraction = Math::div($profitPct, '100', $scale);          // -> "0.0035"
+        $profitPct = (string) $this->position->profit_percentage;
+        $fraction = Math::div($profitPct, '100', $scale);
 
         $isLong = mb_strtoupper((string) $this->position->direction) === 'LONG';
         $multiplier = $isLong
-            ? Math::add('1', $fraction, $scale)    // LONG: 1 + fraction
-            : Math::sub('1', $fraction, $scale);   // SHORT: 1 - fraction
+            ? Math::add('1', $fraction, $scale)
+            : Math::sub('1', $fraction, $scale);
 
         $target = Math::mul($this->breakEvenPrice, $multiplier, $scale);
 
-        // 5) Format price & quantity for exchange
         $formattedPrice = api_format_price($target, $this->position->exchangeSymbol);
         $formattedQty = api_format_quantity($this->positionQty, $this->position->exchangeSymbol);
 
-        // 6) Capture old values for logging
         $oldQty = (string) ($this->profitOrder->quantity ?? '0');
         $oldPrice = (string) ($this->profitOrder->price ?? '0');
 
-        // Track what we sent so doubleCheck (inherited) can verify actual
-        // exchange state matches intent within tolerance. Bitget's TP/SL
-        // modify is trigger-price only, so intendedQty reflects the exchange
-        // position qty (what we'll mirror onto the local order row below).
         $this->intendedPrice = $formattedPrice;
         $this->intendedQty = $formattedQty;
 
-        // 7) Modify on exchange using apiModifyTpsl() (price only).
-        // Bitget position-level TP/SL can only modify the trigger price, not
-        // quantity. apiSync runs even on modify failure so the diagnostic
-        // message reports the real exchange state rather than leaving the
-        // operator guessing whether the modify partially applied.
-        try {
-            $this->profitOrder->apiModifyTpsl($formattedPrice);
-        } catch (Throwable $e) {
-            try {
-                $this->profitOrder->apiSync();
-            } catch (Throwable) {
-                // Sync also failed — fall through with the original error.
-            }
-
+        // Sibling SL leg is required: place-pos-tpsl is atomic on both
+        // legs, so even when only the TP is changing the SL price must
+        // travel through unchanged. Without it, the call would erase
+        // the SL on the position.
+        $sibling = $this->findSiblingStopLossOrder();
+        if ($sibling === null) {
             throw new RuntimeException(sprintf(
-                'apiModifyTpsl failed for profit order #%d (intended price=%s qty=%s; actual DB after sync: price=%s qty=%s status=%s). Original: %s',
+                'Cannot apply WAP for Bitget position #%d: sibling STOP-MARKET leg not found. place-pos-tpsl is atomic on both legs and the SL price is required.',
+                $this->position->id
+            ));
+        }
+
+        $slPrice = (string) $sibling->price;
+
+        $mapper = new ApiDataMapperProxy($account->apiSystem->canonical);
+        $properties = $mapper->preparePlacePosTpslProperties(
+            $this->position,
+            $formattedPrice,
+            $slPrice,
+        );
+        $properties->set('account', $account);
+
+        try {
+            $response = $account->withApi()->placePosTpsl($properties);
+            $result = $mapper->resolvePlacePosTpslResponse($response);
+
+            if (! ($result['success'] ?? false)) {
+                throw new RuntimeException(
+                    'Bitget place-pos-tpsl rejected: '.json_encode($result['_raw'] ?? [])
+                );
+            }
+        } catch (Throwable $e) {
+            throw new RuntimeException(sprintf(
+                'placePosTpsl failed for profit order #%d (intended TP price=%s qty=%s; sibling SL price=%s; current TP DB: price=%s qty=%s status=%s). Original: %s',
                 $this->profitOrder->id,
                 $formattedPrice,
                 $formattedQty,
+                $slPrice,
                 $this->profitOrder->price,
                 $this->profitOrder->quantity,
                 $this->profitOrder->status,
@@ -162,13 +179,15 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseCalculateWapAndModif
             ), 0, $e);
         }
 
-        $this->profitOrder->apiSync();
-
-        // apiModifyTpsl doesn't touch quantity on the exchange, but the
-        // position quantity has grown via the triggering LIMIT fill — mirror
-        // that onto the local profit order row so downstream calculations
-        // (doubleCheck, close workflow) see the correct qty.
+        // place-pos-tpsl preserves the existing plan-order ID per Bitget's
+        // contract (verified 2026-04-26 against FETUSDT pos 421), so we
+        // can mirror the new price and quantity onto the local profit
+        // order row directly without re-querying the position. The
+        // quantity reflects the post-fill position size — Bitget's
+        // position-level TP automatically tracks the position size, but
+        // mirroring it locally keeps downstream calculations aligned.
         $this->profitOrder->updateSaving([
+            'price' => $formattedPrice,
             'quantity' => $formattedQty,
         ]);
 
@@ -180,10 +199,26 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseCalculateWapAndModif
             'break_even_price' => $this->breakEvenPrice,
             'profit_percentage' => $profitPct,
             'old_price' => $oldPrice,
-            'new_price' => $this->profitOrder->price,
+            'new_price' => $formattedPrice,
             'old_quantity' => $oldQty,
             'new_quantity' => $formattedQty,
-            'message' => 'WAP calculated and profit order modified via apiModifyTpsl',
+            'sibling_sl_price' => $slPrice,
+            'message' => 'WAP applied via Bitget place-pos-tpsl (atomic TP+SL overwrite)',
         ];
+    }
+
+    /**
+     * Locate the position's STOP-MARKET algo leg so its current price
+     * can be carried through the place-pos-tpsl call unchanged.
+     *
+     * Mirrors the helper on Bitget\ModifyAlgoOrderJob — same contract,
+     * same expectations.
+     */
+    public function findSiblingStopLossOrder(): ?Order
+    {
+        return $this->position->orders()
+            ->where('type', 'STOP-MARKET')
+            ->where('is_algo', true)
+            ->first();
     }
 }

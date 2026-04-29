@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.9.1 - 2026-04-29
+
+### Fixes
+
+- [BUG FIX] **Bitget WAP no longer fails with `400172 "trigger price cannot be empty"`.** `Bitget\CalculateWapAndModifyProfitOrderJob` previously called the broken `apiModifyTpsl` (Bitget rejects `modify-tpsl-order` for `pos_profit` / `pos_loss` orders across every payload variation). Switched to the `place-pos-tpsl` atomic-pair overwrite — same proven path used by `Bitget\ModifyAlgoOrderJob` for drift-correction. Reads the sibling SL leg's current price and sends both legs in one request so the SL isn't erased. Plan-order IDs are preserved by the endpoint.
+- [BUG FIX] Local profit order's `price` and `quantity` now mirrored directly after a successful `place-pos-tpsl` (Bitget contract preserves IDs, no re-query needed). Previously only quantity was mirrored.
+
+### Improvements
+
+- [IMPROVED] New `Bitget\CalculateWapAndModifyProfitOrderJob::findSiblingStopLossOrder()` helper — mirrors the convention from `Bitget\ModifyAlgoOrderJob::findSiblingAlgoOrder()`.
+
 ## 1.9.0 - 2026-04-29
 
 ### Features
