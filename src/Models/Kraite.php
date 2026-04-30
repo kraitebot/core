@@ -34,6 +34,7 @@ use RuntimeException;
  * @property string|null $email
  * @property array<int, string> $notification_channels
  * @property array<int, string>|null $timeframes
+ * @property string $top_up_minimum_when_covered_usdt
  * @property \Illuminate\Support\Carbon $created_at
  * @property \Illuminate\Support\Carbon $updated_at
  */
@@ -51,6 +52,8 @@ final class Kraite extends BaseModel
     protected $casts = [
         'allow_opening_positions' => 'boolean',
         'is_cooling_down' => 'boolean',
+
+        'top_up_minimum_when_covered_usdt' => 'decimal:4',
 
         // BSCS (Black Swan Composite Score) — Phase 1 telemetry.
         // Phase 2 wires `bscs_block_active` into HasTradingGuards.

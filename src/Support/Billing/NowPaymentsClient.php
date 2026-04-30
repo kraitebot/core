@@ -52,13 +52,15 @@ final class NowPaymentsClient
         string $ipnCallbackUrl,
         ?string $successUrl = null,
         ?string $cancelUrl = null,
-        string $priceCurrency = 'usdt',
+        string $priceCurrency = 'usdttrc20',
         ?string $orderDescription = null,
         ?string $customerEmail = null,
+        ?string $payCurrency = null,
     ): array {
         $payload = array_filter([
             'price_amount' => $priceAmount,
             'price_currency' => $priceCurrency,
+            'pay_currency' => $payCurrency,
             'order_id' => $orderId,
             'ipn_callback_url' => $ipnCallbackUrl,
             'success_url' => $successUrl,

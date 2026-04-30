@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.11.0 - 2026-04-30
+
+### Features
+
+- [NEW FEATURE] **Top-up coin curated list (`top_up_coins` table).** Sysadmin-managed list of payment coins users can pick on `/billing`. Seeded with 10 coins (USDT-TRC20/BSC/SOL, USDC-BSC/SOL, BTC, ETH, SOL, LTC, BNB-BSC). Per-coin admin override of the gateway-derived minimum amount (NULL = always fetch live). `Kraite\Core\Models\TopUpCoin::active()` returns the dropdown set.
+- [NEW FEATURE] **Engine knob `kraite.top_up_minimum_when_covered_usdt`** (decimal, default 20). The flat USDT floor applied to top-ups when the user wallet already covers the next renewal — discourages micro chip-ins. Bypassed when the user is under-funded.
+- [NEW FEATURE] **`Kraite\Core\Support\Billing\NowPaymentsClient::createInvoice` accepts `pay_currency`** to lock the hosted invoice to a specific coin (no picker shown to the user).
+- [NEW FEATURE] **Ops alert canonicals.** `websocket_reconnect_triggered` (high — fires inside `BaseWebsocketClient` whenever the idle-timeout watchdog forces a reconnect) and `price_data_stale` (critical — fires from `kraite:cron-check-stale-data` when any non-delisted enabled symbol has `mark_price_synced_at` older than 1 minute). Migration seeds both with appropriate cache durations + cache keys.
+- [NEW FEATURE] **`kraite:cron-check-stale-data` command.** External alert for the price-stream's data-side health. Replaces the retired `kraite:watch-price-stream` (which auto-restarted the daemon in a futile loop during the 2026-04-23 silent outage). Pure alert, no auto-restart — the WS client's idle watchdog handles transient stalls; this surfaces unrecoverable cases (URL deprecation, IP ban, gateway outage) to a human within ~1 minute.
+- [NEW FEATURE] `Kraite\Core\Models\ExchangeSymbol::isDelisted(): bool` and `delistedAt(): ?Carbon` instance helpers. Combine `is_marked_for_delisting` flag with `delivery_at` (futures delivery contracts that have settled). Single source of truth for delisting checks across the codebase.
+- [NEW FEATURE] `scopeNotDelisted` query scope on `ExchangeSymbol` mirroring the `isDelisted` logic. Used by the new stale-data check; available everywhere we filter live symbols.
+
+### Improvements
+
+- [IMPROVED] **Binance USDS-M Futures WebSocket migration (2026-04-23).** `BinanceApiClient::subscribeToStream` now routes to `/market/stream?streams=<name>` (was `/stream?streams=<name>`); `subscribeToUserStream` to `/private/ws?listenKey=<key>` (was `/ws/<listenKey>`). Legacy roots stopped pushing /market and /private streams on the deprecation date — frame-receive count would drop to zero on connect with no error. Comments link to Binance change-notice for future reference.
+- [IMPROVED] `BaseWebsocketClient` idle-timeout watchdog now fires `websocket_reconnect_triggered` Pushover alongside the existing log line. Throttled by the canonical's 5-minute cache key on URL.
+
+### Fixes
+
+- [BUG FIX] **`subscribeToStream` migration restores price flow.** Before the fix, the daemon connected, subscribed, and silently received zero frames forever (Binance silently stopped delivering on the legacy URL). Verified post-fix: 1977 / 2254 non-delisted symbols sync within 10 seconds, replication across peer exchanges (Bybit/KuCoin/Bitget) intact via the existing chunked CASE/WHEN UPDATE.
+
+### Schema
+
+- [NEW FEATURE] `2026_04_30_120000_create_top_up_coins_table.php` — id, canonical (unique), display_name, sort_order, is_active, min_amount_override, timestamps. Seeded with 10 coins.
+- [NEW FEATURE] `2026_04_30_120100_add_top_up_minimum_to_kraite.php` — adds `kraite.top_up_minimum_when_covered_usdt` (decimal default 20).
+- [NEW FEATURE] `2026_04_30_140000_seed_ops_websocket_notifications.php` — seeds `websocket_reconnect_triggered` + `price_data_stale` canonicals.
+
+### Removed
+
+- [BUG FIX] `Kraite\Core\Commands\Cronjobs\WatchPriceStreamCommand` removed. The supervisor-restart loop hid the 2026-04-23 silent outage for 2 days. Replaced by `kraite:cron-check-stale-data` (alert only, no restart). The daemon's internal idle watchdog already handles transient stalls; this command was redundant for healable cases and counter-productive for unrecoverable ones.
+
 ## 1.10.0 - 2026-04-29
 
 ### Features

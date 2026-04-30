@@ -4,8 +4,60 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Concerns\ExchangeSymbol;
 
+use Illuminate\Support\Carbon;
+
 trait HasStatuses
 {
+    /**
+     * True when the symbol is no longer being maintained by its
+     * exchange. Two signals collapse into this single read:
+     *
+     *  - `is_marked_for_delisting` (set by sync jobs across all four
+     *    exchange clients when the symbol disappears from the
+     *    exchange's authoritative pair list, e.g.
+     *    `UpsertExchangeSymbolsFromExchangeJob`'s orphan sweep).
+     *
+     *  - `delivery_at` in the past (futures delivery contracts that
+     *    have already settled — Binance USDS-M flags these via the
+     *    `deliveryDate` field on the symbol metadata).
+     */
+    public function isDelisted(): bool
+    {
+        if ($this->is_marked_for_delisting) {
+            return true;
+        }
+
+        if ($this->delivery_at !== null && $this->delivery_at->isPast()) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Best-effort timestamp for when the symbol stopped trading. Null
+     * if the symbol is still active. The two signals split as:
+     *
+     *  - When `delivery_at` is set and past: that's the canonical
+     *    delisting moment (exchange-published).
+     *  - When `is_marked_for_delisting` is true without a delivery
+     *    date: we fall back to `updated_at` (the moment our orphan
+     *    sweep flipped the flag — best proxy we have).
+     */
+    public function delistedAt(): ?Carbon
+    {
+        if ($this->delivery_at !== null && $this->delivery_at->isPast()) {
+            return $this->delivery_at;
+        }
+
+        if ($this->is_marked_for_delisting) {
+            return $this->updated_at;
+        }
+
+        return null;
+    }
+
+
     /**
      * Check if this exchange symbol is valid for trading.
      * Mirrors the scopeTradeable logic for instance-level checks.

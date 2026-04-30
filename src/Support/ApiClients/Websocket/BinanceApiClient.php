@@ -40,22 +40,30 @@ final class BinanceApiClient extends BaseWebsocketClient
             return;
         }
 
-        // Use the combined-stream URL shape (`/stream?streams=<name>`) rather
-        // than the single-stream shape (`/ws/<name>`). Binance's single-
-        // stream endpoint silently stopped delivering frames for array
-        // streams (like !markPrice@arr@1s) from this host's IP on
-        // 2026-04-24 — the handshake succeeded but zero data came through.
-        // The combined-stream endpoint works consistently and wraps the
-        // payload in `{"stream": "...", "data": [...]}`; subscribers have
-        // to unwrap the `data` key.
-        $url = $this->baseURL.'/stream?streams='.$streamName;
+        // Binance USDS-M futures WebSocket migration (2026-04-23): the
+        // legacy root `/stream?streams=<name>` no longer pushes frames
+        // for streams routed under /market or /private. Mark-price
+        // (`!markPrice@arr@1s`) is a market-data stream → routes to
+        // `/market/stream?streams=<name>`. Public-only streams
+        // (e.g. `@depth`) can stay on `/public/stream?streams=<name>`.
+        // Frames arrive in the combined-stream envelope:
+        // `{"stream": "...", "data": [...]}` — subscribers unwrap `data`.
+        //
+        // See: developers.binance.com/docs/derivatives/USDS-margined-
+        //      futures/websocket-market-streams/Important-WebSocket-
+        //      Change-Notice
+        $url = $this->baseURL.'/market/stream?streams='.$streamName;
         $this->messageCount++;
         $this->handleCallback($url, $callbacks);
     }
 
     public function subscribeToUserStream(string $listenKey, array $callbacks): void
     {
-        $url = $this->baseURL."/ws/{$listenKey}";
+        // User data streams route under /private after the 2026-04-23
+        // migration. Note the listenKey is now passed as a QUERY
+        // PARAMETER (`?listenKey=<key>`) — the legacy path-segment
+        // shape (`/ws/<listenKey>`) is decommissioned.
+        $url = $this->baseURL.'/private/ws?listenKey='.rawurlencode($listenKey);
         $this->handleCallback($url, $callbacks);
     }
 

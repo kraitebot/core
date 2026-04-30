@@ -5,11 +5,16 @@ declare(strict_types=1);
 namespace Kraite\Core\Abstracts;
 
 use Illuminate\Support\Facades\Log;
+use Kraite\Core\Models\Kraite;
+use Kraite\Core\Support\NotificationService;
 use Ratchet\Client\Connector;
 use Ratchet\Client\WebSocket;
 use Ratchet\RFC6455\Messaging\Frame;
+use React\Dns\Resolver\Factory as DnsResolverFactory;
 use React\EventLoop\Loop;
 use React\EventLoop\LoopInterface;
+use React\Socket\Connector as SocketConnector;
+use Throwable;
 
 /**
  * BaseWebsocketClient
@@ -40,9 +45,18 @@ abstract class BaseWebsocketClient
 {
     protected string $baseURL;
 
-    protected ?Connector $wsConnector;
-
     protected ?WebSocket $wsConnection = null;
+
+    /**
+     * Public DNS used by the Pawl connector. We deliberately bypass the
+     * host's `/etc/resolv.conf` (systemd-resolved stub at 127.0.0.53) because
+     * a single network blip can wedge ReactPHP's UDP socket bound to the
+     * stub and every subsequent reconnect logs "Unable to connect to DNS
+     * server udp://127.0.0.53:53" forever — the exact failure mode that
+     * froze this daemon for ~3 days starting 2026-04-27. Cloudflare's
+     * 1.1.1.1 keeps the resolver path independent of host plumbing.
+     */
+    protected const DNS_NAMESERVER = '1.1.1.1';
 
     protected LoopInterface $loop;
 
@@ -87,7 +101,6 @@ abstract class BaseWebsocketClient
     {
         $this->baseURL = $args['baseURL'] ?? '';
         $this->loop = Loop::get();
-        $this->wsConnector = new Connector($this->loop);
     }
 
     final public function ping(): void
@@ -187,9 +200,35 @@ abstract class BaseWebsocketClient
         $this->loop->run();
     }
 
+    /**
+     * Build a fresh Pawl Connector for every connect attempt.
+     *
+     * Each Pawl `Connector` carries a ReactPHP socket connector + DNS
+     * resolver bound to a UDP socket at construction time. If that UDP
+     * socket ever wedges (kernel sweep during a transient outage,
+     * conntrack expiry, etc.) the resolver fails forever for the lifetime
+     * of the connector — even after the host's network recovers. Building
+     * fresh on each reconnect means a wedged socket is replaced
+     * automatically; one bad attempt costs one retry, not the whole
+     * daemon.
+     *
+     * `happy_eyeballs` is disabled because Binance has no AAAA record and
+     * the IPv6 path returns NODATA, which Pawl's race logic still waits
+     * on briefly — pure overhead on every reconnect.
+     */
     private function createWSConnection(string $url)
     {
-        return ($this->wsConnector)($url);
+        $dnsResolver = (new DnsResolverFactory)->createCached(self::DNS_NAMESERVER, $this->loop);
+
+        $socketConnector = new SocketConnector([
+            'dns' => $dnsResolver,
+            'happy_eyeballs' => false,
+            'timeout' => 10,
+        ], $this->loop);
+
+        $connector = new Connector($this->loop, $socketConnector);
+
+        return $connector($url);
     }
 
     /**
@@ -251,6 +290,24 @@ abstract class BaseWebsocketClient
                     'frames_received' => $this->framesReceived,
                 ]
             );
+
+            try {
+                NotificationService::send(
+                    user: Kraite::admin(),
+                    canonical: 'websocket_reconnect_triggered',
+                    referenceData: [
+                        'url' => $url,
+                        'idle_seconds' => (int) round($idleFor),
+                        'frames_received' => $this->framesReceived,
+                        'uptime_seconds' => (int) round(microtime(true) - $this->connectedAt),
+                    ],
+                );
+            } catch (Throwable $e) {
+                Log::channel('jobs')->warning(
+                    '[WEBSOCKET] reconnect notification failed',
+                    ['error' => $e->getMessage()]
+                );
+            }
 
             // Null the reference first so any in-flight callback can't
             // race with the close event handler rehydrating it.

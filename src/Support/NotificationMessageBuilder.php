@@ -877,6 +877,41 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'websocket_reconnect_triggered' => (static function () use ($context) {
+                $url = is_string($context['url'] ?? null) ? $context['url'] : 'wss://(unknown)';
+                $idleSeconds = (int) ($context['idle_seconds'] ?? 0);
+                $framesReceived = (int) ($context['frames_received'] ?? 0);
+                $uptime = (int) ($context['uptime_seconds'] ?? 0);
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'title' => 'WebSocket Idle-Timeout Reconnect',
+                    'emailMessage' => "The price-stream WebSocket received no frames for {$idleSeconds}s and is forcing a reconnect.\n\nURL: {$url}\nFrames received this connection: {$framesReceived}\nUptime before reconnect: {$uptime}s\n\nIf this fires repeatedly without the data healing, investigate upstream (URL deprecation, IP ban, upstream outage).",
+                    'pushoverMessage' => "WS reconnect — idle {$idleSeconds}s, frames={$framesReceived} (uptime {$uptime}s).",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 0,
+                ];
+            })(),
+
+            'price_data_stale' => (static function () use ($context) {
+                $count = (int) ($context['stale_count'] ?? 0);
+                $oldest = (int) ($context['oldest_age_seconds'] ?? 0);
+                $sample = is_array($context['sample_pairs'] ?? null)
+                    ? implode(', ', array_slice($context['sample_pairs'], 0, 5))
+                    : '';
+
+                return [
+                    'severity' => NotificationSeverity::Critical,
+                    'title' => 'Mark Price Data Stale',
+                    'emailMessage' => "{$count} enabled exchange_symbols have not received a mark_price update in over 60 seconds.\n\nOldest age: {$oldest}s\nSample: {$sample}\n\nThe WebSocket reconnect loop is not healing the underlying problem. Likely causes: URL deprecation by Binance, IP ban, upstream gateway outage. Trading guards continue using stale prices for selection — investigate immediately.",
+                    'pushoverMessage' => "Mark prices stale ({$count} symbols, oldest {$oldest}s) — investigate.",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 1,
+                ];
+            })(),
+
             'market_regime_compute_stale' => (function () use ($context) {
                 $hours = (int) ($context['stale_hours'] ?? 0);
 

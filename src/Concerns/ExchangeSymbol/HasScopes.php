@@ -65,6 +65,24 @@ trait HasScopes
     }
 
     /**
+     * Excludes delisted symbols from a query. Mirrors `isDelisted()`
+     * on the model: filters out rows where `is_marked_for_delisting`
+     * is true OR `delivery_at` is set and in the past. Use this on
+     * any query that compares "live" exchange data against our DB
+     * (price freshness checks, position-opening guards, etc.) so
+     * delisted symbols don't get treated as outages.
+     */
+    public function scopeNotDelisted(Builder $query): Builder
+    {
+        return $query
+            ->where('is_marked_for_delisting', false)
+            ->where(static function ($q) {
+                $q->whereNull('delivery_at')
+                    ->orWhere('delivery_at', '>', now());
+            });
+    }
+
+    /**
      * Apply tradeable conditions to an Eloquent Builder.
      */
     private function applyTradeableConditions(Builder $query, string $table, string $correlationColumn): void
