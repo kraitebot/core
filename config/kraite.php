@@ -18,6 +18,45 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | User Data Stream
+    |--------------------------------------------------------------------------
+    |
+    | Per-exchange daemon settings for the authenticated private WebSocket
+    | streams that progressively replace polling-based reconciliation.
+    |
+    | `dispatched_executions` is the per-execution-type allowlist. Each
+    | entry is the EXCHANGE-NATIVE execution type string. When an inbound
+    | event's executionType matches an entry in this list, the worker
+    | applies the new state to the local Order model via updateSaving,
+    | which fires the existing OrderObserver workflows (correction, WAP,
+    | close, replacement). Execution types NOT in the list are recorded
+    | to api_data_stream for audit only — the Order model is not touched.
+    |
+    | Roll-out flips one execution type at a time so each downstream
+    | workflow can be validated against live events before the next
+    | type is enabled. Empty list = pure shadow mode (record only).
+    |
+    | Binance native types: NEW / TRADE / AMENDMENT / CANCELED / EXPIRED
+    | / REJECTED / CALCULATED. NOT every type maps to a downstream
+    | workflow today (e.g. NEW is informational — we placed the order,
+    | so we already know).
+    */
+    'user_data_stream' => [
+        'binance' => [
+            'dispatched_executions' => array_values(array_filter(
+                array_map('trim', explode(',', (string) env('USER_DATA_STREAM_BINANCE_DISPATCHED_EXECUTIONS', ''))),
+                static fn (string $value): bool => $value !== ''
+            )),
+
+            // Listen-key keepalive cadence enforced by the cron itself; this
+            // value is the soft warning threshold after which a keepalive
+            // miss raises an admin alert. Binance's hard expiry is 60min.
+            'keep_alive_alert_after_minutes' => (int) env('USER_DATA_STREAM_BINANCE_KEEP_ALIVE_ALERT_AFTER_MIN', 35),
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Server Secrets
     |--------------------------------------------------------------------------
     |
@@ -560,5 +599,28 @@ return [
         'freshness' => [
             'stale_hard_seconds' => (int) env('MARKET_REGIME_STALE_HARD_SECONDS', 21600),
         ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Billing
+    |--------------------------------------------------------------------------
+    |
+    | enforce_minimum_for_renewal
+    |   When true (production default), the /billing top-up button is
+    |   sized by the coverage rule — shortfall to next renewal, or the
+    |   engine's flat floor when wallet covers — capped against the
+    |   gateway's per-coin floor.
+    |
+    |   When false, the coverage rule is bypassed entirely and the
+    |   top-up amount falls back to the gateway's per-coin minimum
+    |   only. Useful for testing with small amounts (e.g. ~11 USDT on
+    |   USDT-TRC20) without funding a full subscription month upfront.
+    |   The renewal logic itself is unaffected — it always pulls
+    |   monthly_rate from the wallet at renewal time regardless of
+    |   this flag.
+    */
+    'billing' => [
+        'enforce_minimum_for_renewal' => (bool) env('BILLING_ENFORCE_MINIMUM_FOR_RENEWAL', true),
     ],
 ];

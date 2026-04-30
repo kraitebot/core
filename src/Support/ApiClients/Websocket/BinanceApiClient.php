@@ -27,6 +27,7 @@ final class BinanceApiClient extends BaseWebsocketClient
         parent::__construct([
             'baseURL' => $config['base_url'] ?? 'wss://fstream.binance.com',
             'wsConnector' => $config['ws_connector'] ?? null,
+            'idleTimeoutSeconds' => $config['idle_timeout_seconds'] ?? null,
         ]);
 
         $this->loop->addPeriodicTimer($this->rateLimitInterval, function () {
@@ -59,12 +60,29 @@ final class BinanceApiClient extends BaseWebsocketClient
 
     public function subscribeToUserStream(string $listenKey, array $callbacks): void
     {
-        // User data streams route under /private after the 2026-04-23
-        // migration. Note the listenKey is now passed as a QUERY
-        // PARAMETER (`?listenKey=<key>`) — the legacy path-segment
-        // shape (`/ws/<listenKey>`) is decommissioned.
-        $url = $this->baseURL.'/private/ws?listenKey='.rawurlencode($listenKey);
-        $this->handleCallback($url, $callbacks);
+        $this->handleCallback($this->buildUserStreamUrl($listenKey), $callbacks);
+    }
+
+    /**
+     * Non-blocking variant of subscribeToUserStream. Registers the
+     * connection and returns immediately — the caller drives the event
+     * loop. Required by the multi-account user-data daemon that hosts
+     * one WebSocket per account in a single process; the blocking
+     * variant would only ever start the first account.
+     */
+    public function subscribeToUserStreamAsync(string $listenKey, array $callbacks): void
+    {
+        $this->handleCallbackAsync($this->buildUserStreamUrl($listenKey), $callbacks);
+    }
+
+    /**
+     * Build the user-data-stream URL with the listenKey as a query
+     * parameter — the post-2026-04-23 shape required by Binance after
+     * they decommissioned the legacy `/ws/<listenKey>` path segment.
+     */
+    private function buildUserStreamUrl(string $listenKey): string
+    {
+        return $this->baseURL.'/private/ws?listenKey='.rawurlencode($listenKey);
     }
 
     public function getLoop(): LoopInterface

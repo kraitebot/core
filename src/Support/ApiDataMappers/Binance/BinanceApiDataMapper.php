@@ -26,6 +26,7 @@ use Kraite\Core\Support\ApiDataMappers\Binance\ApiRequests\MapsServerTimeQuery;
 use Kraite\Core\Support\ApiDataMappers\Binance\ApiRequests\MapsSymbolConfigQuery;
 use Kraite\Core\Support\ApiDataMappers\Binance\ApiRequests\MapsSymbolMarginType;
 use Kraite\Core\Support\ApiDataMappers\Binance\ApiRequests\MapsTokenLeverageRatios;
+use Kraite\Core\Support\ApiDataMappers\Binance\ApiRequests\MapsUserDataStream;
 use SensitiveParameter;
 
 final class BinanceApiDataMapper extends BaseDataMapper
@@ -50,6 +51,7 @@ final class BinanceApiDataMapper extends BaseDataMapper
     use MapsSymbolConfigQuery;
     use MapsSymbolMarginType;
     use MapsTokenLeverageRatios;
+    use MapsUserDataStream;
 
     public function long()
     {

@@ -101,6 +101,16 @@ abstract class BaseWebsocketClient
     {
         $this->baseURL = $args['baseURL'] ?? '';
         $this->loop = Loop::get();
+
+        // Per-instance idle-timeout override. The default (30s) is tuned
+        // for high-frequency streams like Binance's `!markPrice@arr@1s`
+        // where any silence past 30s is a dead socket. User-data streams
+        // are silent until events fire (Binance pings every ~3min); they
+        // need a much longer threshold so the watchdog only reconnects
+        // on genuine zombies, not on natural quiet periods.
+        if (isset($args['idleTimeoutSeconds']) && $args['idleTimeoutSeconds'] > 0) {
+            $this->idleTimeoutSeconds = (int) $args['idleTimeoutSeconds'];
+        }
     }
 
     final public function ping(): void
@@ -117,7 +127,31 @@ abstract class BaseWebsocketClient
         );
     }
 
+    /**
+     * Non-blocking variant of handleCallback.
+     *
+     * Registers the connection + handlers against the singleton event
+     * loop and returns immediately. The caller is responsible for
+     * driving the loop with `Loop::get()->run()` after all
+     * subscriptions have been registered. This is the entry point used
+     * by daemons that host multiple WebSockets in one process — the
+     * blocking `handleCallback` would only ever start the first one.
+     *
+     * Behaviour is otherwise identical to `handleCallback`.
+     */
+    public function handleCallbackAsync(string $url, array $callback): void
+    {
+        $this->registerCallbacks($url, $callback);
+    }
+
     protected function handleCallback(string $url, array $callback): void
+    {
+        $this->registerCallbacks($url, $callback);
+
+        $this->loop->run();
+    }
+
+    private function registerCallbacks(string $url, array $callback): void
     {
         $this->startWatchdogOnce($url);
 
@@ -196,8 +230,6 @@ abstract class BaseWebsocketClient
                 $this->reconnect($url, $callback);
             }
         );
-
-        $this->loop->run();
     }
 
     /**

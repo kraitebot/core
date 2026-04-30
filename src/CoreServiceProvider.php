@@ -16,21 +16,23 @@ use Illuminate\Support\Str;
 use Kraite\Core\Commands\Backtest\BacktestTokenCommand;
 use Kraite\Core\Commands\Cronjobs\AnalyseBscsCommand;
 use Kraite\Core\Commands\Cronjobs\CheckDriftsCommand;
+use Kraite\Core\Commands\Cronjobs\CheckStaleDataCommand;
 use Kraite\Core\Commands\Cronjobs\ComputeMarketRegimeCommand;
 use Kraite\Core\Commands\Cronjobs\ConcludeSymbolsDirectionCommand;
 use Kraite\Core\Commands\Cronjobs\CreatePositionsCommand;
-use Kraite\Core\Commands\Cronjobs\RenewSubscriptionsCommand;
 use Kraite\Core\Commands\Cronjobs\DetectMarketShockCommand;
 use Kraite\Core\Commands\Cronjobs\DisableVolatileTokensCommand;
 use Kraite\Core\Commands\Cronjobs\FetchKlinesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeCandlesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeFailedBacktestedKlinesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeModelLogsCommand;
+use Kraite\Core\Commands\Cronjobs\RefreshBinanceListenKeysCommand;
 use Kraite\Core\Commands\Cronjobs\RefreshExchangeSymbolsCommand;
+use Kraite\Core\Commands\Cronjobs\RenewSubscriptionsCommand;
 use Kraite\Core\Commands\Cronjobs\StoreAccountsBalancesCommand;
 use Kraite\Core\Commands\Cronjobs\SyncOrdersCommand;
-use Kraite\Core\Commands\Cronjobs\CheckStaleDataCommand;
 use Kraite\Core\Commands\Daemons\StreamBinancePricesCommand;
+use Kraite\Core\Commands\Daemons\StreamBinanceUserDataCommand;
 use Kraite\Core\Commands\Ingestion\IsEligibleCommand;
 use Kraite\Core\Commands\SafeToRestartCommand;
 use Kraite\Core\Commands\Tests\TestNotificationCommand;
@@ -94,8 +96,10 @@ final class CoreServiceProvider extends ServiceProvider
             RefreshExchangeSymbolsCommand::class,
             StoreAccountsBalancesCommand::class,
             StreamBinancePricesCommand::class,
+            StreamBinanceUserDataCommand::class,
             SyncOrdersCommand::class,
             CheckStaleDataCommand::class,
+            RefreshBinanceListenKeysCommand::class,
             IsEligibleCommand::class,
             TestNotificationCommand::class,
             ThrottlerStressTestCommand::class,
