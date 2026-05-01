@@ -56,6 +56,7 @@ final class NowPaymentsClient
         ?string $orderDescription = null,
         ?string $customerEmail = null,
         ?string $payCurrency = null,
+        bool $isFeePaidByUser = true,
     ): array {
         $payload = array_filter([
             'price_amount' => $priceAmount,
@@ -67,6 +68,7 @@ final class NowPaymentsClient
             'cancel_url' => $cancelUrl,
             'order_description' => $orderDescription,
             'customer_email' => $customerEmail,
+            'is_fee_paid_by_user' => $isFeePaidByUser,
         ], static fn ($v) => $v !== null);
 
         $response = $this->client()

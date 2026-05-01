@@ -145,15 +145,6 @@ return new class extends Migration
             $table->index(['api_system_id', 'symbol_token'], 'idx_api_symbol_token');
         });
 
-        // binance_listen_keys table
-        Schema::create('binance_listen_keys', function (Blueprint $table) {
-            $table->id();
-            $table->unsignedBigInteger('account_id')->unique();
-            $table->string('listen_key');
-            $table->timestamp('created_at');
-            $table->timestamp('last_keep_alive')->nullable();
-        });
-
         // early_access table
         Schema::create('early_access', function (Blueprint $table) {
             $table->id();
@@ -626,7 +617,6 @@ return new class extends Migration
         Schema::dropIfExists('exchange_symbols');
         Schema::dropIfExists('account_balance_history');
         Schema::dropIfExists('account_history');
-        Schema::dropIfExists('binance_listen_keys');
         Schema::dropIfExists('accounts');
         Schema::dropIfExists('api_request_logs');
         Schema::dropIfExists('api_snapshots');

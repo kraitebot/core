@@ -9,6 +9,7 @@ use Kraite\Core\Models\Order;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 use Kraite\Core\Support\ValueObjects\ApiResponse;
+use Throwable;
 
 trait InteractsWithApis
 {
@@ -165,8 +166,14 @@ trait InteractsWithApis
         $this->apiProperties->set('relatable', $this);
         $this->apiProperties->set('options.symbol', $this->parsed_trading_pair);
         $this->apiProperties->set('options.productType', 'USDT-FUTURES');
-        $this->apiProperties->set('options.holdSide', mb_strtolower($this->direction));
         $this->apiProperties->set('account', $this->account);
+
+        // holdSide is HEDGE-only — required to disambiguate the LONG vs
+        // SHORT slot when flash-closing. ONE-WAY has a single slot per
+        // symbol; sending holdSide is rejected.
+        if ($this->account->isHedgeMode()) {
+            $this->apiProperties->set('options.holdSide', mb_strtolower($this->direction));
+        }
 
         $this->apiResponse = $this->account->withApi()->flashClosePosition($this->apiProperties);
 
@@ -213,9 +220,9 @@ trait InteractsWithApis
             if ($fillPrice !== null && $fillPrice !== '' && (float) $fillPrice > 0) {
                 $this->updateSaving(['closing_price' => $fillPrice]);
             }
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             // Log but don't fail - closing_price is nice to have
-            info("Failed to get closing price for BitGet position {$this->id}: " . $e->getMessage());
+            info("Failed to get closing price for BitGet position {$this->id}: ".$e->getMessage());
         }
     }
 }

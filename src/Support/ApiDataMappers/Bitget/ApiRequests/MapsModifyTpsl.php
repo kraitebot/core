@@ -43,9 +43,12 @@ trait MapsModifyTpsl
         $properties->set('options.productType', 'USDT-FUTURES');
         $properties->set('options.marginCoin', 'USDT');
 
-        // holdSide matches direction: 'long' or 'short'
-        $holdSide = mb_strtolower($order->position->direction);
-        $properties->set('options.holdSide', $holdSide);
+        // holdSide is HEDGE-only — required to disambiguate LONG vs SHORT
+        // when modifying a TP/SL. ONE-WAY targets the symbol's single slot
+        // and the param must be omitted.
+        if ($order->position->account->isHedgeMode()) {
+            $properties->set('options.holdSide', mb_strtolower($order->position->direction));
+        }
 
         // Determine if this is a TP or SL order by type
         $isStopLoss = in_array($order->type, ['STOP-MARKET', 'STOP_MARKET'], true);

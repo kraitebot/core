@@ -71,7 +71,7 @@ trait MapsOpenOrdersQuery
         return array_map(callback: function (array $order): array {
             $order['_price'] = $this->computeOrderPrice($order);
             $order['_orderType'] = $this->canonicalOrderType($order);
-        
+
             return $order;
         }, array: $orders);
     }

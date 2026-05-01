@@ -25,10 +25,21 @@ trait MapsPlaceOrder
         $properties->set('options.marginMode', 'crossed');
         $properties->set('options.marginCoin', 'USDT');
         $properties->set('options.side', (string) $this->sideType($order->side));
-        $properties->set('options.tradeSide', $this->determineTradeSide($order));
-        $properties->set('options.posSide', $this->determinePosSide($order));
         $properties->set('options.size', (string) api_format_quantity($order->quantity, $order->position->exchangeSymbol));
         $properties->set('options.clientOid', (string) $order->client_order_id);
+
+        // Position-mode-aware payload. In HEDGE mode every order MUST carry
+        // posSide=long/short and tradeSide=open/close so Bitget can target the
+        // correct LONG vs SHORT slot. In ONE-WAY mode tradeSide is ignored
+        // (per Bitget V2 docs) and posSide must be omitted; closing-intent
+        // orders MUST carry reduceOnly=YES — otherwise the same `side`
+        // reopens an opposing position instead of closing the existing one.
+        if ($order->position->account->isHedgeMode()) {
+            $properties->set('options.tradeSide', $this->determineTradeSide($order));
+            $properties->set('options.posSide', $this->determinePosSide($order));
+        } elseif ($this->isClosingIntent($order)) {
+            $properties->set('options.reduceOnly', 'YES');
+        }
 
         switch ($order->type) {
             case 'PROFIT-LIMIT':
@@ -88,18 +99,37 @@ trait MapsPlaceOrder
      */
     private function determineTradeSide(Order $order): string
     {
-        // MARKET-CANCEL orders are specifically for closing positions
-        if ($order->type === 'MARKET-CANCEL') {
+        if ($this->isClosingIntent($order)) {
             return 'close';
         }
 
-        // If the order is marked as reduceOnly, it's closing.
-        if ($order->reduce_only ?? false) {
-            return 'close';
-        }
-
-        // Default to opening.
         return 'open';
+    }
+
+    /**
+     * Whether this order is closing intent — relevant for one-way mode
+     * where reduceOnly=YES must be set explicitly on closes (otherwise
+     * the `side` flip would open an opposing position instead of closing
+     * the existing one). Hedge mode encodes intent via tradeSide=close
+     * and doesn't need this flag.
+     *
+     * Closing types are PROFIT-LIMIT / PROFIT-MARKET (TP), STOP-MARKET
+     * (SL — though Bitget routes it via the plan-order path), and
+     * MARKET-CANCEL (emergency reduce-only close). MARKET (initial
+     * entry) and LIMIT (DCA) carry opening intent.
+     */
+    private function isClosingIntent(Order $order): bool
+    {
+        if ($order->reduce_only ?? false) {
+            return true;
+        }
+
+        return in_array($order->type, [
+            'PROFIT-LIMIT',
+            'PROFIT-MARKET',
+            'STOP-MARKET',
+            'MARKET-CANCEL',
+        ], strict: true);
     }
 
     /**

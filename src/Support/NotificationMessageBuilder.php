@@ -4,11 +4,15 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Support;
 
+use Carbon\Carbon;
 use Exception;
+use Illuminate\Support\Facades\URL;
 use InvalidArgumentException;
 use Kraite\Core\Enums\NotificationSeverity;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Notification;
 use Kraite\Core\Models\User;
+use Throwable;
 
 /**
  * NotificationMessageBuilder
@@ -66,7 +70,7 @@ final class NotificationMessageBuilder
 
         // Extract IP from Engine model or legacy 'ip' key
         $ipRaw = $context['ip'] ?? null;
-        $ip = is_string($ipRaw) ? $ipRaw : \Kraite\Core\Models\Kraite::ip();
+        $ip = is_string($ipRaw) ? $ipRaw : Kraite::ip();
 
         // Extract hostname from 'server' key (new) or 'hostname' key (legacy) or apiRequestLog
         $hostnameRaw = $context['server'] ?? ($context['hostname'] ?? ($apiRequestLog->hostname ?? gethostname()));
@@ -138,7 +142,7 @@ final class NotificationMessageBuilder
                 $forbiddenUntilCarbon = null;
                 if (is_string($forbiddenUntilRaw)) {
                     try {
-                        $forbiddenUntilCarbon = \Carbon\Carbon::parse($forbiddenUntilRaw);
+                        $forbiddenUntilCarbon = Carbon::parse($forbiddenUntilRaw);
                     } catch (Exception $e) {
                         // Invalid date format, ignore
                     }
@@ -939,7 +943,7 @@ final class NotificationMessageBuilder
                     'title' => 'Renewal in 7 days — wallet short',
                     'emailMessage' => "Your Kraite subscription renews on {$renewsLabel} at the current monthly rate of {$rate} USDT.\n\n".
                         "Current balance: {$balance} USDT — short {$shortfall} USDT for the next renewal.\n\n".
-                        "Top up before the renewal date to avoid the bot pausing new positions. Existing positions will continue to TP/SL regardless.",
+                        'Top up before the renewal date to avoid the bot pausing new positions. Existing positions will continue to TP/SL regardless.',
                     'pushoverMessage' => "Kraite renews {$renewsLabel} — wallet {$balance} USDT, short {$shortfall}. Top up to avoid pause.",
                     'actionUrl' => null,
                     'actionLabel' => null,
@@ -983,13 +987,14 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
-            'subscription_topup_confirmed' => (static function () use ($context) {
+            'subscription_topup_confirmed' => (static function () use ($context, $user) {
                 $amount = (float) ($context['amount_usdt'] ?? 0);
                 $balance = (float) ($context['balance_after'] ?? 0);
                 $source = is_string($context['source'] ?? null) ? $context['source'] : 'top-up';
                 $rate = (float) ($context['monthly_rate_usdt'] ?? 0);
                 $shortfall = (float) ($context['shortfall_usdt'] ?? 0);
                 $renewalRan = (bool) ($context['renewal_ran'] ?? false);
+                $payCurrency = is_string($context['pay_currency'] ?? null) ? $context['pay_currency'] : null;
                 $sufficient = $shortfall <= 0;
 
                 $statusLine = match (true) {
@@ -997,6 +1002,34 @@ final class NotificationMessageBuilder
                     $sufficient => 'Balance now covers the next renewal.',
                     default => "Still {$shortfall} USDT short of the next renewal.",
                 };
+
+                // One-click "fund the rest" link in the email when the wallet
+                // is still short. Uses the same coin the user just paid in so
+                // they don't repick. Signed URL valid for 7 days.
+                $actionUrl = null;
+                $actionLabel = null;
+                if (! $sufficient && $shortfall > 0 && $payCurrency !== null && $user instanceof User) {
+                    try {
+                        $actionUrl = URL::temporarySignedRoute(
+                            'billing.quick-topup',
+                            now()->addDays(7),
+                            [
+                                'user' => $user->id,
+                                'amount' => round($shortfall, 4),
+                                'coin' => $payCurrency,
+                            ],
+                        );
+                        $actionLabel = sprintf(
+                            'Top up the remaining %s USDT in %s',
+                            number_format($shortfall, 2),
+                            strtoupper($payCurrency),
+                        );
+                    } catch (Throwable) {
+                        // Route not registered or signing failed — fall back
+                        // to no CTA. The body still tells the user to top up
+                        // from /billing manually.
+                    }
+                }
 
                 return [
                     'severity' => NotificationSeverity::Info,
@@ -1006,10 +1039,13 @@ final class NotificationMessageBuilder
                         "Amount: {$amount} USDT\n".
                         "New balance: {$balance} USDT\n".
                         "Monthly rate: {$rate} USDT\n\n".
-                        $statusLine,
+                        $statusLine.
+                        ($actionUrl !== null
+                            ? "\n\nYou can top up the remaining amount with one click — the link below pre-fills the shortfall and the same coin you just paid with."
+                            : ''),
                     'pushoverMessage' => "Kraite +{$amount} USDT → balance {$balance} USDT. {$statusLine}",
-                    'actionUrl' => null,
-                    'actionLabel' => null,
+                    'actionUrl' => $actionUrl,
+                    'actionLabel' => $actionLabel,
                 ];
             })(),
 

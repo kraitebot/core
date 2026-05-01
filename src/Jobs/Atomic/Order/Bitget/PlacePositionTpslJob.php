@@ -260,10 +260,15 @@ final class PlacePositionTpslJob extends BaseApiableJob
         $response = $account->withApi()->getPositions($properties);
         $positions = $mapper->resolveQueryPositionsResponse($response);
 
-        // Find our position by symbol and direction
+        // Find our position by symbol:positionSide. Hedge mode keys by
+        // LONG/SHORT (independent slots); one-way keys by BOTH (single
+        // slot per symbol). Mirrors the segment logic on
+        // CalculateWapAndModifyProfitOrderJob::buildPositionKey().
         $symbol = $this->position->exchangeSymbol->parsed_trading_pair;
-        $direction = mb_strtoupper($this->position->direction);
-        $key = "{$symbol}:{$direction}";
+        $segment = $this->position->account?->isHedgeMode()
+            ? mb_strtoupper((string) $this->position->direction)
+            : 'BOTH';
+        $key = "{$symbol}:{$segment}";
 
         $positionData = $positions[$key] ?? [];
 

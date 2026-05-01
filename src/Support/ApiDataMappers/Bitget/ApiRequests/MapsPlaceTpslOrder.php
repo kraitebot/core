@@ -37,9 +37,12 @@ trait MapsPlaceTpslOrder
         $properties->set('options.productType', 'USDT-FUTURES');
         $properties->set('options.marginCoin', 'USDT');
 
-        // holdSide must match the position direction
-        $holdSide = mb_strtolower($order->position->direction);
-        $properties->set('options.holdSide', $holdSide);
+        // holdSide is HEDGE-only — Bitget V2 requires it (long/short) to
+        // route the TP/SL to the correct slot. ONE-WAY mode has a single
+        // slot per symbol and rejects the param.
+        if ($order->position->account->isHedgeMode()) {
+            $properties->set('options.holdSide', mb_strtolower($order->position->direction));
+        }
 
         // Determine if this is a TP or SL order and set only relevant params
         $isStopLoss = $this->isStopLossOrder($order);
@@ -99,7 +102,7 @@ trait MapsPlaceTpslOrder
      */
     private function isStopLossOrder(Order $order): bool
     {
-        $type = strtoupper(str_replace('-', '_', $order->type));
+        $type = mb_strtoupper(str_replace('-', '_', $order->type));
 
         return in_array($type, ['STOP_MARKET', 'STOP_LOSS'], true);
     }

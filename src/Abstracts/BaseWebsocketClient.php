@@ -43,10 +43,6 @@ use Throwable;
  */
 abstract class BaseWebsocketClient
 {
-    protected string $baseURL;
-
-    protected ?WebSocket $wsConnection = null;
-
     /**
      * Public DNS used by the Pawl connector. We deliberately bypass the
      * host's `/etc/resolv.conf` (systemd-resolved stub at 127.0.0.53) because
@@ -57,6 +53,10 @@ abstract class BaseWebsocketClient
      * 1.1.1.1 keeps the resolver path independent of host plumbing.
      */
     protected const DNS_NAMESERVER = '1.1.1.1';
+
+    protected string $baseURL;
+
+    protected ?WebSocket $wsConnection = null;
 
     protected LoopInterface $loop;
 
@@ -89,11 +89,31 @@ abstract class BaseWebsocketClient
      */
     protected int $maxReconnectBackoffSeconds = 30;
 
+    /**
+     * Number of consecutive reconnect attempts (with no successful
+     * frame in between) that triggers a "reconnect storm" Pushover
+     * alert. We retry forever by design, but the absence of escalation
+     * hides a slow-degrade scenario where one stream flaps connect →
+     * close → reconnect every 30s for hours without a human noticing.
+     *
+     * `reconnectAttempt` resets to 0 on a successful frame in
+     * registerCallbacks, so this threshold is "10 retries with no
+     * forward progress", not "10 retries cumulative".
+     */
+    protected int $reconnectStormThreshold = 10;
+
     protected float $lastFrameAt = 0.0;
 
     protected int $framesReceived = 0;
 
     protected float $connectedAt = 0.0;
+
+    /**
+     * Whether we've already raised the storm alert for the current
+     * uninterrupted streak. Cleared whenever the connection succeeds
+     * and a frame arrives.
+     */
+    private bool $reconnectStormAlertRaised = false;
 
     private bool $watchdogStarted = false;
 
@@ -128,6 +148,28 @@ abstract class BaseWebsocketClient
     }
 
     /**
+     * Public close hook for callers that need to shut a stream down
+     * intentionally (account deactivation, daemon-level reaper). The
+     * existing reconnect path uses the same primitive on the
+     * connection's `close` callback — we just expose it so external
+     * code doesn't have to reach into the protected member.
+     *
+     * `wsConnection` is nulled FIRST so any in-flight callback can't
+     * race with the close handler rehydrating it; this mirrors the
+     * idle-watchdog teardown logic.
+     */
+    final public function close(): void
+    {
+        if ($this->wsConnection === null) {
+            return;
+        }
+
+        $conn = $this->wsConnection;
+        $this->wsConnection = null;
+        $conn->close();
+    }
+
+    /**
      * Non-blocking variant of handleCallback.
      *
      * Registers the connection + handlers against the singleton event
@@ -139,7 +181,7 @@ abstract class BaseWebsocketClient
      *
      * Behaviour is otherwise identical to `handleCallback`.
      */
-    public function handleCallbackAsync(string $url, array $callback): void
+    final public function handleCallbackAsync(string $url, array $callback): void
     {
         $this->registerCallbacks($url, $callback);
     }
@@ -159,6 +201,7 @@ abstract class BaseWebsocketClient
             function (WebSocket $conn) use ($callback, $url) {
                 $this->wsConnection = $conn;
                 $this->reconnectAttempt = 0;
+                $this->reconnectStormAlertRaised = false;
                 $this->connectedAt = microtime(true);
                 $this->lastFrameAt = microtime(true);
                 $this->framesReceived = 0;
@@ -277,6 +320,31 @@ abstract class BaseWebsocketClient
             '[WEBSOCKET] Reconnecting',
             ['url' => $url, 'delay_seconds' => $delay, 'attempt' => $this->reconnectAttempt + 1]
         );
+
+        // Storm escalation: once we've burned through the threshold
+        // without a successful frame, raise an admin alert ONCE per
+        // streak so ops sees slow-degrade situations. The flag clears
+        // when connection succeeds (registerCallbacks) so a recovery
+        // followed by a fresh storm raises again.
+        if (! $this->reconnectStormAlertRaised && $this->reconnectAttempt >= $this->reconnectStormThreshold) {
+            $this->reconnectStormAlertRaised = true;
+            try {
+                NotificationService::send(
+                    user: Kraite::admin(),
+                    canonical: 'websocket_reconnect_storm',
+                    referenceData: [
+                        'url' => $url,
+                        'attempts' => $this->reconnectAttempt,
+                        'threshold' => $this->reconnectStormThreshold,
+                    ],
+                );
+            } catch (Throwable $e) {
+                Log::channel('jobs')->warning(
+                    '[WEBSOCKET] storm alert dispatch failed',
+                    ['error' => $e->getMessage()]
+                );
+            }
+        }
 
         $this->loop->addTimer($delay, function () use ($url, $callback) {
             $this->reconnectAttempt++;

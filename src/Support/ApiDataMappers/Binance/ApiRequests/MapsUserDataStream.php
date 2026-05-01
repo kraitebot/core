@@ -15,22 +15,39 @@ use Kraite\Core\Support\ValueObjects\UserDataStreamEvent;
  *   developers.binance.com/docs/derivatives/usds-margined-futures
  *     /user-data-streams/Event-Order-Update
  *
- * Path conventions used by Binance:
+ * Path conventions used by Binance for ORDER_TRADE_UPDATE:
  *   - Top level: e (event type), E (event time ms), T (transaction time ms)
  *   - Order events nest the order body under `o`:
  *       o.s  symbol
  *       o.c  clientOrderId
  *       o.i  orderId
  *       o.X  status (NEW / PARTIALLY_FILLED / FILLED / CANCELED / EXPIRED / REJECTED)
+ *       o.x  execution type (NEW / TRADE / AMENDMENT / CANCELED / EXPIRED / REJECTED)
  *       o.q  original quantity
  *       o.z  cumulative filled quantity
  *       o.l  last filled quantity
  *       o.p  price
  *       o.ap average fill price
  *       o.L  last filled price
- *   - ACCOUNT_UPDATE puts data under `a` and has no order context.
- *   - listenKeyExpired carries no useful body — the event type itself is
- *     the signal.
+ *
+ * ALGO_UPDATE uses a different sub-shape (the post-2025 conditional/algo-
+ * order event for stop-market and similar). Same envelope, but inside `o`:
+ *       o.aid   algoId       (the algo order ID, parallel to o.i)
+ *       o.caid  clientAlgoId (parallel to o.c)
+ *       o.tp    trigger price (the stop price; o.p is "0" for stop-markets)
+ *       o.X     status — NEW / FILLED / CANCELED / EXPIRED
+ *       o.cp    closePosition flag (typically true for SL / TP)
+ *       o.at    algo type marker — "CONDITIONAL"
+ *       o.q     "0" — algo orders close the whole position, no fixed qty
+ *       o.x     NOT PRESENT — algo events do not carry execution type
+ *
+ * Because ALGO_UPDATE has no o.x, we synthesize an executionType from
+ * the status (`ALGO_<X>`) so the per-execution-type dispatch allowlist
+ * can target algo events distinctly from regular ORDER_TRADE_UPDATEs.
+ * The OrderObserver's price/quantity drift detection then takes over —
+ * a re-broadcast of the same trigger price is a no-op (no drift), a
+ * user modification on the exchange UI surfaces as drift and dispatches
+ * PrepareOrderCorrectionJob.
  *
  * Status mapping respects Kraite's existing canonical vocabulary used
  * by Order::status and the OrderObserver: CANCELED (Binance) becomes
@@ -46,6 +63,7 @@ trait MapsUserDataStream
 
         $isOrderEvent = $eventType === 'order_update';
         $order = $isOrderEvent ? ($envelope['o'] ?? []) : [];
+        $isAlgoEvent = $rawEventType === 'ALGO_UPDATE';
 
         $nativeStatus = $isOrderEvent ? ($order['X'] ?? null) : null;
         $normalizedStatus = $isOrderEvent ? $this->canonicalOrderStatus($nativeStatus) : null;
@@ -53,18 +71,34 @@ trait MapsUserDataStream
         return new UserDataStreamEvent(
             rawEventType: $rawEventType,
             eventType: $eventType,
-            exchangeOrderId: $this->stringOrNull($order['i'] ?? null),
-            clientOrderId: $this->stringOrNull($order['c'] ?? null),
+            exchangeOrderId: $isAlgoEvent
+                ? $this->stringOrNull($order['aid'] ?? null)
+                : $this->stringOrNull($order['i'] ?? null),
+            clientOrderId: $isAlgoEvent
+                ? $this->stringOrNull($order['caid'] ?? null)
+                : $this->stringOrNull($order['c'] ?? null),
             symbol: $this->stringOrNull($order['s'] ?? null),
             nativeStatus: $this->stringOrNull($nativeStatus),
             normalizedStatus: $normalizedStatus,
-            price: $this->numericStringOrNull($order['p'] ?? null),
-            averagePrice: $this->numericStringOrNull($order['ap'] ?? null),
+            price: $isAlgoEvent
+                ? $this->numericStringOrNull($order['tp'] ?? null)
+                : $this->numericStringOrNull($order['p'] ?? null),
+            averagePrice: $isAlgoEvent
+                ? null
+                : $this->numericStringOrNull($order['ap'] ?? null),
             originalQuantity: $this->numericStringOrNull($order['q'] ?? null),
-            filledQuantity: $this->numericStringOrNull($order['z'] ?? null),
-            lastFilledPrice: $this->numericStringOrNull($order['L'] ?? null),
-            lastFilledQuantity: $this->numericStringOrNull($order['l'] ?? null),
-            executionType: $this->stringOrNull($order['x'] ?? null),
+            filledQuantity: $isAlgoEvent
+                ? null
+                : $this->numericStringOrNull($order['z'] ?? null),
+            lastFilledPrice: $isAlgoEvent
+                ? null
+                : $this->numericStringOrNull($order['L'] ?? null),
+            lastFilledQuantity: $isAlgoEvent
+                ? null
+                : $this->numericStringOrNull($order['l'] ?? null),
+            executionType: $isAlgoEvent
+                ? $this->synthesizeAlgoExecutionType($nativeStatus)
+                : $this->stringOrNull($order['x'] ?? null),
             eventTimeMs: $this->intOrNull($envelope['E'] ?? $envelope['T'] ?? null),
         );
     }
@@ -78,12 +112,30 @@ trait MapsUserDataStream
     private function canonicalUserDataEventType(string $rawEventType): string
     {
         return match ($rawEventType) {
-            'ORDER_TRADE_UPDATE', 'CONDITIONAL_ORDER_TRADE_UPDATE' => 'order_update',
+            'ORDER_TRADE_UPDATE', 'CONDITIONAL_ORDER_TRADE_UPDATE', 'ALGO_UPDATE' => 'order_update',
             'ACCOUNT_UPDATE' => 'account_update',
             'MARGIN_CALL' => 'margin_call',
             'listenKeyExpired' => 'listen_key_expired',
             default => 'other',
         };
+    }
+
+    /**
+     * Synthesize an ALGO_UPDATE execution type by namespacing the native
+     * status under an `ALGO_` prefix. ALGO_UPDATE frames do not carry an
+     * `o.x` execution-type field, but their status (NEW / FILLED /
+     * CANCELED / EXPIRED) carries the same semantic load. Prefixing with
+     * `ALGO_` keeps the dispatch allowlist explicit — `ALGO_NEW` only
+     * matches algo-order events, not regular ORDER_TRADE_UPDATE NEW
+     * events that we never want to dispatch through the Order model.
+     */
+    private function synthesizeAlgoExecutionType(?string $nativeStatus): ?string
+    {
+        if ($nativeStatus === null) {
+            return null;
+        }
+
+        return 'ALGO_'.$nativeStatus;
     }
 
     /**

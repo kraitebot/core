@@ -34,6 +34,7 @@ use Kraite\Core\Commands\Cronjobs\SyncOrdersCommand;
 use Kraite\Core\Commands\Daemons\StreamBinancePricesCommand;
 use Kraite\Core\Commands\Daemons\StreamBinanceUserDataCommand;
 use Kraite\Core\Commands\Ingestion\IsEligibleCommand;
+use Kraite\Core\Commands\RecoverPositionsCommand;
 use Kraite\Core\Commands\SafeToRestartCommand;
 use Kraite\Core\Commands\Tests\TestNotificationCommand;
 use Kraite\Core\Commands\Tests\ThrottlerStressTestCommand;
@@ -79,6 +80,7 @@ final class CoreServiceProvider extends ServiceProvider
     {
         $this->commands([
             SafeToRestartCommand::class,
+            RecoverPositionsCommand::class,
             UpdateRecvwindowSafetyDurationCommand::class,
             BacktestTokenCommand::class,
             AnalyseBscsCommand::class,

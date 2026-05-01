@@ -89,12 +89,12 @@ trait MapsOrderQuery
      */
     private function normalizeOrderState(string $state): string
     {
-        return match (strtolower($state)) {
+        return match (mb_strtolower($state)) {
             'new', 'live' => 'NEW',
             'partially_filled', 'partial-fill' => 'PARTIALLY_FILLED',
             'filled', 'full-fill' => 'FILLED',
             'cancelled', 'canceled' => 'CANCELLED',
-            default => strtoupper($state),
+            default => mb_strtoupper($state),
         };
     }
 
@@ -107,7 +107,7 @@ trait MapsOrderQuery
      */
     private function computeOrderQueryPrice(array $order): string
     {
-        $orderType = strtolower($order['orderType'] ?? '');
+        $orderType = mb_strtolower($order['orderType'] ?? '');
         $price = (string) ($order['price'] ?? '0');
         $priceAvg = $order['priceAvg'] ?? '0';
         $triggerPrice = $order['triggerPrice'] ?? '0';

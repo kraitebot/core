@@ -146,38 +146,74 @@ trait HasGetters
     }
 
     /**
-     * PnL using current mark vs entry (profit order price) * quantity on this side.
-     * Safe: returns a STRING "0" if any datum is missing or quantity is zero.
+     * Cost-weighted average price across every FILLED MARKET + LIMIT
+     * order on the position. Mirrors Binance's `entryPrice` field on
+     * the position endpoint: as additional fills land (DCA / WAP),
+     * it stays the running weighted average — not the original
+     * opening_price (which is just the first market fill).
+     *
+     * Returns null when no fills exist yet (position is still
+     * queued / opening pre-first-fill).
+     */
+    public function averageEntryPrice(): ?string
+    {
+        $totalCost = '0';
+        $totalQty = '0';
+
+        foreach ($this->orders()->whereIn('type', ['MARKET', 'LIMIT'])->where('status', 'FILLED')->get() as $order) {
+            $price = (string) $order->price;
+            $qty = (string) $order->quantity;
+
+            if (! is_numeric($price) || ! is_numeric($qty)) {
+                continue;
+            }
+
+            $totalCost = bcadd($totalCost, bcmul($price, $qty, scale: 16), scale: 16);
+            $totalQty = bcadd($totalQty, $qty, scale: 16);
+        }
+
+        if (bccomp($totalQty, '0', scale: 16) <= 0) {
+            return null;
+        }
+
+        return bcdiv($totalCost, $totalQty, scale: 8);
+    }
+
+    /**
+     * Unrealised PnL on the position. Computed against:
+     *   - the live exchange mark_price (WS-driven, refreshed ~1Hz),
+     *   - the cost-weighted average entry across every filled order,
+     *   - direction (LONG flips the diff sign vs SHORT).
+     *
+     * Returns "0" defensively when any datum is missing so callers
+     * never have to null-check the formatted string. Output is the
+     * api-formatted string (per-symbol price precision).
      */
     public function pnl(): ?string
     {
-        // Guard: if quantity is null/zero, return "0"
         if ($this->quantity === null || bccomp((string) $this->quantity, '0', scale: 8) === 0) {
             return '0';
         }
 
-        // Use profit order price as entry; if missing, return "0"
-        $entryPrice = (string) ($this->profitOrder()->price ?? '');
-        if ($entryPrice === '') {
+        $entryPrice = $this->averageEntryPrice();
+        if ($entryPrice === null) {
             return '0';
         }
 
-        // Guard: current price and exchangeSymbol presence
-        $currentPrice = $this->exchangeSymbol?->current_price;
+        $currentPrice = $this->exchangeSymbol?->mark_price;
         if ($currentPrice === null || $currentPrice === '') {
             return '0';
         }
 
+        $currentPrice = (string) $currentPrice;
         $quantity = (string) $this->quantity;
-        $side = $this->direction;
 
-        $diff = $side === 'LONG'
+        $diff = $this->direction === 'LONG'
             ? bcsub($currentPrice, $entryPrice, scale: 16)
             : bcsub($entryPrice, $currentPrice, scale: 16);
 
         $pnl = bcmul($diff, $quantity, scale: 16);
 
-        // api_format_price returns a numeric string; keep it as string
         return (string) api_format_price($pnl, $this->exchangeSymbol);
     }
 

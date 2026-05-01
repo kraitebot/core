@@ -102,11 +102,11 @@ trait MapsKlinesQuery
         // Match patterns like "4h", "12h", "1d", "1w" and uppercase the suffix
         if (preg_match('/^(\d+)([hdw])$/i', $granularity, $matches)) {
             $number = $matches[1];
-            $unit = strtolower($matches[2]);
+            $unit = mb_strtolower($matches[2]);
 
             // Hours, days, weeks use uppercase in Bitget Futures API
             if (in_array($unit, ['h', 'd', 'w'], true)) {
-                return $number . strtoupper($unit);
+                return $number.mb_strtoupper($unit);
             }
         }
 

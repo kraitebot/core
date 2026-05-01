@@ -39,7 +39,6 @@ trait MapsPlacePlanOrder
         $properties->set('options.marginMode', 'crossed');
         $properties->set('options.marginCoin', 'USDT');
         $properties->set('options.side', (string) $this->sideType($order->side));
-        $properties->set('options.tradeSide', $this->determinePlanTradeSide($order));
         $properties->set('options.size', (string) api_format_quantity($order->quantity, $order->position->exchangeSymbol));
         $properties->set('options.clientOid', (string) $order->client_order_id);
 
@@ -48,6 +47,17 @@ trait MapsPlacePlanOrder
         $properties->set('options.triggerPrice', (string) api_format_price($order->price, $order->position->exchangeSymbol));
         $properties->set('options.triggerType', 'mark_price');
         $properties->set('options.orderType', 'market');
+
+        // Position-mode-aware payload. HEDGE: tradeSide=open/close so Bitget
+        // routes the trigger to the correct LONG/SHORT slot. ONE-WAY:
+        // tradeSide is ignored by the API; reduceOnly=YES is what makes
+        // close-intent triggers actually reduce (rather than reopen the
+        // opposite side).
+        if ($order->position->account->isHedgeMode()) {
+            $properties->set('options.tradeSide', $this->determinePlanTradeSide($order));
+        } elseif ($this->isPlanClosingIntent($order)) {
+            $properties->set('options.reduceOnly', 'YES');
+        }
 
         return $properties;
     }
@@ -227,12 +237,26 @@ trait MapsPlacePlanOrder
      */
     private function determinePlanTradeSide(Order $order): string
     {
-        // If the order is marked as reduceOnly, it's closing.
+        return $this->isPlanClosingIntent($order) ? 'close' : 'open';
+    }
+
+    /**
+     * Whether this plan order is closing intent — drives reduceOnly=YES
+     * in one-way mode. Plan orders attached to existing positions (SL,
+     * trailing TP) carry close intent.
+     */
+    private function isPlanClosingIntent(Order $order): bool
+    {
         if ($order->reduce_only ?? false) {
-            return 'close';
+            return true;
         }
 
-        return 'open';
+        return in_array($order->type, [
+            'PROFIT-LIMIT',
+            'PROFIT-MARKET',
+            'STOP-MARKET',
+            'MARKET-CANCEL',
+        ], strict: true);
     }
 
     /**
@@ -256,12 +280,12 @@ trait MapsPlacePlanOrder
      */
     private function normalizePlanOrderStatus(string $status): string
     {
-        return match (strtolower($status)) {
+        return match (mb_strtolower($status)) {
             'live', 'not_trigger' => 'NEW',
             'executed', 'triggered' => 'FILLED',
             'cancelled', 'canceled' => 'CANCELLED',
             'fail', 'failed' => 'REJECTED',
-            default => strtoupper($status),
+            default => mb_strtoupper($status),
         };
     }
 }

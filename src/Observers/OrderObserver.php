@@ -182,6 +182,7 @@ final class OrderObserver
         Step::create([
             'class' => ClosePositionJob::class,
             'queue' => 'positions',
+            'priority' => 'high',
             'arguments' => [
                 'positionId' => $position->id,
                 'message' => "{$model->type} order #{$model->id} filled — closing position",
@@ -213,6 +214,7 @@ final class OrderObserver
         Step::create([
             'class' => PreparePositionReplacementJob::class,
             'queue' => 'positions',
+            'priority' => 'high',
             'arguments' => [
                 'positionId' => $position->id,
                 'triggerStatus' => $model->status,
@@ -261,6 +263,7 @@ final class OrderObserver
         Step::create([
             'class' => ApplyWapJob::class,
             'queue' => 'positions',
+            'priority' => 'high',
             'arguments' => [
                 'positionId' => $position->id,
                 'message' => "LIMIT order #{$model->id} filled — applying WAP",
@@ -352,6 +355,7 @@ final class OrderObserver
         Step::create([
             'class' => $resolvedClass,
             'queue' => 'positions',
+            'priority' => 'high',
             'arguments' => [
                 'positionId' => $position->id,
                 'orderId' => $model->id,

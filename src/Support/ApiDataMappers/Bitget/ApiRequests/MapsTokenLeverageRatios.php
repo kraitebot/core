@@ -23,7 +23,15 @@ trait MapsTokenLeverageRatios
         $properties->set('options.productType', 'USDT-FUTURES');
         $properties->set('options.marginCoin', 'USDT');
         $properties->set('options.leverage', (string) $leverage);
-        $properties->set('options.holdSide', $this->directionType($position->direction));
+
+        // holdSide is HEDGE-only — required to set leverage on the correct
+        // LONG/SHORT slot independently. ONE-WAY mode shares leverage
+        // across both directions on the same symbol; sending holdSide is
+        // rejected. Omitting it tells Bitget to apply leverage to the
+        // symbol globally.
+        if ($position->account->isHedgeMode()) {
+            $properties->set('options.holdSide', $this->directionType($position->direction));
+        }
 
         return $properties;
     }

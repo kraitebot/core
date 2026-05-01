@@ -68,18 +68,20 @@ trait MapsPositionsQuery
                 return (float) ($position['total'] ?? 0) !== 0.0;
             })
             ->map(static function ($position) {
-                // Normalize the symbol format (BitGet uses simple format already)
-                $symbol = $position['symbol'] ?? '';
-
-                // BitGet uses holdSide: 'long' or 'short'
+                // BitGet uses holdSide: 'long' or 'short' (always populated,
+                // even in one-way mode it reflects the actual direction)
                 $holdSide = $position['holdSide'] ?? 'long';
                 $position['side'] = $holdSide;
                 $size = abs((float) ($position['total'] ?? 0));
                 $position['size'] = $size;
 
-                // Add Binance-compatible fields for apiClose() compatibility
-                // positionSide: LONG or SHORT (uppercase)
-                $position['positionSide'] = mb_strtoupper($holdSide);
+                // Add Binance-compatible fields for apiClose() compatibility.
+                // Hedge mode reports LONG/SHORT (independent slots);
+                // one-way mode reports BOTH (single slot per symbol) so
+                // consumers that key by `symbol:BOTH` (Binance convention)
+                // can locate the position regardless of exchange.
+                $isOneWay = ($position['posMode'] ?? '') === 'one_way_mode';
+                $position['positionSide'] = $isOneWay ? 'BOTH' : mb_strtoupper($holdSide);
                 // positionAmt: positive for long, negative for short (Binance convention)
                 $position['positionAmt'] = $holdSide === 'short' ? -$size : $size;
 
@@ -90,11 +92,10 @@ trait MapsPositionsQuery
                 return $position;
             })
             ->keyBy(static function ($position) {
-                // Key by symbol:direction to support hedge mode (LONG + SHORT on same symbol)
-                $side = mb_strtoupper($position['side'] ?? 'BOTH');
-                $direction = $side === 'LONG' ? 'LONG' : ($side === 'SHORT' ? 'SHORT' : 'BOTH');
-
-                return $position['symbol'] . ':' . $direction;
+                // Key by symbol:direction to mirror Binance:
+                //   hedge mode  → symbol:LONG / symbol:SHORT (independent slots)
+                //   one-way     → symbol:BOTH (single slot per symbol)
+                return $position['symbol'].':'.$position['positionSide'];
             })
             ->toArray();
     }

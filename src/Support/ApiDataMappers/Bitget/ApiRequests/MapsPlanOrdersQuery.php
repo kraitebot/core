@@ -73,10 +73,10 @@ trait MapsPlanOrdersQuery
             // Add _price using triggerPrice for plan orders
             $order['_price'] = $this->computePlanOrderPrice($order);
             $order['_orderType'] = $this->canonicalOrderType($order);
-        
+
             // Mark as plan order for frontend distinction
             $order['order_source'] = 'plan';
-        
+
             return $order;
         }, array: $orders);
     }

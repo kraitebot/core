@@ -172,32 +172,10 @@ trait InteractsWithApis
             ?? $apiResponse->result['original_quantity']
             ?? null;
 
-        /*
-         * SHADOW-VALIDATION OVERRIDE — 2026-05-01
-         * ----------------------------------------
-         * During the user-data-stream wiring validation phase, the
-         * polling sync intentionally writes ONLY status, NOT price or
-         * quantity. Reason: price/quantity drift is the trigger that
-         * OrderObserver::checkForOrderModification looks for to dispatch
-         * PrepareOrderCorrectionJob — and we are validating that the
-         * user-data WS path is the one firing that workflow, not this
-         * polling path. Letting both paths write the same fields makes
-         * it impossible to attribute which side triggered any given
-         * correction step.
-         *
-         * Status writes are kept active because status-driven observer
-         * dispatches (FILLED → close, CANCELED → replace) still need
-         * the polling fallback during the validation window. Price /
-         * quantity will be re-enabled once the WS-driven correction
-         * path has been verified end-to-end.
-         *
-         * Restore by un-commenting the two lines below and removing
-         * this block.
-         */
         $this->updateSaving([
             'status' => $apiResponse->result['status'],
-            // 'quantity' => $this->resolveSyncedQuantity($incomingQuantity),
-            // 'price' => $this->resolveSyncedPrice($apiResponse->result['price'] ?? null),
+            'quantity' => $this->resolveSyncedQuantity($incomingQuantity),
+            'price' => $this->resolveSyncedPrice($apiResponse->result['price'] ?? null),
         ]);
 
         return $apiResponse;

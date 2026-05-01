@@ -90,6 +90,7 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
             Step::create([
                 'class' => $resolver->resolve(ClosePositionJob::class),
                 'queue' => 'positions',
+                'priority' => $this->step->priority,
                 'arguments' => [
                     'positionId' => $position->id,
                     'message' => $this->message ?? "Position closed externally ({$this->triggerStatus})",
@@ -100,6 +101,7 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
             Step::create([
                 'class' => $resolver->resolve(SmartReplaceOrdersJob::class),
                 'queue' => 'positions',
+                'priority' => $this->step->priority,
                 'arguments' => [
                     'positionId' => $position->id,
                 ],

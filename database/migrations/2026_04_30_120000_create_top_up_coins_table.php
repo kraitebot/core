@@ -37,16 +37,16 @@ return new class extends Migration
         });
 
         DB::table('top_up_coins')->insert([
-            ['canonical' => 'usdttrc20', 'display_name' => 'Tether (Tron)', 'sort_order' => 10, 'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
-            ['canonical' => 'usdtbsc',   'display_name' => 'Tether (BSC)',          'sort_order' => 20, 'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
-            ['canonical' => 'usdcbsc',   'display_name' => 'USD Coin (BSC)',        'sort_order' => 30, 'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
-            ['canonical' => 'usdcsol',   'display_name' => 'USD Coin (Solana)',     'sort_order' => 40, 'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
-            ['canonical' => 'usdtsol',   'display_name' => 'Tether (Solana)',       'sort_order' => 50, 'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
-            ['canonical' => 'btc',       'display_name' => 'Bitcoin',               'sort_order' => 60, 'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
-            ['canonical' => 'eth',       'display_name' => 'Ethereum',              'sort_order' => 70, 'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
-            ['canonical' => 'sol',       'display_name' => 'Solana',                'sort_order' => 80, 'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
-            ['canonical' => 'ltc',       'display_name' => 'Litecoin',              'sort_order' => 90, 'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
-            ['canonical' => 'bnbbsc',    'display_name' => 'BNB (BSC)',             'sort_order' => 100, 'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
+            ['canonical' => 'usdttrc20', 'display_name' => 'USDT (Tron)',      'sort_order' => 10,  'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
+            ['canonical' => 'usdtbsc',   'display_name' => 'USDT (BSC)',       'sort_order' => 20,  'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
+            ['canonical' => 'usdcbsc',   'display_name' => 'USDC (BSC)',       'sort_order' => 30,  'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
+            ['canonical' => 'usdcsol',   'display_name' => 'USDC (Solana)',    'sort_order' => 40,  'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
+            ['canonical' => 'usdtsol',   'display_name' => 'USDT (Solana)',    'sort_order' => 50,  'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
+            ['canonical' => 'btc',       'display_name' => 'BTC (Bitcoin)',    'sort_order' => 60,  'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
+            ['canonical' => 'eth',       'display_name' => 'ETH (Ethereum)',   'sort_order' => 70,  'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
+            ['canonical' => 'sol',       'display_name' => 'SOL (Solana)',     'sort_order' => 80,  'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
+            ['canonical' => 'ltc',       'display_name' => 'LTC (Litecoin)',   'sort_order' => 90,  'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
+            ['canonical' => 'bnbbsc',    'display_name' => 'BNB (BSC)',        'sort_order' => 100, 'is_active' => true, 'created_at' => now(), 'updated_at' => now()],
         ]);
     }
 

@@ -192,18 +192,24 @@ trait HandlesApiJobExceptions
     }
 
     /**
-     * Recognise a Binance position-mode mismatch error.
+     * Recognise a position-mode mismatch error across exchanges.
      *
-     * Documented family (per Binance error-code reference):
+     * Binance (int codes, per error-code reference):
      *   -4060: INVALID_POSITION_SIDE
      *   -4061: POSITION_SIDE_NOT_MATCH (the canonical mismatch error)
      *   -4062: REDUCE_ONLY_CONFLICT (reduceOnly set in the wrong mode)
      *   -4067: POSITION_SIDE_CHANGE_EXISTS_OPEN_ORDERS
      *
-     * Listening for the family rather than -4061 alone defends against
-     * Binance renaming or returning a sibling code in an asymmetric
-     * variant. Other exchanges add their own equivalents in their own
-     * trait (Bybit's positionIdx mismatch, etc.) when phased.
+     * Bitget (string codes, per V2 docs):
+     *   "40774": "The order type for unilateral position must also be the
+     *     unilateral position type" — fires when the payload assumes the
+     *     wrong position mode (e.g. sending tradeSide=open on a one-way
+     *     account, or omitting it on a hedge account).
+     *
+     * Listening for the family rather than the single canonical code per
+     * exchange defends against renaming and asymmetric variants. Other
+     * exchanges add their own equivalents here when phased (Bybit's
+     * positionIdx mismatch, KuCoin's trading-mode error, etc.).
      */
     protected function isPositionModeMismatch(RequestException $e): bool
     {
@@ -213,13 +219,25 @@ trait HandlesApiJobExceptions
 
         $payload = json_decode((string) $e->getResponse()->getBody(), associative: true);
 
-        if (! is_array($payload)) {
+        if (! is_array($payload) || ! array_key_exists('code', $payload)) {
             return false;
         }
 
-        $code = (int) ($payload['code'] ?? 0);
+        $code = $payload['code'];
 
-        return in_array($code, [-4060, -4061, -4062, -4067], strict: true);
+        // Binance returns numeric codes (incl. negative). Cast preserves
+        // the int form whether code arrived as int or numeric string.
+        if (is_numeric($code) && in_array((int) $code, [-4060, -4061, -4062, -4067], strict: true)) {
+            return true;
+        }
+
+        // Bitget returns string codes. Compared as strings to avoid the
+        // numeric cast collapsing leading zeros / non-numeric variants.
+        if (in_array((string) $code, ['40774'], strict: true)) {
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -277,9 +295,10 @@ trait HandlesApiJobExceptions
                     'job_class' => static::class,
                 ],
                 message: sprintf(
-                    'Position mode auto-flipped: %s → %s (Binance returned position-side mismatch on %s)',
+                    'Position mode auto-flipped: %s → %s (%s returned position-side mismatch on %s)',
                     $previous ? 'hedge' : 'one-way',
                     $next ? 'hedge' : 'one-way',
+                    $locked->apiSystem?->canonical ?? 'exchange',
                     class_basename(static::class)
                 )
             );
