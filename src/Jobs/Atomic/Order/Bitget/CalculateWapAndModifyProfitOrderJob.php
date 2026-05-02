@@ -191,6 +191,15 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseCalculateWapAndModif
             'quantity' => $formattedQty,
         ]);
 
+        // Operator notification — same surface the Binance base class
+        // fires (cache-key throttled per position, mail + pushover).
+        // Without this call the Bitget WAP path completes silently:
+        // TP repriced, was_waped tagged, dashboard correct, but no
+        // notification reaches the operator. Production trigger
+        // 2026-05-02: ARKMUSDT WAPs fired on both Binance + Bitget,
+        // only the Binance one notified.
+        $this->dispatchWapAppliedNotification($oldPrice, $oldQty);
+
         return [
             'position_id' => $this->position->id,
             'order_id' => $this->profitOrder->id,

@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.14.0 - 2026-05-03
+
+### Features
+
+- [NEW FEATURE] **Test-only `symbol_override` god-mode at priority 0 of token discovery.** New `kraite.position_creation.symbol_override` config consumed by `HasTokenDiscovery::resolveSymbolOverrideForSlot()` ahead of fast-track / BTC-bias / fallback. When `account_id` matches and the configured pair resolves on the account's exchange, the override pins that ExchangeSymbol on the next free slot — bypassing scoring, correlation, elasticity, BTC-bias, S/R proximity, `is_manually_enabled`, and `was_backtesting_approved`. Silent fallback on any miss (account mismatch, unresolvable pair, direction mismatch, already-open). Does NOT raise slot caps. Intended for rehearsing WAP / close / drift flows on a known token.
+- [NEW FEATURE] **Manual-close detection branch in `ProcessUserDataEventJob`.** When the user-data daemon receives a reduce-only `FILLED` frame for an order we don't own, against an active local Position on this account+symbol, the worker dispatches `PreparePositionReplacementJob` with `triggerStatus='EXTERNAL_FILL'`. Closes the polling-latency window where Binance's "Close All" placed a reduce-only MARKET we never persisted, leaving DCA legs live. Dedup via pending-Step query so the eventual EXPIRED-driven OrderObserver dispatch collapses to a single in-flight Step.
+- [NEW FEATURE] **Per-execution-type dispatch allowlist (`dispatched_executions`).** `kraite.user_data_stream.<exchange>.dispatched_executions` env-driven allowlist. Each entry is the exchange-native execution-type string (Binance: `NEW / TRADE / AMENDMENT / CANCELED / EXPIRED / REJECTED / CALCULATED`, plus synthesized `ALGO_<status>` for ALGO_UPDATE frames that have no `o.x`). Worker calls `Order::updateSaving` only when an inbound event's executionType matches the list — empty list = pure shadow mode (`api_data_stream` audit only). Each execution type is opt-in enabled as its downstream OrderObserver workflow is verified end-to-end against live frames.
+- [NEW FEATURE] **`UserDataStreamEvent::reduceOnly` field.** Mapper extracts Binance's `o.R` reduce-only flag so the manual-close detection branch can gate on it without parsing raw payload at the call site.
+- [NEW FEATURE] **Synthesized `ALGO_<status>` execution types for `ALGO_UPDATE`.** ALGO_UPDATE frames have no `o.x`; `MapsUserDataStream` synthesizes `ALGO_NEW / ALGO_FILLED / ALGO_CANCELED / ALGO_EXPIRED` from the `o.X` status so the dispatch allowlist can target algo events distinctly from regular ORDER_TRADE_UPDATE events.
+- [NEW FEATURE] **`kraite:cron-check-binance-listen-keys-stale` command.** Detects two failure modes the keepalive cron alone cannot surface: (1) an active Binance account with NO listen-key row past the grace window (daemon never initialised it), and (2) a row with `last_keep_alive_at` older than 30 minutes. Per-account dedupe. Threshold well below Binance's 60-min hard expiry so the operator has time to respond before the WS dies.
+- [NEW FEATURE] **`kraite:cron-check-system-health` unified watchdog.** Multiple sequential checks across the bot's critical data paths routed through one `system_health_alert` notification with per-signal cache key (5-minute throttle). Replaces the prior narrow `kraite:cron-check-stale-data`. Adding a new health signal is now a single private method, not a notifications-table migration.
+- [NEW FEATURE] **`binance_listen_key_stale` and `system_health_alert` notification canonicals seeded.**
+
+### Removals
+
+- [IMPROVED] **`CheckStaleDataCommand` retired.** Functionality folded into `kraite:cron-check-system-health`'s mark-price freshness signal.
+
 ## 1.13.0 - 2026-05-02
 
 ### Features

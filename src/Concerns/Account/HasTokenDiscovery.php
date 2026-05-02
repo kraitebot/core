@@ -360,6 +360,27 @@ trait HasTokenDiscovery
             $bestToken = null;
 
             /*
+             * Priority 0: Test-only god-mode override.
+             *
+             * config('kraite.position_creation.symbol_override') can pin
+             * a specific symbol onto a specific account, bypassing
+             * scoring/eligibility gates entirely. Falls back silently
+             * to the regular pipeline below when not configured, when
+             * configured for a different account, when the symbol can
+             * not be resolved on this exchange, when the symbol is
+             * already in an active position, or when the symbol's
+             * direction does not match this slot's direction.
+             *
+             * Documented in config/kraite.php; intended for rehearsing
+             * WAP / close / drift flows on a known token.
+             */
+            $overrideSymbol = $this->resolveSymbolOverrideForSlot($position);
+            $wasFastTracked = false;
+            if ($overrideSymbol !== null) {
+                $bestToken = $overrideSymbol;
+            }
+
+            /*
              * Priority 1: Fast-Tracked Symbols
              *
              * Fast-tracked positions are those that:
@@ -370,10 +391,12 @@ trait HasTokenDiscovery
              * Fast-tracked symbols ONLY verify direction match.
              * They skip correlation/elasticity checks entirely.
              */
-            $fastTrackedSymbol = $this->getFastTrackedSymbolForDirection($direction, $batchExclusions);
-            $wasFastTracked = ($fastTrackedSymbol !== null);
-            if ($fastTrackedSymbol) {
-                $bestToken = $fastTrackedSymbol;
+            if (! $bestToken) {
+                $fastTrackedSymbol = $this->getFastTrackedSymbolForDirection($direction, $batchExclusions);
+                $wasFastTracked = ($fastTrackedSymbol !== null);
+                if ($fastTrackedSymbol) {
+                    $bestToken = $fastTrackedSymbol;
+                }
             }
 
             /*
@@ -814,5 +837,78 @@ trait HasTokenDiscovery
             s3: $symbol->pivot_s3,
             safeZone: $safeZone,
         );
+    }
+
+    /**
+     * Resolve the test-only god-mode symbol override for this slot.
+     *
+     * Returns the resolved ExchangeSymbol when ALL of:
+     *   - config('kraite.position_creation.symbol_override') is a non-empty array
+     *   - its `account_id` matches this account
+     *   - its `symbol` resolves to an ExchangeSymbol on this account's
+     *     api_system_id whose computed parsed_trading_pair equals the
+     *     configured value (per-exchange formatting handled by the
+     *     account's data mapper through the existing accessor)
+     *   - the resolved symbol's direction matches the slot's direction
+     *   - no opened position on this account already references that
+     *     ExchangeSymbol (guards against forcing a duplicate)
+     *
+     * Returns null on any miss — silent fallback by design. The caller
+     * (assignTokensToPositions) treats null as "no override" and proceeds
+     * down the regular fast-tracked / BTC-bias / fallback pipeline.
+     */
+    public function resolveSymbolOverrideForSlot(Position $position): ?ExchangeSymbol
+    {
+        $override = config('kraite.position_creation.symbol_override');
+
+        if (! is_array($override) || $override === []) {
+            return null;
+        }
+
+        $configuredAccountId = $override['account_id'] ?? null;
+        $configuredSymbol = $override['symbol'] ?? null;
+
+        if ((int) $configuredAccountId !== (int) $this->id) {
+            return null;
+        }
+
+        if (! is_string($configuredSymbol) || mb_trim($configuredSymbol) === '') {
+            return null;
+        }
+
+        $targetPair = mb_trim($configuredSymbol);
+
+        // Resolve via the parsed_trading_pair accessor — that accessor
+        // delegates to the per-exchange data mapper's baseWithQuote()
+        // method, which gives us the right Binance / Bitget / KuCoin /
+        // Bybit format without us having to reimplement it here. Scope
+        // to this account's api_system_id and trading_quote so the
+        // candidate set stays small (~hundreds of rows max).
+        $candidate = ExchangeSymbol::query()
+            ->where('api_system_id', $this->api_system_id)
+            ->where('quote', $this->trading_quote)
+            ->get()
+            ->first(function (ExchangeSymbol $symbol) use ($targetPair): bool {
+                return $symbol->parsed_trading_pair === $targetPair;
+            });
+
+        if ($candidate === null) {
+            return null;
+        }
+
+        if ($candidate->direction !== $position->direction) {
+            return null;
+        }
+
+        $alreadyOpen = $this->positions()
+            ->opened()
+            ->where('exchange_symbol_id', $candidate->id)
+            ->exists();
+
+        if ($alreadyOpen) {
+            return null;
+        }
+
+        return $candidate;
     }
 }

@@ -34,6 +34,7 @@ final class UserDataStreamEvent
      * @param  string|null  $lastFilledQuantity  Quantity of the specific fill that triggered this event
      * @param  string|null  $executionType  Exchange-native execution type — Binance `o.x` (NEW / TRADE / AMENDMENT / CANCELED / EXPIRED / REJECTED / CALCULATED). Drives selective dispatch in ProcessUserDataEventJob: only execution types in the per-exchange allowlist trigger Order::updateSaving.
      * @param  int|null  $eventTimeMs  Exchange-claimed event time, milliseconds since epoch
+     * @param  bool|null  $reduceOnly  Whether the underlying order carries the reduce-only flag (Binance `o.R`). When true on a FILLED frame for an order we do not own, the position-close detection branch in ProcessUserDataEventJob uses it as the signal that the operator manually flat-closed a position on the exchange. Null for events that have no concept of reduce-only (algo orders, account/margin updates).
      */
     public function __construct(
         public string $rawEventType,
@@ -51,5 +52,6 @@ final class UserDataStreamEvent
         public ?string $lastFilledQuantity = null,
         public ?string $executionType = null,
         public ?int $eventTimeMs = null,
+        public ?bool $reduceOnly = null,
     ) {}
 }

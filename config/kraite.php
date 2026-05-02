@@ -57,6 +57,45 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Position Creation
+    |--------------------------------------------------------------------------
+    |
+    | Test-only knobs around position opening. Designed to be left
+    | empty in production.
+    |
+    | `symbol_override` is a god-mode override consumed by the
+    | HasTokenDiscovery trait during slot assignment. When the
+    | configured account is processed and the configured symbol is
+    | resolvable on that account's exchange (no other gate veto), the
+    | symbol-selection algorithm is short-circuited and that symbol is
+    | assigned to the new slot directly — bypassing scoring,
+    | correlation/elasticity filters, BTC-bias rules, and eligibility
+    | gates such as `is_manually_enabled` or `was_backtesting_approved`.
+    |
+    | The override falls back silently to the normal scoring flow when:
+    |   - no override is configured
+    |   - the override's account_id does not match the current account
+    |   - the symbol cannot be resolved on the account's exchange
+    |   - the symbol is already part of an active position for this account
+    |   - the resolved symbol's direction does not match the slot direction
+    |
+    | The override does NOT raise slot caps. The bot must still have a
+    | free slot in the relevant direction for any selection to happen,
+    | overridden or otherwise.
+    |
+    | Used by Bruno to force a known token onto a freed slot when
+    | rehearsing WAP / close / drift flows on a hedge account. Leave
+    | the example commented out in production.
+    */
+    'position_creation' => [
+        // 'symbol_override' => [
+        //     'account_id' => 1,
+        //     'symbol' => 'APEUSDT', // exchange-native pair string (Binance/Bitget concat, KuCoin slash, etc.)
+        // ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Server Secrets
     |--------------------------------------------------------------------------
     |

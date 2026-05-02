@@ -7,12 +7,19 @@ namespace Kraite\Core\Jobs\Atomic\UserDataStream;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Log;
 use Kraite\Core\Abstracts\BaseQueueableJob;
+use Kraite\Core\Jobs\Lifecycles\Position\PreparePositionReplacementJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiDataStream;
 use Kraite\Core\Models\Order;
+use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
+use Kraite\Core\Support\Proxies\JobProxy;
 use Kraite\Core\Support\ValueObjects\UserDataStreamEvent;
+use StepDispatcher\Models\Step;
+use StepDispatcher\States\Dispatched;
+use StepDispatcher\States\Pending;
+use StepDispatcher\States\Running;
 
 /**
  * ProcessUserDataEventJob (Atomic)
@@ -82,6 +89,8 @@ class ProcessUserDataEventJob extends BaseQueueableJob
             $orderDispatched = $this->applyToOrderModel($event);
         }
 
+        $manualClose = $this->maybeDetectManualPositionClose($event, $orderDispatched);
+
         return [
             'account_id' => $this->accountId,
             'api_system_canonical' => $this->apiSystemCanonical,
@@ -90,6 +99,7 @@ class ProcessUserDataEventJob extends BaseQueueableJob
             'execution_type' => $event->executionType,
             'recorded' => $recorded,
             'order_dispatched' => $orderDispatched,
+            'manual_close_detected' => $manualClose,
         ];
     }
 
@@ -269,5 +279,121 @@ class ProcessUserDataEventJob extends BaseQueueableJob
         }
 
         return null;
+    }
+
+    /**
+     * Detect a manual / external position close from a user-data frame
+     * we did not originate.
+     *
+     * Binance's "Close All" / market-flat action places a reduce-only
+     * MARKET on its own side — never persisted in our orders table — and
+     * fills it. Our existing TP/SL go to EXPIRED (not CANCELLED) on
+     * close, so the OrderObserver-driven replacement chain only fires
+     * once polling sync writes those EXPIREDs to our DB. That polling
+     * latency is what previously made manual close take ~60s to
+     * register; during that window the DCA legs sit live on the
+     * exchange and could fill on an adverse move.
+     *
+     * This branch closes that window. Whenever a reduce-only FILL
+     * arrives for an order we cannot resolve locally, we look for an
+     * active position on this account+symbol and let the standard
+     * replacement orchestration (PreparePositionReplacementJob →
+     * QueryAccountPositionsJob → VerifyPositionExistsOnExchangeJob)
+     * decide whether to close or smart-replace. The orchestrator's
+     * own per-position dedup means parallel paths (this branch + the
+     * eventual EXPIRED-driven OrderObserver dispatch once that
+     * execution type lands in the allowlist) collapse to a single
+     * Step in flight.
+     *
+     * Strict gate set:
+     *   - eventType must be order_update (skip account_update / margin_call)
+     *   - reduceOnly must be true (a non-reduce fill is benign DCA flow)
+     *   - normalizedStatus must be FILLED (PARTIAL fills do not flat the position)
+     *   - applyToOrderModel must have skipped (no local match — confirms
+     *     the order is not one we already track)
+     *   - Account must own an active position on this symbol
+     */
+    private function maybeDetectManualPositionClose(UserDataStreamEvent $event, bool $orderDispatched): bool
+    {
+        if ($orderDispatched) {
+            return false;
+        }
+
+        if ($event->eventType !== 'order_update') {
+            return false;
+        }
+
+        if ($event->reduceOnly !== true) {
+            return false;
+        }
+
+        if ($event->normalizedStatus !== 'FILLED') {
+            return false;
+        }
+
+        if ($event->symbol === null) {
+            return false;
+        }
+
+        if ($this->resolveLocalOrder($event) !== null) {
+            return false;
+        }
+
+        $position = $this->resolveActivePositionForSymbol($event->symbol);
+
+        if ($position === null) {
+            return false;
+        }
+
+        $alreadyPending = Step::query()
+            ->where('class', PreparePositionReplacementJob::class)
+            ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
+            ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+            ->exists();
+
+        if ($alreadyPending) {
+            return false;
+        }
+
+        Log::channel('user-data')->info('[USER-DATA] manual close detected via reduce-only fill', [
+            'account_id' => $this->accountId,
+            'position_id' => $position->id,
+            'symbol' => $event->symbol,
+            'exchange_order_id' => $event->exchangeOrderId,
+        ]);
+
+        $resolver = JobProxy::with($position->account);
+
+        Step::create([
+            'class' => $resolver->resolve(PreparePositionReplacementJob::class),
+            'queue' => 'positions',
+            'priority' => 'high',
+            'arguments' => [
+                'positionId' => $position->id,
+                'triggerStatus' => 'EXTERNAL_FILL',
+                'message' => 'Reduce-only fill on unowned order — verifying position state',
+            ],
+        ]);
+
+        return true;
+    }
+
+    /**
+     * Locate the active Position on this account whose parsed trading
+     * pair matches the inbound symbol. Returns null when no active
+     * position exists for this pair (typical, manual-close branch will
+     * exit cleanly).
+     */
+    private function resolveActivePositionForSymbol(string $symbol): ?Position
+    {
+        $upper = mb_strtoupper(mb_trim($symbol));
+
+        return Position::query()
+            ->where('account_id', $this->accountId)
+            ->where('status', 'active')
+            ->get()
+            ->first(function (Position $position) use ($upper): bool {
+                return mb_strtoupper(mb_trim((string) $position->parsed_trading_pair)) === $upper;
+            });
     }
 }

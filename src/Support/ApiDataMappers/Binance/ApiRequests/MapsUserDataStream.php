@@ -100,7 +100,38 @@ trait MapsUserDataStream
                 ? $this->synthesizeAlgoExecutionType($nativeStatus)
                 : $this->stringOrNull($order['x'] ?? null),
             eventTimeMs: $this->intOrNull($envelope['E'] ?? $envelope['T'] ?? null),
+            reduceOnly: $isAlgoEvent
+                ? null
+                : $this->boolOrNull($order['R'] ?? null),
         );
+    }
+
+    /**
+     * Coerce Binance's `R` (reduceOnly) flag into a strict bool. Binance
+     * sends actual JSON booleans (`true` / `false`) here, not the
+     * stringified variants used for some other fields, so the tolerant
+     * cast below also accepts the standard truthy strings as a
+     * defensive measure against future payload drift.
+     */
+    private function boolOrNull(mixed $value): ?bool
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_string($value)) {
+            return in_array(mb_strtolower($value), ['true', '1'], strict: true);
+        }
+
+        if (is_int($value)) {
+            return $value !== 0;
+        }
+
+        return null;
     }
 
     /**

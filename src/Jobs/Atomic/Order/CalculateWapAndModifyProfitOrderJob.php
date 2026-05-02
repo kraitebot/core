@@ -413,7 +413,7 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
      * double-ping, but the follow-up-WAP mechanism will still surface a
      * second notification if it fires outside the 30s window.
      */
-    private function dispatchWapAppliedNotification(string $oldTpPrice, string $oldTpQuantity): void
+    protected function dispatchWapAppliedNotification(string $oldTpPrice, string $oldTpQuantity): void
     {
         if ($this->profitOrder === null) {
             return;
