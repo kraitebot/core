@@ -81,6 +81,7 @@ final class CalculateBtcCorrelationJob extends BaseQueueableJob
         $pearsonResults = [];
         $spearmanResults = [];
         $rollingResults = [];
+        $stabilityResults = [];
         $timeframeDetails = [];
 
         foreach ($timeframes as $timeframe) {
@@ -102,11 +103,19 @@ final class CalculateBtcCorrelationJob extends BaseQueueableJob
             $pearsonResults[$timeframe] = $result['pearson'];
             $spearmanResults[$timeframe] = $result['spearman'];
             $rollingResults[$timeframe] = $result['rolling'];
+
+            if ($result['stability'] !== null) {
+                $stabilityResults[$timeframe] = $result['stability'];
+            }
+
             $timeframeDetails[$timeframe] = [
                 'candles_analyzed' => $result['candles_analyzed'],
                 'pearson' => round($result['pearson'], precision: 4),
                 'spearman' => round($result['spearman'], precision: 4),
                 'rolling' => round($result['rolling'], precision: 4),
+                'stability' => $result['stability'] !== null
+                    ? round($result['stability'], precision: 4)
+                    : null,
             ];
         }
 
@@ -115,6 +124,9 @@ final class CalculateBtcCorrelationJob extends BaseQueueableJob
             $exchangeSymbol->btc_correlation_pearson = $pearsonResults;
             $exchangeSymbol->btc_correlation_spearman = $spearmanResults;
             $exchangeSymbol->btc_correlation_rolling = $rollingResults;
+            $exchangeSymbol->btc_correlation_stability = $stabilityResults !== []
+                ? $stabilityResults
+                : null;
             $exchangeSymbol->save();
         }
 
@@ -194,10 +206,24 @@ final class CalculateBtcCorrelationJob extends BaseQueueableJob
             $config['rolling']['step_size']
         );
 
+        // Stability is the std-dev of the per-window rolling
+        // correlation series — independent of the rolling-method
+        // (recent / average / weighted) used for the headline rolling
+        // value. Always uses the full sliding-window scan so we get a
+        // meaningful dispersion measure even when the headline method
+        // is `recent`.
+        $stability = $this->calculateRollingStability(
+            $tokenPrices,
+            $btcPrices,
+            (int) $config['rolling']['window_size'],
+            (int) $config['rolling']['step_size']
+        );
+
         return [
             'pearson' => $pearson,
             'spearman' => $spearman,
             'rolling' => $rolling,
+            'stability' => $stability,
             'candles_analyzed' => count($tokenPrices),
         ];
     }
@@ -249,6 +275,47 @@ final class CalculateBtcCorrelationJob extends BaseQueueableJob
 
         // Apply Pearson to ranks
         return $this->calculatePearsonCorrelation($ranksX, $ranksY);
+    }
+
+    /**
+     * Standard deviation of the per-window rolling correlation
+     * series. Captures how jittery the correlation is across the
+     * lookback. Returns null when there are fewer than two complete
+     * sub-windows — a single window has no dispersion to measure.
+     */
+    public function calculateRollingStability(
+        array $x,
+        array $y,
+        int $windowSize,
+        int $stepSize,
+    ): ?float {
+        $n = count($x);
+
+        if ($n < $windowSize + $stepSize) {
+            return null;
+        }
+
+        $correlations = [];
+
+        for ($i = 0; $i <= $n - $windowSize; $i += max(1, $stepSize)) {
+            $windowX = array_slice($x, $i, length: $windowSize);
+            $windowY = array_slice($y, $i, length: $windowSize);
+
+            $correlations[] = $this->calculatePearsonCorrelation($windowX, $windowY);
+        }
+
+        if (count($correlations) < 2) {
+            return null;
+        }
+
+        $mean = array_sum($correlations) / count($correlations);
+        $varianceSum = 0.0;
+
+        foreach ($correlations as $correlation) {
+            $varianceSum += ($correlation - $mean) ** 2;
+        }
+
+        return sqrt($varianceSum / count($correlations));
     }
 
     /**

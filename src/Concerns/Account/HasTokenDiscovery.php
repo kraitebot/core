@@ -14,6 +14,9 @@ use Kraite\Core\Models\Position;
 use Kraite\Core\Models\Symbol;
 use Kraite\Core\Models\TokenMapper;
 use Kraite\Core\Support\SupportResistanceProximity;
+use Kraite\Core\Support\TokenScoring\BatchDiversificationPenalty;
+use Kraite\Core\Support\TokenScoring\CorrelationStabilityWeight;
+use Kraite\Core\Support\TokenScoring\LogElasticityScorer;
 use Kraite\Core\Trading\Kraite;
 
 /*
@@ -354,6 +357,13 @@ trait HasTokenDiscovery
         ?string $btcTimeframe,
         array &$batchExclusions
     ): void {
+        // Track 1d BTC correlation of every symbol picked in THIS batch
+        // so subsequent picks downscore candidates that look like the
+        // same trade we already booked. Diversification penalty uses
+        // this to force structural variety across a 6-LONG / 6-SHORT
+        // book — see BatchDiversificationPenalty.
+        $batchPicks1dCorrelation = [];
+
         foreach ($newPositions as $position) {
             $this->positionReference = $position;
             $direction = $position->direction;
@@ -408,22 +418,29 @@ trait HasTokenDiscovery
                      * BTC Bias Algorithm:
                      * - Use BTC's timeframe only
                      * - Apply correlation sign filtering based on direction alignment
-                     * - Score: elasticity × |correlation|
+                     * - Score: log(1 + |elasticity|) × |correlation|
+                     *   × stability_weight × diversification_penalty × s/r_multiplier
                      */
                     $bestToken = $this->selectBestTokenByBtcBias(
                         $direction,
                         $btcDirection,
                         $btcTimeframe,
-                        $batchExclusions
+                        $batchExclusions,
+                        $batchPicks1dCorrelation,
                     );
                 } else {
                     /*
                      * Fallback Algorithm (when BTC has no direction):
                      * - Iterate ALL timeframes from TradeConfiguration
                      * - No correlation sign filtering
-                     * - Score: elasticity × |correlation| (best across all timeframes)
+                     * - Score: log(1 + |elasticity|) × |correlation|
+                     *   × stability_weight × diversification_penalty × s/r_multiplier
                      */
-                    $bestToken = $this->selectBestTokenFallback($direction, $batchExclusions);
+                    $bestToken = $this->selectBestTokenFallback(
+                        $direction,
+                        $batchExclusions,
+                        $batchPicks1dCorrelation,
+                    );
                 }
             }
 
@@ -449,6 +466,15 @@ trait HasTokenDiscovery
             ]);
 
             $batchExclusions[] = $bestToken->id;
+
+            // Capture this pick's 1d BTC correlation so the next slot's
+            // scoring penalises candidates that look structurally
+            // identical (same direction-of-movement against BTC). Tokens
+            // missing 1d correlation data contribute no constraint.
+            $pick1dCorrelation = $bestToken->btc_correlation_rolling['1d'] ?? null;
+            if (is_numeric($pick1dCorrelation)) {
+                $batchPicks1dCorrelation[] = (float) $pick1dCorrelation;
+            }
 
             /*
              * Add Token to User's Reserved Tokens Cache
@@ -519,7 +545,8 @@ trait HasTokenDiscovery
         string $positionDirection,
         string $btcDirection,
         string $btcTimeframe,
-        array $batchExclusions
+        array $batchExclusions,
+        array $batchPicks1dCorrelation = [],
     ) {
         /*
          * ═══════════════════════════════════════════════════════════════════════════════
@@ -552,8 +579,8 @@ trait HasTokenDiscovery
          * SCORING FORMULA (Symbol's Own Timeframe)
          * ─────────────────────────────────────────────────────────────────────────────────
          *
-         * For LONG positions:  score = elasticity_long[symbol_timeframe] × |correlation[symbol_timeframe]|
-         * For SHORT positions: score = |elasticity_short[symbol_timeframe]| × |correlation[symbol_timeframe]|
+         * Base term:    log(1 + |elasticity_<dir>[tf]|) × |correlation[tf]|   (LogElasticityScorer)
+         * Multipliers:  S/R proximity × correlation stability × batch diversification
          *
          * ─────────────────────────────────────────────────────────────────────────────────
          */
@@ -589,40 +616,31 @@ trait HasTokenDiscovery
             $positionDirection,
             $correlationField,
             $requireMatchingSign,
-            $wantPositiveCorrelation
+            $wantPositiveCorrelation,
+            $batchPicks1dCorrelation,
         ) {
-            /*
-             * Use the symbol's own concluded timeframe for lookups
-             */
             $symbolTimeframe = $symbol->indicators_timeframe;
 
             if (! $symbolTimeframe) {
                 return null;
             }
 
-            /*
-             * Validate Data Availability for Symbol's Timeframe
-             */
             if (! isset($symbol->btc_elasticity_long[$symbolTimeframe])
                 || ! isset($symbol->btc_elasticity_short[$symbolTimeframe])
                 || ! isset($symbol->{$correlationField}[$symbolTimeframe])) {
                 return null;
             }
 
-            $elasticityLong = $symbol->btc_elasticity_long[$symbolTimeframe];
-            $elasticityShort = $symbol->btc_elasticity_short[$symbolTimeframe];
+            $elasticity = $positionDirection === 'SHORT'
+                ? $symbol->btc_elasticity_short[$symbolTimeframe]
+                : $symbol->btc_elasticity_long[$symbolTimeframe];
+
             $correlation = $symbol->{$correlationField}[$symbolTimeframe];
 
             /*
-             * Apply Correlation Sign Filter (if enabled)
-             *
-             * If require_matching_correlation_sign=true:
-             * - Skip symbols with wrong correlation sign
-             * - This ensures high conviction trades
-             *
-             * If require_matching_correlation_sign=false:
-             * - Don't filter by sign
-             * - Always find a token if any available
+             * Hard sign-filter retained as a high-conviction gate. Tokens
+             * with the wrong-sign correlation are rejected outright before
+             * the score multipliers run.
              */
             if ($requireMatchingSign) {
                 $hasCorrectSign = $wantPositiveCorrelation
@@ -635,24 +653,50 @@ trait HasTokenDiscovery
             }
 
             /*
-             * Calculate Score Using Direction-Specific Formula
+             * Base score: log-compressed elasticity × |correlation|. The
+             * log keeps a 50× outlier from drowning a 5× token with
+             * stronger correlation. Same for both directions because
+             * both terms are absolute-valued by the scorer.
              */
-            if ($positionDirection === 'SHORT') {
-                $score = abs($elasticityShort) * abs($correlation);
-            } else {
-                $score = $elasticityLong * abs($correlation);
-            }
+            $score = LogElasticityScorer::score(
+                (float) $elasticity,
+                (float) $correlation,
+            );
 
             /*
-             * Apply the S/R proximity multiplier. Deprioritises candidates
-             * whose live mark_price sits near the wrong-side pivot level
-             * for the concluded direction (LONG close to R1, SHORT close
-             * to S1). Soft — a 0.30-multiplier candidate still wins if
-             * nothing else beats its reduced score. Missing pivot data or
-             * missing mark_price returns 1.0 (graceful degrade — don't
-             * penalise for absent information).
+             * S/R proximity multiplier. Deprioritises candidates whose
+             * mark_price sits near the wrong-side pivot for the concluded
+             * direction. Soft — graceful 1.0 when pivot data is absent.
              */
             $score *= $this->supportResistanceMultiplierFor($symbol, $positionDirection);
+
+            /*
+             * Correlation stability multiplier. A symbol whose rolling
+             * correlation jitters across the lookback windows gets
+             * downweighted vs one with a steady correlation. Graceful
+             * 1.0 when the stability column has not been populated yet
+             * (newly-concluded symbols, post-migration upgrade window).
+             */
+            $stability = $symbol->btc_correlation_stability[$symbolTimeframe] ?? null;
+            $score *= CorrelationStabilityWeight::for(
+                is_numeric($stability) ? (float) $stability : null,
+            );
+
+            /*
+             * Batch diversification penalty. If any symbol already
+             * picked in THIS selection cycle has a 1d BTC correlation
+             * within the threshold of this candidate's 1d correlation
+             * (and on the same side of zero), the candidate is
+             * deprioritised so the resulting book is not 6 essentially-
+             * identical bets on BTC up.
+             */
+            $candidate1d = $symbol->btc_correlation_rolling['1d'] ?? null;
+            if (is_numeric($candidate1d)) {
+                $score *= BatchDiversificationPenalty::for(
+                    (float) $candidate1d,
+                    $batchPicks1dCorrelation,
+                );
+            }
 
             return [
                 'symbol' => $symbol,
@@ -674,22 +718,21 @@ trait HasTokenDiscovery
         return $best ? $best['symbol'] : null;
     }
 
-    public function selectBestTokenFallback(string $direction, array $batchExclusions)
-    {
+    public function selectBestTokenFallback(
+        string $direction,
+        array $batchExclusions,
+        array $batchPicks1dCorrelation = [],
+    ) {
         /*
          * ═══════════════════════════════════════════════════════════════════════════════
          * FALLBACK TOKEN SELECTION ALGORITHM (No BTC Direction)
          * ═══════════════════════════════════════════════════════════════════════════════
          *
-         * Purpose:
-         * Select optimal token when BTC has no direction signal.
-         * Uses all timeframes and ignores correlation sign (no BTC bias to align with).
-         *
-         * Scoring Formula:
-         * For LONG:  score = elasticity_long × |correlation| (best across all timeframes)
-         * For SHORT: score = |elasticity_short| × |correlation| (best across all timeframes)
-         *
-         * This is the "RELAXED" mode when btc_biased_restriction=false.
+         * Used when BTC has no direction signal — no sign filter applies.
+         * Iterates every configured timeframe per candidate and keeps the
+         * best-scoring timeframe. Same multiplier stack as the BTC-bias
+         * path: log-compressed elasticity × |correlation| × S/R proximity
+         * × correlation stability × batch diversification.
          */
 
         $correlationType = config('kraite.token_discovery.correlation_type', 'rolling');
@@ -703,14 +746,16 @@ trait HasTokenDiscovery
             return null;
         }
 
-        /*
-         * Score Each Candidate Across ALL Timeframes
-         */
         $timeframes = KraiteSettings::timeframes();
 
-        $scoredSymbols = $candidates->map(function ($symbol) use ($direction, $correlationField, $timeframes) {
+        $scoredSymbols = $candidates->map(function ($symbol) use (
+            $direction,
+            $correlationField,
+            $timeframes,
+            $batchPicks1dCorrelation,
+        ) {
 
-            $bestScore = 0;
+            $bestScore = 0.0;
             $bestTimeframe = null;
 
             foreach ($timeframes as $timeframe) {
@@ -720,15 +765,21 @@ trait HasTokenDiscovery
                     continue;
                 }
 
-                $elasticityLong = $symbol->btc_elasticity_long[$timeframe];
-                $elasticityShort = $symbol->btc_elasticity_short[$timeframe];
+                $elasticity = $direction === 'SHORT'
+                    ? $symbol->btc_elasticity_short[$timeframe]
+                    : $symbol->btc_elasticity_long[$timeframe];
+
                 $correlation = $symbol->{$correlationField}[$timeframe];
 
-                if ($direction === 'SHORT') {
-                    $score = abs($elasticityShort) * abs($correlation);
-                } else {
-                    $score = $elasticityLong * abs($correlation);
-                }
+                $score = LogElasticityScorer::score(
+                    (float) $elasticity,
+                    (float) $correlation,
+                );
+
+                $stability = $symbol->btc_correlation_stability[$timeframe] ?? null;
+                $score *= CorrelationStabilityWeight::for(
+                    is_numeric($stability) ? (float) $stability : null,
+                );
 
                 if ($score > $bestScore) {
                     $bestScore = $score;
@@ -736,9 +787,19 @@ trait HasTokenDiscovery
                 }
             }
 
-            // S/R proximity multiplier — see selectBestTokenByBtcBias()
-            // for rationale.
             $bestScore *= $this->supportResistanceMultiplierFor($symbol, $direction);
+
+            // Batch diversification penalty applied after the best
+            // timeframe has been chosen — the candidate's redundancy
+            // against earlier picks is independent of which timeframe
+            // produced the headline score.
+            $candidate1d = $symbol->btc_correlation_rolling['1d'] ?? null;
+            if (is_numeric($candidate1d)) {
+                $bestScore *= BatchDiversificationPenalty::for(
+                    (float) $candidate1d,
+                    $batchPicks1dCorrelation,
+                );
+            }
 
             return [
                 'symbol' => $symbol,

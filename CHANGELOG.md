@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.15.0 - 2026-05-03
+
+### Features
+
+- [NEW FEATURE] **Pure-math token-scoring helpers under `Support/TokenScoring/`.** Three independently-testable multipliers compose the per-candidate selection score: `LogElasticityScorer` (`log(1 + |elasticity|) × |correlation|` so freak high-amplitude tokens stop dwarfing strong-correlation candidates), `CorrelationStabilityWeight` (downscales symbols whose rolling-correlation series is jittery vs ones that hold a steady signal — input is the std-dev of the sliding-window correlation series), `BatchDiversificationPenalty` (downscores a candidate whose 1d BTC correlation profile is too close to any symbol already picked in the same selection batch, forcing structural variety across a 6-LONG / 6-SHORT book). 21 new unit tests covering the helpers in isolation.
+- [NEW FEATURE] **`btc_correlation_stability` JSON column on `exchange_symbols`** (additive nullable migration). Per-timeframe std-dev of the rolling-correlation series, captured by `CalculateBtcCorrelationJob` alongside Pearson / Spearman / rolling. Returns null when fewer than two complete sub-windows exist (insufficient kline depth — typically <110 candles given default window 100 / step 10). Read by `CorrelationStabilityWeight` at scoring time; missing data degrades gracefully to multiplier 1.0.
+- [NEW FEATURE] **`HasTokenDiscovery` selection scoring rewrite.** Both `selectBestTokenByBtcBias` and `selectBestTokenFallback` now compose `log_elasticity × |correlation| × s_r_proximity × stability_weight × diversification_penalty`. A new `$batchPicks1dCorrelation` array threads through `assignTokensToPositions` capturing each picked symbol's 1d correlation so subsequent slots in the same batch see the diversification penalty. Hard sign filter on the BTC-bias path retained.
+
+### Fixes
+
+- [BUG FIX] **`Position::nextPendingLimitOrderPrice` rung selection.** Previously anchored on `id > last_filled_id` which broke for recovered positions whose Order rows are inserted in non-rung sequence (MARKET row inserted last). Switched to `orderBy(quantity)` so the smallest-qty unfilled rung is always returned, matching the martingale ladder convention (rung 1 = smallest qty, closest to entry).
+
 ## 1.14.0 - 2026-05-03
 
 ### Features

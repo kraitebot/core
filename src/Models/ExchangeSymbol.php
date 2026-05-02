@@ -57,6 +57,7 @@ use Kraite\Core\Database\Factories\ExchangeSymbolFactory;
  * @property array<string, float>|null $btc_correlation_pearson
  * @property array<string, float>|null $btc_correlation_spearman
  * @property array<string, float>|null $btc_correlation_rolling
+ * @property array<string, float>|null $btc_correlation_stability
  * @property array<string, float>|null $btc_elasticity_long
  * @property array<string, float>|null $btc_elasticity_short
  * @property bool|null $overlaps_with_binance
@@ -99,6 +100,7 @@ final class ExchangeSymbol extends BaseModel
         'btc_correlation_pearson' => 'array',
         'btc_correlation_spearman' => 'array',
         'btc_correlation_rolling' => 'array',
+        'btc_correlation_stability' => 'array',
         'btc_elasticity_long' => 'array',
         'btc_elasticity_short' => 'array',
 

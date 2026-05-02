@@ -346,23 +346,19 @@ trait HasGetters
     }
 
     /**
-     * Price of the next pending LIMIT after the last filled id.
-     * Safe: may return null; callers must guard (we do above).
+     * Price of the next pending LIMIT rung — the smallest-qty unfilled rung,
+     * matching the martingale ladder convention (rung 1 = smallest qty,
+     * closest to entry). Quantity ordering is robust to insertion-order
+     * variance — recovered positions create Order rows in non-rung sequence
+     * with MARKET inserted last, so an id-anchored filter would exclude
+     * every pending rung. Safe: may return null; callers must guard.
      */
     public function nextPendingLimitOrderPrice(): ?string
     {
-        $lastFilled = $this->orders()
-            ->where('status', 'FILLED')
-            ->orderByDesc('id')
-            ->first();
-
-        $lastId = $lastFilled->id ?? 0;
-
         $next = $this->orders()
             ->where('type', 'LIMIT')
             ->whereNotIn('status', ['FILLED', 'CANCELLED', 'EXPIRED'])
-            ->where('id', '>', $lastId)
-            ->orderBy('id')
+            ->orderBy('quantity')
             ->first();
 
         return $next?->price ? (string) $next->price : null;
