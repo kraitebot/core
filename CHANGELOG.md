@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.20.0 - 2026-05-03
+
+### Improvements
+
+- [IMPROVED] **`CheckDriftsCommand` pivots to alert-only with surgical silent self-heal.** The drift watchdog no longer dispatches `PrepareSyncOrdersJob` (Scope 1) or `PrepareCancelOrphanOrdersJob` (Scope 2), and no longer inline-cancels "ghost" rows in the local DB. Scope 1 just notifies on quiet active-position drift; Scope 2 runs a single silent `apiSync()` per orphan candidate that carries an `exchange_order_id` before deciding to alert. Candidates whose post-sync status flips to terminal (FILLED / CANCELLED / EXPIRED) drop out automatically — no notification, no lifecycle dispatch. Enforcement remains in `CheckSystemHealthCommand::checkOrphanReconciliation` (1-minute cadence, auto-cancel + auto-close); the drift command is now a slower-cadence backup monitor for that path. Background: 2026-05-03 evening incidents (#208 + #209) traced auto-action overlap between drift Scope 1 and the live sync-orders cron + WS push path. Pulling drift back to alert-only removes the overlap.
+- [IMPROVED] **Reverts: pre-flight `apiSync` in orphan-orders pass + `PreparePositionReplacementJob` step-arguments dedupe scan.** The 1.19.0 pre-flight `apiSync` fired one REST call per orphan candidate even when the row was already terminal on the exchange — under live load it tipped the orphan-orders pass into a hot loop on `steps` + `orders`. The dedupe scan in `PreparePositionReplacementJob` used `whereJsonContains('arguments->positionId', ...)` over the 700K-row `steps` table on every horizon worker startup; the unindexed JSON predicate held row locks long enough to wedge the mark-price daemon's ReactPHP loop on a 192-second wait against `exchange_symbols` (~3-minute stale-price outage at 14:37 UTC). Both reverted in full. The drift command's surgical silent self-heal (Scope 2) replaces the pre-flight `apiSync` with bounded post-classification calls only on candidates that pass the quiet-window filter.
+
+### Fixes
+
+- [BUG FIX] **`ActivatePositionJob` MARKET validation is race-tolerant.** The strict-FILLED guard on the entry MARKET is replaced with a poll-with-timeout: up to three attempts at 500ms apart, each calling `apiSync()` to refresh the local row from exchange truth. If the exchange-side state confirms FILLED, the row promotes and the lifecycle proceeds. Only if the exchange itself still reports a non-terminal state after the bounded budget do we surface the legitimate error. Background: `PlaceMarketOrderJob` writes the local row from the REST ack, which can return at PARTIALLY_FILLED for a multi-level fill on a thin book; Binance follows up with an `ORDER_TRADE_UPDATE` push that promotes the row to FILLED, but under DB-lock contention or a wedged WS daemon that promotion can lag by hundreds of milliseconds — long enough to throw position #208 + #209 into the cancel-cascade for fills that had actually completed correctly on the exchange. Three TDD cases pin the behaviour (already-FILLED, exhausted budget, mid-poll promotion).
+
 ## 1.19.0 - 2026-05-03
 
 ### Fixes

@@ -145,7 +145,21 @@ final class ActivatePositionJob extends BaseQueueableJob
     /**
      * Validate MARKET orders.
      *
-     * Expected: exactly 1 with status=FILLED, reference_status=FILLED
+     * Expected: exactly 1 with status=FILLED, reference_status=FILLED.
+     *
+     * Race-tolerant: a freshly-placed MARKET order can sit at
+     * PARTIALLY_FILLED locally for a few hundred ms while the
+     * user-data WS push for the FILLED transition is still in flight.
+     * Treating that transient state as a hard error throws the
+     * lifecycle into the cancel-cascade for a position that actually
+     * filled correctly on the exchange — that was the 2026-05-03
+     * #208 + #209 incident pattern. We now poll-with-timeout: if the
+     * local row is non-terminal we hit `apiSync()` against the
+     * exchange and re-read, up to a small bounded number of attempts
+     * with a brief sleep in between. If the exchange-side truth is
+     * FILLED, the row promotes and we proceed; if the exchange itself
+     * still reports a non-terminal state after the retries, only then
+     * do we surface the legitimate error.
      */
     private function validateMarketOrders($orders): void
     {
@@ -157,9 +171,38 @@ final class ActivatePositionJob extends BaseQueueableJob
 
         $order = $orders->first();
 
+        // Up to ~1.5s of poll-and-resync before declaring the order
+        // legitimately not-filled. Each attempt hits the exchange via
+        // `apiSync()` and refreshes the local row from the response.
+        $maxAttempts = 3;
+        $sleepMs = 500;
+
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            if ($order->status === 'FILLED') {
+                break;
+            }
+
+            try {
+                $order->apiSync();
+                $order->refresh();
+            } catch (\Throwable $e) {
+                // apiSync failures are logged + ignored here — if the
+                // exchange call dies we fall through to the throw
+                // below, which is the right behaviour.
+            }
+
+            if ($order->status === 'FILLED') {
+                break;
+            }
+
+            if ($attempt < $maxAttempts) {
+                usleep($sleepMs * 1000);
+            }
+        }
+
         if ($order->status !== 'FILLED') {
             throw new Exception(
-                "MARKET order #{$order->id} status is '{$order->status}', expected 'FILLED'"
+                "MARKET order #{$order->id} status is '{$order->status}', expected 'FILLED' (after {$maxAttempts} sync attempts)"
             );
         }
 

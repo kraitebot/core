@@ -6,7 +6,6 @@ namespace Kraite\Core\Commands\Cronjobs;
 
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\Log;
 use Kraite\Core\Jobs\Lifecycles\Order\PrepareSyncOrdersJob;
 use Kraite\Core\Jobs\Lifecycles\Position\PrepareCancelOrphanOrdersJob;
 use Kraite\Core\Models\Account;
@@ -19,7 +18,6 @@ use Kraite\Core\Support\Drift\PositionDriftReport;
 use Kraite\Core\Support\NotificationService;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Support\BaseCommand;
-use Throwable;
 
 /**
  * CheckDriftsCommand
@@ -145,7 +143,10 @@ final class CheckDriftsCommand extends BaseCommand
                     continue;
                 }
 
-                $this->dispatchSyncOrders($pair->positionId);
+                // ALERT-ONLY mode (2026-05-03): the drift spotter no
+                // longer auto-dispatches the heal — it just surfaces
+                // the drift to the operator. The reactive sync-orders
+                // cron + WS push path still handle the live healing.
                 $this->notifyDrift($account, $pair);
             }
         }
@@ -193,24 +194,27 @@ final class CheckDriftsCommand extends BaseCommand
                 continue;
             }
 
-            // Pre-flight reconcile: an order can sit in
-            // PARTIALLY_FILLED / NEW locally for hours after the
-            // exchange already moved it to a terminal state — typical
-            // path is "position cancelled via MARKET-CANCEL flatten,
-            // related limit/algo orders auto-cancelled by Binance, but
-            // the local DB write never landed because the
-            // cancel-position workflow had already torn down the sync
-            // path". Hit `apiSync()` synchronously per candidate so
-            // the local Order row reflects whatever the exchange
-            // currently says BEFORE we decide it's an orphan. If sync
-            // bumps the row to a terminal status, it falls out of
-            // `ORPHAN_ORDER_STATUSES` and we skip the alert + skip
-            // the lifecycle dispatch.
+            // Surgical silent self-heal (2026-05-03): per orphan
+            // candidate carrying an `exchange_order_id`, run a single
+            // `apiSync` against the exchange to refresh the local row
+            // from whatever Binance / Bitget currently say. Ninety-
+            // plus percent of "orphan" candidates we see in
+            // production are local-DB staleness — the exchange has
+            // the order at FILLED / CANCELLED / EXPIRED but a sync
+            // workflow missed it because `SyncPositionOrdersJob`'s
+            // `syncable()` scope excludes MARKET orders by design,
+            // so the entry-MARKET PARTIALLY_FILLED of a cancelled
+            // position never gets reconciled. apiSync resolves that
+            // exact case silently — no notification, no lifecycle
+            // dispatch, no fan-out. Failures are swallowed per-order
+            // so one bad call doesn't abort the audit. Bounded cost:
+            // typically 0-1 orphans per 5-min tick × one REST call
+            // per orphan.
             //
-            // Only orders carrying an `exchange_order_id` get synced
-            // — ghosts (no exchange id) never reached the exchange,
-            // so there's nothing to query and the inline DB-cancel
-            // path below handles them.
+            // Only orders carrying an `exchange_order_id` get synced.
+            // Rows without one ("ghost" orphans — the place flow
+            // failed before the exchange ack landed) are left alone
+            // here; alert-only mode lets the operator decide.
             foreach ($orders as $candidate) {
                 if ($candidate->exchange_order_id === null || $candidate->exchange_order_id === '') {
                     continue;
@@ -218,9 +222,9 @@ final class CheckDriftsCommand extends BaseCommand
 
                 try {
                     $candidate->apiSync();
-                } catch (Throwable $exception) {
-                    Log::channel('jobs')->warning(
-                        '[DRIFT-AUDIT] orphan pre-flight sync failed',
+                } catch (\Throwable $exception) {
+                    \Illuminate\Support\Facades\Log::channel('jobs')->warning(
+                        '[DRIFT-AUDIT] orphan silent-sync failed',
                         [
                             'order_id' => $candidate->id,
                             'exchange_order_id' => $candidate->exchange_order_id,
@@ -230,69 +234,30 @@ final class CheckDriftsCommand extends BaseCommand
                 }
             }
 
-            // Re-pull the orders fresh from DB. `apiSync` writes via
-            // the model's status setter; refreshing here keeps the
-            // collection consistent with the post-sync state and
-            // re-applies the ORPHAN_ORDER_STATUSES filter so any
-            // newly-terminal rows drop out of the orphan set.
+            // Re-pull the orders fresh from DB, filtered to the
+            // still-orphan working set. Any candidate whose post-sync
+            // status is terminal (FILLED / CANCELLED / EXPIRED) drops
+            // out automatically, and the audit moves on without
+            // alerting — the false-positive resolved itself.
             $orders = Order::query()
                 ->whereIn('id', $orders->pluck('id')->all())
                 ->whereIn('status', self::ORPHAN_ORDER_STATUSES)
                 ->get();
 
             if ($orders->isEmpty()) {
-                $this->verboseComment("  Position #{$position->id}: all candidates resolved to terminal status after exchange sync — no orphan, no alert.");
+                $this->verboseComment("  Position #{$position->id}: orphan(s) self-healed via apiSync — silent skip.");
 
                 continue;
             }
 
-            // Two-track cleanup, per orphan parent:
-            //
-            //  1. Ghost orphans (no exchange_order_id) — these never made
-            //     it to the exchange, so apiCancel has nothing to cancel.
-            //     The DB row is the only place they exist. We mark them
-            //     CANCELLED locally, no API call. Without this they'd
-            //     trip the orphan notification forever.
-            //
-            //  2. Real orphans (with exchange_order_id) — delegate to
-            //     the production close-workflow cancel machinery. ONE
-            //     PrepareCancelOrphanOrdersJob spawns the existing
-            //     CancelPositionOpenOrders lifecycle, which in turn
-            //     handles bulk cancel-all for non-algo orders + per-order
-            //     cancel for algo orders. Reuses 100% of the cancel
-            //     path the close workflow already exercises in
-            //     production (Bitget per-order fallback, exchange-
-            //     specific algo endpoints, observer suppression).
-            //
-            //  When ALL orphans on the parent are ghosts (already
-            //  reconciled inline), we skip the lifecycle dispatch —
-            //  there's nothing left for it to do.
-            $ghosts = $orders->filter(
-                static fn (Order $o): bool => $o->exchange_order_id === null || $o->exchange_order_id === ''
-            );
-            $reals = $orders->filter(
-                static fn (Order $o): bool => $o->exchange_order_id !== null && $o->exchange_order_id !== ''
-            );
-
-            $ghostsCancelledInDb = 0;
-            if ($ghosts->isNotEmpty()) {
-                $ghostsCancelledInDb = Order::query()
-                    ->whereIn('id', $ghosts->pluck('id')->all())
-                    ->update(['status' => 'CANCELLED', 'updated_at' => Carbon::now()]);
-                $this->verboseComment("  Position #{$position->id}: marked {$ghostsCancelledInDb} ghost order(s) CANCELLED in DB");
-            }
-
-            $lifecycleDispatched = false;
-            if ($reals->isNotEmpty()) {
-                $this->dispatchCancelOrphanLifecycle($position->id);
-                $lifecycleDispatched = true;
-            }
-
+            // Surviving orphans = exchange genuinely still has the
+            // order working with no local active position attached.
+            // Surface to the operator. Alert-only — no auto-cancel.
             $this->notifyOrphans(
                 position: $position,
                 orders: $orders,
-                ghostsCancelledInDb: $ghostsCancelledInDb,
-                cancelLifecycleDispatched: $lifecycleDispatched,
+                ghostsCancelledInDb: 0,
+                cancelLifecycleDispatched: false,
             );
         }
     }
