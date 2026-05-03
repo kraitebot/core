@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.21.0 - 2026-05-04
+
+### Fixes
+
+- [BUG FIX] **`CancelPositionOpenOrdersJob` now iterates per-order on every exchange.** The previous shape used `cancelAllOpenOrders(symbol)` on Binance / Kucoin / Bybit (per-order on Bitget already), which Binance interprets as a symbol-wide DELETE — wiping every working order for that symbol regardless of which Kraite position owns it. On 2026-05-03 22:50 the drift watchdog dispatched a cancel-lifecycle for position 209 (already cancelled, with stuck NEW orders); the symbol-wide DELETE killed the freshly-active position 211's TP and 4 LIMIT ladder as collateral damage. New shape: load the position's own `is_algo=false` orders with status ∈ {`NEW`, `PARTIALLY_FILLED`} and a non-null `exchange_order_id`, bump `reference_status='CANCELLED'` BEFORE the API calls (the OrderObserver's intent gate — when the matching cancellation lands via WS push, `status===reference_status` and the replacement dispatch correctly stays quiet), then iterate `Order::apiCancel()` per row. "Already gone" responses (Binance `-2011` "Unknown order sent" et al) are classified by `BaseExceptionHandler::ignoreException()` and treated as idempotent. Symbol-wide collateral damage eliminated by construction; no race window vs sequential open-close-reopen of the same symbol. Smoke-tested live with manual close on LTCUSDT (position 227) — four targeted `DELETE /fapi/v1/order` calls, zero `/fapi/v1/allOpenOrders`, position closed cleanly.
+
 ## 1.20.0 - 2026-05-03
 
 ### Improvements

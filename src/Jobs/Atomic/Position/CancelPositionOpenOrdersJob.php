@@ -12,16 +12,37 @@ use Throwable;
 /**
  * CancelPositionOpenOrdersJob (Atomic)
  *
- * Cancels all open orders for a position on the exchange.
+ * Cancels every non-algo open order belonging to the position by
+ * iterating the position's local `orders` rows and issuing one
+ * exchange-side cancel per row.
  *
- * For most exchanges: Uses Position::apiCancelOpenOrders() which calls
- * the exchange's cancel-all-orders endpoint with symbol filter.
+ * The single code path applies on every exchange (Binance, Bitget,
+ * Kucoin, Bybit). The previous design called the exchange's "cancel
+ * all open orders by symbol" endpoint, which Binance / Kucoin / Bybit
+ * implement as a symbol-wide nuke — wiping every order on that
+ * symbol regardless of which Kraite position owns it. On
+ * 2026-05-03 22:50 a sequential same-symbol open-close-reopen pattern
+ * (position 209 closing, position 211 freshly active on ETCUSDT)
+ * caused the symbol-wide DELETE issued for 209 to take down 211's TP
+ * and LIMIT ladder as collateral damage. Per-order iteration scoped
+ * to the cancelling position's own rows eliminates that blast radius
+ * regardless of how many Kraite positions share the symbol.
  *
- * For BitGet: Cancels orders individually because BitGet's cancel-all-orders
- * endpoint ignores the symbol parameter and cancels ALL orders on the account.
+ * Algo orders (STOP-MARKET / PROFIT-LIMIT) live on a separate
+ * exchange endpoint and are handled by `CancelAlgoOpenOrdersJob`.
+ *
+ * Bumps `reference_status` to CANCELLED on every selected row before
+ * issuing the API calls. That bump is the OrderObserver's intent
+ * gate: when the matching cancellation lands via WS push, the order
+ * row's status will equal its reference_status, and the observer's
+ * `dispatchPositionReplacement` early-return on `status === reference_status`
+ * keeps the per-position replacement workflow correctly silent
+ * (we asked for the cancel; no replacement needed).
  */
 final class CancelPositionOpenOrdersJob extends BaseApiableJob
 {
+    private const array CANCELLABLE_STATUSES = ['NEW', 'PARTIALLY_FILLED'];
+
     public Position $position;
 
     public function __construct(int $positionId)
@@ -43,77 +64,77 @@ final class CancelPositionOpenOrdersJob extends BaseApiableJob
 
     public function computeApiable()
     {
-        // Pre-update reference_status to 'CANCELLED' on all syncable orders.
-        // This prevents the OrderObserver from triggering replacement workflows
-        // when these orders are synced after being cancelled.
-        $this->position->orders()
-            ->syncable()
-            ->update(['reference_status' => 'CANCELLED']);
+        $orders = $this->position->orders()
+            ->where('is_algo', false)
+            ->whereIn('status', self::CANCELLABLE_STATUSES)
+            ->whereNotNull('exchange_order_id')
+            ->get();
 
-        // BitGet's cancel-all-orders endpoint ignores the symbol parameter
-        // and cancels ALL orders on the account. We must cancel individually.
-        if ($this->position->account->apiSystem->canonical === 'bitget') {
-            return $this->cancelOrdersIndividually();
+        if ($orders->isEmpty()) {
+            return [
+                'position_id' => $this->position->id,
+                'symbol' => $this->position->parsed_trading_pair,
+                'cancelled_count' => 0,
+                'idempotent_count' => 0,
+                'cancelled' => [],
+                'idempotent' => [],
+                'message' => 'No active non-algo orders to cancel',
+            ];
         }
 
-        $apiResponse = $this->position->apiCancelOpenOrders();
-
-        return [
-            'position_id' => $this->position->id,
-            'symbol' => $this->position->parsed_trading_pair,
-            'result' => $apiResponse->result,
-            'message' => 'Open orders cancelled',
-        ];
-    }
-
-    /**
-     * Cancel orders individually for BitGet.
-     *
-     * BitGet's cancel-all-orders endpoint has a bug where it ignores the
-     * symbol parameter and cancels ALL orders on the account. This method
-     * iterates through the position's open orders and cancels each one
-     * using the individual cancel-order endpoint.
-     *
-     * @return array<string, mixed>
-     */
-    private function cancelOrdersIndividually(): array
-    {
-        $cancelledOrders = [];
-        $failedOrders = [];
-
-        // Get all cancellable orders for this position (LIMIT orders only, not algo)
-        $orders = $this->position->orders()
-            ->whereIn('status', ['NEW', 'PARTIALLY_FILLED'])
+        // Pre-bump intent flag so WS pushes for these cancellations
+        // bypass the OrderObserver's replacement dispatch path.
+        $this->position->orders()
             ->where('is_algo', false)
-            ->get();
+            ->whereIn('status', self::CANCELLABLE_STATUSES)
+            ->whereNotNull('exchange_order_id')
+            ->update(['reference_status' => 'CANCELLED']);
+
+        $cancelled = [];
+        $idempotent = [];
 
         foreach ($orders as $order) {
             try {
                 $apiResponse = $order->apiCancel();
-                $cancelledOrders[] = [
+                $cancelled[] = [
                     'order_id' => $order->id,
                     'exchange_order_id' => $order->exchange_order_id,
                     'type' => $order->type,
                     'result' => $apiResponse->result,
                 ];
             } catch (Throwable $e) {
-                $failedOrders[] = [
-                    'order_id' => $order->id,
-                    'exchange_order_id' => $order->exchange_order_id,
-                    'type' => $order->type,
-                    'error' => $e->getMessage(),
-                ];
+                // The exchange may have already cancelled / forgotten
+                // the order between selection and call (Binance
+                // -2011 "Unknown order sent" is the canonical case).
+                // Per-exchange handlers classify that as ignorable;
+                // we mark the row CANCELLED locally and move on so a
+                // single stale row doesn't kill the rest of the
+                // batch. Anything non-ignorable bubbles up so the
+                // framework's normal retry / fail path runs.
+                if ($this->exceptionHandler->ignoreException($e)) {
+                    $order->updateSaving(['status' => 'CANCELLED']);
+                    $idempotent[] = [
+                        'order_id' => $order->id,
+                        'exchange_order_id' => $order->exchange_order_id,
+                        'type' => $order->type,
+                        'reason' => 'Order already gone on exchange; DB reconciled.',
+                    ];
+
+                    continue;
+                }
+
+                throw $e;
             }
         }
 
         return [
             'position_id' => $this->position->id,
             'symbol' => $this->position->parsed_trading_pair,
-            'cancelled_count' => count($cancelledOrders),
-            'failed_count' => count($failedOrders),
-            'cancelled_orders' => $cancelledOrders,
-            'failed_orders' => $failedOrders,
-            'message' => 'Open orders cancelled individually (BitGet)',
+            'cancelled_count' => count($cancelled),
+            'idempotent_count' => count($idempotent),
+            'cancelled' => $cancelled,
+            'idempotent' => $idempotent,
+            'message' => 'Open orders cancelled per-order',
         ];
     }
 }
