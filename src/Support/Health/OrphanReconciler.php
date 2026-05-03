@@ -35,6 +35,7 @@ final class OrphanReconciler
      * @param  array<int, string>  $kraiteOpenOrderIds         Exchange order ids of non-terminal Order rows on Kraite's `opened()` positions
      * @param  array<int, string>  $kraitePositionKeys         Position keys of Kraite's `opened()` positions
      * @param  array<int, string>  $kraiteRecentlyClosedOrderIds  Exchange order ids of Order rows linked to Kraite positions whose terminal transition happened within the configurable match window
+     * @param  bool                $hasInflightPositions       True when ANY local position on the account is in a transitional lifecycle state (`new` / `opening` / `cancelling` / `syncing`). When true, the order-orphan classification is skipped entirely — exchange orders that are mid-creation may not yet have their `exchange_order_id` written to the local Order row, so the diff would mis-classify legitimate working orders as orphans. Position-orphan classification remains active because position keys (`SYMBOL:DIRECTION`) are stable across the lifecycle.
      */
     public static function reconcile(
         array $exchangeOpenOrderIds,
@@ -44,30 +45,46 @@ final class OrphanReconciler
         array $kraiteRecentlyClosedOrderIds,
         bool $allowOtherOrders,
         bool $allowOtherPositions,
+        bool $hasInflightPositions = false,
     ): OrphanReport {
         $kraiteOpenSet = array_flip($kraiteOpenOrderIds);
         $kraiteRecentSet = array_flip($kraiteRecentlyClosedOrderIds);
         $kraitePositionSet = array_flip($kraitePositionKeys);
 
         $ordersToCancel = [];
-        foreach ($exchangeOpenOrderIds as $orderId) {
-            // Active working order — never an orphan.
-            if (isset($kraiteOpenSet[$orderId])) {
-                continue;
-            }
 
-            if ($allowOtherOrders) {
-                // Cancel only when matched to a recently-closed Kraite
-                // position. Anything else is the operator's order.
-                if (isset($kraiteRecentSet[$orderId])) {
-                    $ordersToCancel[] = $orderId;
+        // In-flight guard: when a position is being opened, its limit
+        // ladder is being placed on the exchange one rung at a time
+        // and the local Order rows receive their `exchange_order_id`
+        // AFTER each API ack. The orphan classifier compares exchange
+        // ids against the local set — so during this window, exchange
+        // orders that are perfectly legitimate working orders mis-
+        // classify as orphans because the local row is mid-write.
+        // Skip the whole order-cancel decision while any position on
+        // the account is in transit. Watchdog runs every 5 minutes;
+        // missing one tick during a ~30s position-open is acceptable.
+        if (! $hasInflightPositions) {
+            foreach ($exchangeOpenOrderIds as $orderId) {
+                // Active working order — never an orphan.
+                if (isset($kraiteOpenSet[$orderId])) {
+                    continue;
                 }
 
-                continue;
-            }
+                if ($allowOtherOrders) {
+                    // Cancel only when matched to a recently-closed
+                    // Kraite position. Anything else is the operator's
+                    // order.
+                    if (isset($kraiteRecentSet[$orderId])) {
+                        $ordersToCancel[] = $orderId;
+                    }
 
-            // Kraite-exclusive: cancel everything not in our open set.
-            $ordersToCancel[] = $orderId;
+                    continue;
+                }
+
+                // Kraite-exclusive: cancel everything not in our open
+                // set.
+                $ordersToCancel[] = $orderId;
+            }
         }
 
         $positionsToClose = [];

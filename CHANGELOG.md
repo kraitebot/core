@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.18.1 - 2026-05-03
+
+### Fixes
+
+- [BUG FIX] **Orphan-cleanup in-flight guard.** `OrphanReconciler::reconcile` accepts a new `hasInflightPositions` flag. When any local position on the account is in a transitional lifecycle state (`new`, `opening`, `cancelling`, `syncing`), order-orphan classification is skipped for the tick — the limit ladder is mid-placement and local Order rows have not yet been stamped with their `exchange_order_id`s, so the diff would mis-classify legitimate working orders as orphans. Position-orphan classification stays active because position keys (`SYMBOL:DIRECTION`) are stable across the lifecycle. Reproduces the 2026-05-03 false-positive on ETCUSDT/LONG. Wired in `CheckSystemHealthCommand::reconcileAccountOrphans`.
+
 ## 1.18.0 - 2026-05-03
 
 ### Fixes

@@ -601,6 +601,16 @@ final class CheckSystemHealthCommand extends BaseCommand
             ->map(fn ($id): string => (string) $id)
             ->all();
 
+        // In-flight guard: when any position is in a transitional
+        // lifecycle state, its limit ladder is mid-placement and
+        // local Order rows lag the exchange by a few seconds while
+        // each API ack writes back the `exchange_order_id`. Pass the
+        // flag through so the classifier suppresses order-orphan
+        // detection for this tick.
+        $hasInflightPositions = $kraiteOpen
+            ->whereIn('status', ['new', 'opening', 'cancelling', 'syncing'])
+            ->isNotEmpty();
+
         $report = \Kraite\Core\Support\Health\OrphanReconciler::reconcile(
             exchangeOpenOrderIds: $exchangeOpenOrderIds,
             exchangePositionKeys: $exchangePositionKeys,
@@ -609,6 +619,7 @@ final class CheckSystemHealthCommand extends BaseCommand
             kraiteRecentlyClosedOrderIds: $kraiteRecentlyClosedOrderIds,
             allowOtherOrders: $account->allow_other_orders,
             allowOtherPositions: $account->allow_other_positions,
+            hasInflightPositions: $hasInflightPositions,
         );
 
         if ($report->isEmpty()) {
