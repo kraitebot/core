@@ -6,6 +6,7 @@ namespace Kraite\Core\Models;
 
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Kraite\Core\Abstracts\BaseModel;
+use Kraite\Core\Support\Math;
 
 /**
  * Append-only ledger for every credit and debit on a user's wallet.
@@ -56,11 +57,11 @@ final class WalletTransaction extends BaseModel
 
     public function isCredit(): bool
     {
-        return (float) $this->amount_usdt > 0;
+        return Math::gt((string) $this->amount_usdt, '0');
     }
 
     public function isDebit(): bool
     {
-        return (float) $this->amount_usdt < 0;
+        return Math::lt((string) $this->amount_usdt, '0');
     }
 }

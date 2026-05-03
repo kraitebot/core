@@ -6,6 +6,7 @@ namespace Kraite\Core\Indicators\RefreshData;
 
 use Kraite\Core\Abstracts\BaseIndicator;
 use Kraite\Core\Contracts\Indicators\ValidationIndicator;
+use Kraite\Core\Support\Math;
 
 /**
  * ChoppinessIndexIndicator
@@ -57,6 +58,6 @@ final class ChoppinessIndexIndicator extends BaseIndicator implements Validation
             return true;
         }
 
-        return (float) $value < self::CHOP_THRESHOLD;
+        return Math::lt((string) $value, (string) self::CHOP_THRESHOLD);
     }
 }

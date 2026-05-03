@@ -50,10 +50,12 @@ final class ValueNormalizer
             return self::toBooleanValue($oldValue) === self::toBooleanValue($newValue);
         }
 
-        // STRATEGY 2: Both numeric? Compare as floats
-        // Handles: "5.00000000" vs 5, "0.00001000" vs 0.00001
+        // STRATEGY 2: Both numeric? Compare via BCMath.
+        // Handles: "5.00000000" vs 5, "0.00001000" vs 0.00001 — and
+        // does so without the IEEE-754 rounding noise that float casts
+        // would inject for high-precision crypto values.
         if (is_numeric($oldValue) && is_numeric($newValue)) {
-            return (float) $oldValue === (float) $newValue;
+            return Math::equal((string) $oldValue, (string) $newValue);
         }
 
         // STRATEGY 3: Both JSON-like? Normalize and compare

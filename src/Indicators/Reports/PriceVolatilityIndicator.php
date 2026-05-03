@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Indicators\Reports;
 
 use Kraite\Core\Abstracts\BaseIndicator;
+use Kraite\Core\Support\Math;
 
 /**
  * PriceVolatilityIndicator
@@ -139,14 +140,14 @@ final class PriceVolatilityIndicator extends BaseIndicator
             return null;
         }
 
-        $close = (float) $candle['close'];
-        if ($close <= 0.0) {
+        $close = (string) $candle['close'];
+        if (Math::lte($close, '0')) {
             return null; // avoid division by zero or negative close
         }
 
-        $high = (float) $candle['high'];
-        $low = (float) $candle['low'];
+        $high = (string) $candle['high'];
+        $low = (string) $candle['low'];
 
-        return (($high - $low) / $close) * 100.0;
+        return (float) Math::mul(Math::div(Math::sub($high, $low), $close, 12), '100');
     }
 }

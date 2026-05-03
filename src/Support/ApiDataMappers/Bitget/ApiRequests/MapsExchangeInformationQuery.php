@@ -109,7 +109,7 @@ trait MapsExchangeInformationQuery
                     'tickSize' => $tickSize,
                     'minPrice' => null,
                     'maxPrice' => null,
-                    'minNotional' => isset($contract['minTradeUSDT']) ? (float) $contract['minTradeUSDT'] : null,
+                    'minNotional' => isset($contract['minTradeUSDT']) ? (string) $contract['minTradeUSDT'] : null,
 
                     // Status and contract information
                     'status' => ($contract['symbolStatus'] ?? '') === 'normal' ? 'Trading' : 'Break',

@@ -1042,7 +1042,7 @@ final class BacktestSimulator
         if (! in_array($timeframe, $allowed, true)) {
             throw new InvalidArgumentException("Unsupported timeframe: {$timeframe}. Allowed: ".implode(', ', $allowed).'.');
         }
-        if (! is_numeric($margin) || (float) $margin <= 0) {
+        if (! is_numeric($margin) || Math::lte((string) $margin, '0')) {
             throw new InvalidArgumentException('Margin must be numeric and > 0.');
         }
         if ($leverage < 1) {

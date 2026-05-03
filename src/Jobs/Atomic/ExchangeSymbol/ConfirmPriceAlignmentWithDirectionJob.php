@@ -10,6 +10,7 @@ use Kraite\Core\Jobs\Models\ExchangeSymbol\ConcludeSymbolDirectionAtTimeframeJob
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Indicator;
 use Kraite\Core\Models\IndicatorHistory;
+use Kraite\Core\Support\Math;
 use StepDispatcher\Models\Step;
 use Throwable;
 
@@ -83,15 +84,15 @@ final class ConfirmPriceAlignmentWithDirectionJob extends BaseQueueableJob
         // This is more reliable than comparing previous close vs current close because:
         // - The current candle's open is fixed (doesn't change)
         // - The current candle's close represents the actual price movement within this timeframe
-        $currentOpen = (float) $data['open'][1];
-        $currentClose = (float) $data['close'][1];
+        $currentOpen = (string) $data['open'][1];
+        $currentClose = (string) $data['close'][1];
         $direction = $this->exchangeSymbol->direction;
         $timeframe = $this->exchangeSymbol->indicators_timeframe;
 
         // LONG requires price to be rising (close > open)
         // SHORT requires price to be falling (close < open)
-        if (($direction === 'LONG' && $currentClose <= $currentOpen) ||
-            ($direction === 'SHORT' && $currentClose >= $currentOpen)
+        if (($direction === 'LONG' && Math::lte($currentClose, $currentOpen)) ||
+            ($direction === 'SHORT' && Math::gte($currentClose, $currentOpen))
         ) {
             $this->exchangeSymbol->updateSaving([
                 'direction' => null,

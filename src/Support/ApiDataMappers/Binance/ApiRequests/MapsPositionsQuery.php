@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Binance\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
 trait MapsPositionsQuery
@@ -40,7 +41,7 @@ trait MapsPositionsQuery
 
         // Remove false positive positions (positionAmt = 0.0)
         return array_filter($positions, callback: static function ($position) {
-            return (float) $position['positionAmt'] !== 0.0;
+            return ! Math::equal((string) $position['positionAmt'], '0');
         });
     }
 }

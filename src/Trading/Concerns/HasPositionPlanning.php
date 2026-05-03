@@ -131,7 +131,7 @@ trait HasPositionPlanning
         $activeRatios = [];
         for ($i = 0; $i < $N; $i++) {
             $mi = Kraite::returnLadderedValue($ratios, $i);
-            if (! is_numeric($mi) || (float) $mi <= 0) {
+            if (! is_numeric($mi) || Math::lte((string) $mi, '0')) {
                 throw new RuntimeException('limit_quantity_multipliers must contain positive numeric values');
             }
             $activeRatios[] = (string) $mi;

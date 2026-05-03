@@ -48,46 +48,54 @@ final class SupportResistanceProximity
             return 1.0;
         }
 
-        $mark = (float) $markPrice;
-        $r1f = (float) $r1;
-        $r3f = (float) $r3;
-        $s1f = (float) $s1;
-        $s3f = (float) $s3;
+        $mark = (string) $markPrice;
+        $r1s = (string) $r1;
+        $r3s = (string) $r3;
+        $s1s = (string) $s1;
+        $s3s = (string) $s3;
+        $safe = (string) $safeZone;
         $direction = mb_strtoupper($direction);
 
         // Direction-aware breakout: price past the wide band either
         // counts as continuation (full score) or wrong-way (hard zero).
-        if ($mark > $r3f) {
+        if (Math::gt($mark, $r3s)) {
             return $direction === 'LONG' ? 1.0 : 0.0;
         }
 
-        if ($mark < $s3f) {
+        if (Math::lt($mark, $s3s)) {
             return $direction === 'SHORT' ? 1.0 : 0.0;
         }
 
-        $range = $r1f - $s1f;
-        if ($range <= 0) {
+        $range = Math::sub($r1s, $s1s);
+        if (Math::lte($range, '0')) {
             return 1.0;
         }
 
-        $position = ($mark - $s1f) / $range;
+        $position = Math::div(Math::sub($mark, $s1s), $range, 12);
 
         if ($direction === 'LONG') {
-            $safeUntil = 1.0 - $safeZone;
-            if ($position <= $safeUntil) {
+            $safeUntil = Math::sub('1', $safe);
+            if (Math::lte($position, $safeUntil)) {
                 return 1.0;
             }
 
             // Penalty band between (1-safeZone) and 1.0 — linear fade.
-            return round(max(0.0, (1.0 - $position) / $safeZone), 6);
+            $delta = Math::sub('1', $position);
+            $ratio = Math::div($delta, $safe, 12);
+            $clamped = Math::lt($ratio, '0') ? '0' : $ratio;
+
+            return round((float) $clamped, 6);
         }
 
         if ($direction === 'SHORT') {
-            if ($position >= $safeZone) {
+            if (Math::gte($position, $safe)) {
                 return 1.0;
             }
 
-            return round(max(0.0, $position / $safeZone), 6);
+            $ratio = Math::div($position, $safe, 12);
+            $clamped = Math::lt($ratio, '0') ? '0' : $ratio;
+
+            return round((float) $clamped, 6);
         }
 
         return 1.0;

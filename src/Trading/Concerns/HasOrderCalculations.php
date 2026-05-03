@@ -55,7 +55,7 @@ trait HasOrderCalculations
 
         // Validate all multipliers are positive numbers
         foreach ($multipliers as $i => $m) {
-            if (! is_numeric((string) $m) || (float) $m <= 0) {
+            if (! is_numeric((string) $m) || Math::lte((string) $m, '0')) {
                 throw new InvalidArgumentException("Multiplier at index {$i} must be a positive number (got: {$m}).");
             }
         }
@@ -279,7 +279,7 @@ trait HasOrderCalculations
         // Gap% resolution: parameter override takes precedence; else fallback by side.
         $effectiveGapPercent = null;
         if ($gapPercent !== null) {
-            if (! is_numeric((string) $gapPercent) || (float) $gapPercent < 0) {
+            if (! is_numeric((string) $gapPercent) || Math::lt((string) $gapPercent, '0')) {
                 throw new RuntimeException('gapPercent override must be a non-negative number when provided.');
             }
             $effectiveGapPercent = (string) $gapPercent;
@@ -288,7 +288,7 @@ trait HasOrderCalculations
                 ? $exchangeSymbol->percentage_gap_long
                 : $exchangeSymbol->percentage_gap_short;
 
-            if (! is_numeric((string) $sideGap) || (float) $sideGap < 0) {
+            if (! is_numeric((string) $sideGap) || Math::lt((string) $sideGap, '0')) {
                 throw new RuntimeException('percentage_gap_(long|short) must be a non-negative number on the symbol.');
             }
             $effectiveGapPercent = (string) $sideGap;
@@ -352,7 +352,7 @@ trait HasOrderCalculations
         $prev = $marketQ;
         for ($i = 0; $i < $N; $i++) {
             $mi = Kraite::returnLadderedValue($mArray, $i);
-            if (! is_numeric($mi) || (float) $mi <= 0) {
+            if (! is_numeric($mi) || Math::lte((string) $mi, '0')) {
                 throw new RuntimeException('limit_quantity_multipliers must contain positive numeric values');
             }
             $usedMultipliers[] = (string) $mi;

@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Bitget;
 
 use InvalidArgumentException;
 use Kraite\Core\Abstracts\BaseDataMapper;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsAccountBalanceQuery;
 use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsAccountQuery;
 use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsAccountQueryTrades;
@@ -162,9 +163,9 @@ final class BitgetApiDataMapper extends BaseDataMapper
 
         // Regular orders
         $orderType = mb_strtolower($order['orderType'] ?? '');
-        $triggerPrice = (float) ($order['triggerPrice'] ?? 0);
+        $triggerPrice = (string) ($order['triggerPrice'] ?? '0');
 
-        if ($triggerPrice > 0) {
+        if (Math::gt($triggerPrice, '0')) {
             return 'STOP_MARKET';
         }
 

@@ -6,6 +6,7 @@ namespace Kraite\Core\Concerns\Position;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\Order;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 use Kraite\Core\Support\ValueObjects\ApiResponse;
@@ -108,7 +109,15 @@ trait InteractsWithApis
                 return false;
             }
 
-            return abs((float) $p['positionAmt']) > 0.0001;
+            // Epsilon-style "non-zero" — keep float for the comparison
+            // since 0.0001 is the operational dust threshold; upgrading
+            // to BCMath here would require a config knob for the scale
+            // and isn't the precision-critical path. Same shape kept
+            // intentionally; the upstream value is normalised already.
+            $amt = (string) $p['positionAmt'];
+            $abs = Math::lt($amt, '0') ? Math::sub('0', $amt) : $amt;
+
+            return Math::gt($abs, '0.0001');
         });
 
         $symbols = $matching->pluck('symbol')->unique()->values();
@@ -117,15 +126,20 @@ trait InteractsWithApis
         }
 
         foreach ($matching as $positionData) {
-            $side = ((float) $positionData['positionAmt'] < 0)
+            $side = Math::lt((string) $positionData['positionAmt'], '0')
             ? $this->apiMapper()->sideType('BUY')
             : $this->apiMapper()->sideType('SELL');
+
+            // BCMath-aware absolute value preserves precision on
+            // long-decimal positionAmt values that float would truncate.
+            $rawAmt = (string) $positionData['positionAmt'];
+            $absAmt = Math::lt($rawAmt, '0') ? Math::sub('0', $rawAmt) : $rawAmt;
 
             $data = [
                 'type' => 'MARKET-CANCEL',
                 'side' => $side,
                 'position_side' => $positionData['positionSide'],
-                'quantity' => abs((float) $positionData['positionAmt']),
+                'quantity' => $absAmt,
                 'position_id' => $this->id,
             ];
 
@@ -217,7 +231,7 @@ trait InteractsWithApis
             // BitGet returns priceAvg for filled market orders
             $fillPrice = $orderBody['data']['priceAvg'] ?? $orderBody['data']['price'] ?? null;
 
-            if ($fillPrice !== null && $fillPrice !== '' && (float) $fillPrice > 0) {
+            if ($fillPrice !== null && $fillPrice !== '' && Math::gt((string) $fillPrice, '0')) {
                 $this->updateSaving(['closing_price' => $fillPrice]);
             }
         } catch (Throwable $e) {

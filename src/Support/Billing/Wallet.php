@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use Kraite\Core\Models\User;
 use Kraite\Core\Models\WalletTransaction;
+use Kraite\Core\Support\Math;
 
 /**
  * Single point of mutation for a user's wallet balance and
@@ -43,7 +44,7 @@ final class Wallet
 
         return DB::transaction(function () use ($user, $amount, $type, $description, $meta) {
             $locked = User::lockForUpdate()->findOrFail($user->id);
-            $newBalance = (float) $locked->wallet_balance_usdt + $amount;
+            $newBalance = Math::add((string) $locked->wallet_balance_usdt, (string) $amount);
 
             $locked->wallet_balance_usdt = $newBalance;
             $locked->save();
@@ -81,15 +82,15 @@ final class Wallet
 
         return DB::transaction(function () use ($user, $amount, $type, $description, $meta) {
             $locked = User::lockForUpdate()->findOrFail($user->id);
-            $current = (float) $locked->wallet_balance_usdt;
+            $current = (string) $locked->wallet_balance_usdt;
 
-            if ($current < $amount) {
+            if (Math::lt($current, (string) $amount)) {
                 throw new InsufficientFundsException(
                     "User {$locked->id} has {$current} USDT, debit of {$amount} rejected.",
                 );
             }
 
-            $newBalance = $current - $amount;
+            $newBalance = Math::sub($current, (string) $amount);
 
             $locked->wallet_balance_usdt = $newBalance;
             $locked->save();
@@ -135,17 +136,17 @@ final class Wallet
                 );
             }
 
-            $rate = (float) $tier->monthly_rate_usdt;
+            $rate = (string) $tier->monthly_rate_usdt;
 
-            if ($rate <= 0) {
+            if (Math::lte($rate, '0')) {
                 throw new InvalidArgumentException(
                     "Subscription tier {$tier->canonical} has no monthly rate.",
                 );
             }
 
-            $current = (float) $locked->wallet_balance_usdt;
+            $current = (string) $locked->wallet_balance_usdt;
 
-            if ($current < $rate) {
+            if (Math::lt($current, $rate)) {
                 throw new InsufficientFundsException(
                     "User {$locked->id} has {$current} USDT, monthly debit of {$rate} rejected.",
                 );
@@ -157,7 +158,7 @@ final class Wallet
                     : now()->addMonth()
             );
 
-            $newBalance = $current - $rate;
+            $newBalance = Math::sub($current, $rate);
 
             $locked->wallet_balance_usdt = $newBalance;
             $locked->subscription_renews_at = $newAnchor;
@@ -168,7 +169,7 @@ final class Wallet
             return WalletTransaction::create([
                 'user_id' => $locked->id,
                 'type' => WalletTransaction::TYPE_DEBIT_SUBSCRIPTION,
-                'amount_usdt' => -$rate,
+                'amount_usdt' => Math::sub('0', $rate),
                 'balance_after' => $newBalance,
                 'description' => sprintf(
                     'Monthly %s renewal · renews %s',

@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Log;
 use Kraite\Core\Models\User;
 use Kraite\Core\Support\Billing\InsufficientFundsException;
 use Kraite\Core\Support\Billing\Wallet;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
 use StepDispatcher\Support\BaseCommand;
 use Throwable;
@@ -75,9 +76,9 @@ final class RenewSubscriptionsCommand extends BaseCommand
                 continue;
             }
 
-            $rate = (float) $tier->monthly_rate_usdt;
+            $rate = (string) $tier->monthly_rate_usdt;
 
-            if ($rate <= 0) {
+            if (Math::lte($rate, '0')) {
                 continue;
             }
 
@@ -170,7 +171,7 @@ final class RenewSubscriptionsCommand extends BaseCommand
         return now()->copy()->addDays($days)->isSameDay($trialEnd);
     }
 
-    private function notifyLowBalance(User $user, float $rate): void
+    private function notifyLowBalance(User $user, string $rate): void
     {
         try {
             NotificationService::send(
@@ -178,7 +179,7 @@ final class RenewSubscriptionsCommand extends BaseCommand
                 canonical: 'subscription_low_balance',
                 referenceData: [
                     'renews_at' => $user->subscription_renews_at?->toDateString(),
-                    'balance_usdt' => (float) $user->wallet_balance_usdt,
+                    'balance_usdt' => (string) $user->wallet_balance_usdt,
                     'monthly_rate_usdt' => $rate,
                     'shortfall_usdt' => $user->renewalShortfallUsdt(),
                 ],
@@ -191,7 +192,7 @@ final class RenewSubscriptionsCommand extends BaseCommand
         }
     }
 
-    private function notifyTrialEnding(User $user, float $rate): void
+    private function notifyTrialEnding(User $user, string $rate): void
     {
         try {
             NotificationService::send(
@@ -200,7 +201,7 @@ final class RenewSubscriptionsCommand extends BaseCommand
                 referenceData: [
                     'trial_started_at' => $user->trial_started_at?->toDateString(),
                     'trial_days' => $user->effectiveTrialDays(),
-                    'balance_usdt' => (float) $user->wallet_balance_usdt,
+                    'balance_usdt' => (string) $user->wallet_balance_usdt,
                     'monthly_rate_usdt' => $rate,
                     'shortfall_usdt' => $user->renewalShortfallUsdt(),
                 ],
@@ -213,14 +214,14 @@ final class RenewSubscriptionsCommand extends BaseCommand
         }
     }
 
-    private function notifyClosingMode(User $user, float $rate): void
+    private function notifyClosingMode(User $user, string $rate): void
     {
         try {
             NotificationService::send(
                 user: $user,
                 canonical: 'subscription_closing_mode',
                 referenceData: [
-                    'balance_usdt' => (float) $user->wallet_balance_usdt,
+                    'balance_usdt' => (string) $user->wallet_balance_usdt,
                     'monthly_rate_usdt' => $rate,
                     'shortfall_usdt' => $user->renewalShortfallUsdt(),
                 ],

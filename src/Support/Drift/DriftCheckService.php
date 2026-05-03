@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\Drift;
 
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\Math;
 use Throwable;
 
 /**
@@ -120,7 +121,7 @@ final class DriftCheckService implements DriftChecker
         try {
             $positionsResult = $account->apiQueryPositions()->result ?? [];
             $exchangePositions = collect($positionsResult)
-                ->filter(fn ($pos) => abs((float) ($pos['positionAmt'] ?? $pos['size'] ?? $pos['contracts'] ?? $pos['total'] ?? 0)) > 0)
+                ->filter(fn ($pos) => ! Math::equal((string) ($pos['positionAmt'] ?? $pos['size'] ?? $pos['contracts'] ?? $pos['total'] ?? '0'), '0'))
                 ->values()
                 ->all();
 
@@ -517,8 +518,11 @@ final class DriftCheckService implements DriftChecker
             $margin = null;
         }
 
+        $rawQty = (string) ($pos['positionAmt'] ?? $pos['size'] ?? $pos['contracts'] ?? $pos['total'] ?? '0');
+        $absQty = Math::lt($rawQty, '0') ? Math::sub('0', $rawQty) : $rawQty;
+
         return [
-            'quantity' => (string) abs((float) ($pos['positionAmt'] ?? $pos['size'] ?? $pos['contracts'] ?? $pos['total'] ?? 0)),
+            'quantity' => $absQty,
             'entry_price' => (string) ($pos['entryPrice'] ?? $pos['avgPrice'] ?? $pos['openPriceAvg'] ?? 0),
             'leverage' => $leverage !== null ? (string) $leverage : null,
             'margin' => $margin !== null ? (string) $margin : null,
@@ -566,19 +570,23 @@ final class DriftCheckService implements DriftChecker
             return false;
         }
 
-        $fa = (float) $a;
-        $fb = (float) $b;
-
-        if ($fa === $fb) {
+        if (Math::equal($a, $b)) {
             return true;
         }
 
-        $scale = max(abs($fa), abs($fb));
-        if ($scale === 0.0) {
+        // Relative tolerance: |a - b| / max(|a|, |b|) ≤ tol.
+        $absA = Math::lt($a, '0') ? Math::sub('0', $a) : $a;
+        $absB = Math::lt($b, '0') ? Math::sub('0', $b) : $b;
+        $scale = Math::gt($absA, $absB) ? $absA : $absB;
+        if (Math::equal($scale, '0')) {
             return false;
         }
 
-        return abs($fa - $fb) / $scale <= (float) self::PRICE_TOLERANCE;
+        $diff = Math::sub($a, $b);
+        $absDiff = Math::lt($diff, '0') ? Math::sub('0', $diff) : $diff;
+        $ratio = Math::div($absDiff, $scale, 12);
+
+        return Math::lte($ratio, (string) self::PRICE_TOLERANCE);
     }
 
     /**
@@ -701,9 +709,9 @@ final class DriftCheckService implements DriftChecker
         if (isset($pos['side'])) {
             return mb_strtoupper((string) $pos['side']) === 'BUY' ? 'LONG' : 'SHORT';
         }
-        $qty = (float) ($pos['positionAmt'] ?? $pos['size'] ?? 0);
+        $qty = (string) ($pos['positionAmt'] ?? $pos['size'] ?? '0');
 
-        return $qty >= 0 ? 'LONG' : 'SHORT';
+        return Math::gte($qty, '0') ? 'LONG' : 'SHORT';
     }
 
     /**

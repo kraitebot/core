@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Kucoin\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
 trait MapsOpenOrdersQuery
@@ -103,14 +104,14 @@ trait MapsOpenOrdersQuery
         $stop = $order['stop'] ?? '';
 
         // If this is a stop order (stop field is set or stopPrice exists)
-        if ($stop !== '' || ($stopPrice !== null && (float) $stopPrice > 0)) {
+        if ($stop !== '' || ($stopPrice !== null && Math::gt((string) $stopPrice, '0'))) {
             return (string) ($stopPrice ?? $price);
         }
 
         return match ($type) {
             'limit' => $price,
             'market' => '0',
-            default => (float) $price > 0 ? $price : '0',
+            default => Math::gt($price, '0') ? $price : '0',
         };
     }
 }

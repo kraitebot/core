@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Kucoin\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
 trait MapsPositionsQuery
@@ -74,9 +75,10 @@ trait MapsPositionsQuery
 
         return collect($positionsList)
             ->filter(static function ($position) {
-                // Only include open positions with non-zero quantity
+                // Only include open positions with non-zero quantity —
+                // BCMath comparison preserves precision on long-decimal qty.
                 return ($position['isOpen'] ?? false) === true
-                    && (float) ($position['currentQty'] ?? 0) !== 0.0;
+                    && ! Math::equal((string) ($position['currentQty'] ?? '0'), '0');
             })
             ->map(function ($position) {
                 // Normalize the symbol format

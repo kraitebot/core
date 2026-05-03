@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\Recovery;
 
 use Illuminate\Support\Str;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 use Throwable;
 
@@ -32,8 +33,8 @@ final class BybitPositionRecoverer extends AbstractPositionRecoverer
 
         $open = [];
         foreach ($positions as $p) {
-            $size = (float) ($p['size'] ?? $p['positionAmt'] ?? 0);
-            if ($size === 0.0) {
+            $size = (string) ($p['size'] ?? $p['positionAmt'] ?? '0');
+            if (Math::equal($size, '0')) {
                 continue;
             }
 
@@ -217,7 +218,7 @@ final class BybitPositionRecoverer extends AbstractPositionRecoverer
         $orders = [];
         foreach ($byOrder as $row) {
             $totalQty = $row['qty_total'];
-            $avgPrice = (float) $totalQty > 0
+            $avgPrice = Math::gt((string) $totalQty, '0')
                 ? bcdiv($row['price_qty_sum'], $totalQty, 8)
                 : '0';
 

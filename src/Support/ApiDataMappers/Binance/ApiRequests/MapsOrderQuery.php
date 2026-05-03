@@ -80,10 +80,10 @@ trait MapsOrderQuery
 
         return match ($type) {
             'LIMIT' => $price,
-            'MARKET' => (float) $avgPrice > 0 ? $avgPrice : '0',
+            'MARKET' => Math::gt((string) $avgPrice, '0') ? $avgPrice : '0',
             'STOP_MARKET', 'STOP_LIMIT', 'STOP', 'TAKE_PROFIT', 'TAKE_PROFIT_LIMIT', 'TAKE_PROFIT_MARKET' => $stopPrice,
-            'TRAILING_STOP_MARKET' => (float) $activatePrice > 0 ? $activatePrice : $stopPrice,
-            default => (float) $price > 0 ? $price : $stopPrice,
+            'TRAILING_STOP_MARKET' => Math::gt((string) $activatePrice, '0') ? $activatePrice : $stopPrice,
+            default => Math::gt((string) $price, '0') ? $price : $stopPrice,
         };
     }
 }

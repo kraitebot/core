@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Bybit\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
 trait MapsPositionsQuery
@@ -35,6 +36,9 @@ trait MapsPositionsQuery
 
                 // Bybit uses 'side' with Buy/Sell values
                 $side = mb_strtoupper($position['side'] ?? 'BOTH');
+                // size/positionAmt remain float for downstream contract.
+                // Full BCMath migration of the position-quantity surface
+                // is a follow-up.
                 $size = abs((float) ($position['size'] ?? 0));
 
                 // Add Binance-compatible fields for apiClose() compatibility
@@ -57,7 +61,7 @@ trait MapsPositionsQuery
 
         // Remove positions with zero size (Bybit uses 'size' field)
         return array_filter($positions, callback: static function ($position) {
-            return (float) ($position['size'] ?? 0) !== 0.0;
+            return ! Math::equal((string) ($position['size'] ?? '0'), '0');
         });
     }
 }

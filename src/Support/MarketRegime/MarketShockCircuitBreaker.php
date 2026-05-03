@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Support\MarketRegime;
 
+use Kraite\Core\Support\Math;
+
 /**
  * MarketShockCircuitBreaker — fast cascade-in-progress detector.
  *
@@ -124,14 +126,14 @@ final class MarketShockCircuitBreaker
             return null;
         }
 
-        $latest = (float) $bars[$count - 1]['close'];
-        $prior = (float) $bars[$count - 1 - $nBack]['close'];
+        $latest = (string) $bars[$count - 1]['close'];
+        $prior = (string) $bars[$count - 1 - $nBack]['close'];
 
-        if ($prior <= 0.0) {
+        if (Math::lte($prior, '0')) {
             return null;
         }
 
-        return (($latest - $prior) / $prior) * 100.0;
+        return (float) Math::mul(Math::div(Math::sub($latest, $prior), $prior, 12), '100');
     }
 
     /**

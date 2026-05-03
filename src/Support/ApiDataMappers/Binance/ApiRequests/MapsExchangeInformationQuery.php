@@ -62,10 +62,15 @@ trait MapsExchangeInformationQuery
                     'pair' => $symbolData['symbol'],
                     'pricePrecision' => $symbolData['pricePrecision'],
                     'quantityPrecision' => $symbolData['quantityPrecision'],
-                    'tickSize' => isset($priceFilter['tickSize']) ? (float) $priceFilter['tickSize'] : null,
-                    'minPrice' => isset($priceFilter['minPrice']) ? (float) $priceFilter['minPrice'] : null,
-                    'maxPrice' => isset($priceFilter['maxPrice']) ? (float) $priceFilter['maxPrice'] : null,
-                    'minNotional' => isset($minNotionalFilter['notional']) ? (float) $minNotionalFilter['notional'] : null,
+                    // Preserve raw exchange strings — DECIMAL columns
+                    // and downstream consumers accept the string form
+                    // unchanged, and skipping the float cast keeps
+                    // full precision on long-decimal tick / min-notional
+                    // values.
+                    'tickSize' => isset($priceFilter['tickSize']) ? (string) $priceFilter['tickSize'] : null,
+                    'minPrice' => isset($priceFilter['minPrice']) ? (string) $priceFilter['minPrice'] : null,
+                    'maxPrice' => isset($priceFilter['maxPrice']) ? (string) $priceFilter['maxPrice'] : null,
+                    'minNotional' => isset($minNotionalFilter['notional']) ? (string) $minNotionalFilter['notional'] : null,
 
                     // New fields needed for delisting/tradeability logic and metadata
                     'status' => $symbolData['status'] ?? null,     // e.g. TRADING, BREAK, SETTLING, DELIVERING, PENDING_TRADING

@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Kucoin\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
 /**
@@ -80,13 +81,13 @@ trait MapsStopOrdersQuery
     {
         // Primary: stopPrice (for conditional/stop orders)
         $stopPrice = $order['stopPrice'] ?? null;
-        if ($stopPrice !== null && (float) $stopPrice > 0) {
+        if ($stopPrice !== null && Math::gt((string) $stopPrice, '0')) {
             return (string) $stopPrice;
         }
 
         // Fallback to regular price
         $price = $order['price'] ?? '0';
-        if ((float) $price > 0) {
+        if (Math::gt((string) $price, '0')) {
             return (string) $price;
         }
 

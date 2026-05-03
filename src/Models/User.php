@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Kraite\Core\Support\Math;
 use NotificationChannels\Pushover\PushoverChannel;
 use NotificationChannels\Pushover\PushoverReceiver;
 use RuntimeException;
@@ -186,13 +187,13 @@ final class User extends Authenticatable
      */
     public function subscriptionCoversNextRenewal(): bool
     {
-        $rate = (float) ($this->subscription?->monthly_rate_usdt ?? 0);
+        $rate = (string) ($this->subscription?->monthly_rate_usdt ?? '0');
 
-        if ($rate <= 0) {
+        if (Math::lte($rate, '0')) {
             return true;
         }
 
-        return ((float) $this->wallet_balance_usdt) >= $rate;
+        return Math::gte((string) $this->wallet_balance_usdt, $rate);
     }
 
     /**
@@ -201,13 +202,15 @@ final class User extends Authenticatable
      */
     public function renewalShortfallUsdt(): float
     {
-        $rate = (float) ($this->subscription?->monthly_rate_usdt ?? 0);
+        $rate = (string) ($this->subscription?->monthly_rate_usdt ?? '0');
 
-        if ($rate <= 0) {
+        if (Math::lte($rate, '0')) {
             return 0.0;
         }
 
-        return max(0.0, $rate - (float) $this->wallet_balance_usdt);
+        $diff = Math::sub($rate, (string) $this->wallet_balance_usdt);
+
+        return Math::lt($diff, '0') ? 0.0 : (float) $diff;
     }
 
     /**

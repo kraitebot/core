@@ -10,6 +10,7 @@ use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Support\Backtest\BacktestSimulator;
 use Kraite\Core\Support\Backtest\CandleCoverageVerifier;
+use Kraite\Core\Support\Math;
 use StepDispatcher\Support\BaseCommand;
 use Throwable;
 
@@ -171,7 +172,7 @@ final class BacktestTokenCommand extends BaseCommand
         $parts = array_filter(array_map('trim', explode(',', $input)), fn ($v) => $v !== '');
 
         foreach ($parts as $value) {
-            if (! is_numeric($value) || (float) $value <= 0) {
+            if (! is_numeric($value) || Math::lte((string) $value, '0')) {
                 throw new InvalidArgumentException("Invalid multipliers entry '{$value}'. Must be positive numerics comma-separated.");
             }
         }

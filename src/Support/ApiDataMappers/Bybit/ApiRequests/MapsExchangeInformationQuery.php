@@ -92,10 +92,15 @@ trait MapsExchangeInformationQuery
                     'pair' => $symbolData['symbol'],
                     'pricePrecision' => $pricePrecision,
                     'quantityPrecision' => $quantityPrecision,
-                    'tickSize' => isset($priceFilter['tickSize']) ? (float) $priceFilter['tickSize'] : null,
-                    'minPrice' => isset($priceFilter['minPrice']) ? (float) $priceFilter['minPrice'] : null,
-                    'maxPrice' => isset($priceFilter['maxPrice']) ? (float) $priceFilter['maxPrice'] : null,
-                    'minNotional' => isset($lotSizeFilter['minNotionalValue']) ? (float) $lotSizeFilter['minNotionalValue'] : null,
+                    // Preserve raw exchange strings — DECIMAL columns
+                    // and downstream consumers accept the string form
+                    // unchanged, and skipping the float cast keeps full
+                    // precision on exchanges that publish long-decimal
+                    // tick / min-notional values.
+                    'tickSize' => isset($priceFilter['tickSize']) ? (string) $priceFilter['tickSize'] : null,
+                    'minPrice' => isset($priceFilter['minPrice']) ? (string) $priceFilter['minPrice'] : null,
+                    'maxPrice' => isset($priceFilter['maxPrice']) ? (string) $priceFilter['maxPrice'] : null,
+                    'minNotional' => isset($lotSizeFilter['minNotionalValue']) ? (string) $lotSizeFilter['minNotionalValue'] : null,
 
                     // Status and contract information
                     'status' => $symbolData['status'] ?? null,

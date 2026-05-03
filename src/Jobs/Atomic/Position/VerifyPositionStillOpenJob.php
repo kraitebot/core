@@ -8,6 +8,7 @@ use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\Math;
 
 /**
  * VerifyPositionStillOpenJob (Atomic)
@@ -64,10 +65,10 @@ final class VerifyPositionStillOpenJob extends BaseApiableJob
         $position = $this->position;
         $snapshot = $this->resolvePositionSnapshot();
 
-        $rawAmt = $snapshot['positionAmt'] ?? $snapshot['total'] ?? 0;
-        $positionAmt = abs((float) $rawAmt);
+        $rawAmt = (string) ($snapshot['positionAmt'] ?? $snapshot['total'] ?? '0');
+        $positionAmt = Math::lt($rawAmt, '0') ? Math::sub('0', $rawAmt) : $rawAmt;
 
-        if ($positionAmt > 0.0001) {
+        if (Math::gt($positionAmt, '0.0001')) {
             return [
                 'position_id' => $position->id,
                 'symbol' => $position->parsed_trading_pair,

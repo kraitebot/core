@@ -418,7 +418,9 @@ abstract class AbstractPositionRecoverer
         if ($tp !== null && Math::gt((string) $tp->price, '0') && Math::gt($currentBreakeven, '0')) {
             $diff = self::absDelta($currentBreakeven, (string) $tp->price);
             $profitPct = Math::mul(Math::div($diff, $currentBreakeven, 8), '100', 3);
-            $updates['profit_percentage'] = (float) $profitPct;
+            // DECIMAL columns accept the BCMath string directly —
+            // skipping the float cast keeps full precision.
+            $updates['profit_percentage'] = $profitPct;
 
             // Anchor #2: first_profit_price computed from the original
             // entry + the percentage. For LONG, TP is above entry; for
@@ -434,7 +436,7 @@ abstract class AbstractPositionRecoverer
 
         if ($sl !== null && Math::gt((string) $sl->price, '0') && Math::gt($currentBreakeven, '0')) {
             $diff = self::absDelta($currentBreakeven, (string) $sl->price);
-            $updates['stop_market_percentage'] = (float) Math::mul(Math::div($diff, $currentBreakeven, 8), '100', 2);
+            $updates['stop_market_percentage'] = Math::mul(Math::div($diff, $currentBreakeven, 8), '100', 2);
         }
 
         if ($updates !== []) {

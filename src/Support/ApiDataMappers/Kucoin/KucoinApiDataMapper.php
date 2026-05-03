@@ -25,6 +25,7 @@ use Kraite\Core\Support\ApiDataMappers\Kucoin\ApiRequests\MapsStopOrdersQuery;
 use Kraite\Core\Support\ApiDataMappers\Kucoin\ApiRequests\MapsSymbolConfigQuery;
 use Kraite\Core\Support\ApiDataMappers\Kucoin\ApiRequests\MapsSymbolMarginType;
 use Kraite\Core\Support\ApiDataMappers\Kucoin\ApiRequests\MapsTokenLeverageRatios;
+use Kraite\Core\Support\Math;
 use SensitiveParameter;
 
 /**
@@ -163,10 +164,10 @@ final class KucoinApiDataMapper extends BaseDataMapper
     {
         $type = mb_strtolower($order['type'] ?? '');
         $stop = $order['stop'] ?? '';
-        $stopPrice = (float) ($order['stopPrice'] ?? 0);
+        $stopPrice = (string) ($order['stopPrice'] ?? '0');
 
         // Check if it's a stop order
-        if ($stop !== '' || $stopPrice > 0) {
+        if ($stop !== '' || Math::gt($stopPrice, '0')) {
             return 'STOP_MARKET';
         }
 

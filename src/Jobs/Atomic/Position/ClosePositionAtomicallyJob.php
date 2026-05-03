@@ -113,8 +113,12 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
         $direction = mb_strtoupper($position->direction);
         $positionKey = "{$symbol}:{$direction}";
 
+        $rawAmt = (string) ($accountPositions[$positionKey]['positionAmt']
+            ?? $accountPositions[$positionKey]['total']
+            ?? '0');
+        $absAmt = Math::lt($rawAmt, '0') ? Math::sub('0', $rawAmt) : $rawAmt;
         $positionExistsOnExchange = isset($accountPositions[$positionKey])
-            && abs((float) ($accountPositions[$positionKey]['positionAmt'] ?? $accountPositions[$positionKey]['total'] ?? 0)) > 0.0001;
+            && Math::gt($absAmt, '0.0001');
 
         if (! $positionExistsOnExchange) {
             // Position already closed on exchange (via TP/SL fill) - nothing to do

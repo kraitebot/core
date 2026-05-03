@@ -11,6 +11,7 @@ use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Models\Symbol;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Trading\Kraite;
 
 /**
@@ -235,14 +236,14 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
                 // One-way mode: positionSide=BOTH; sign of positionAmt
                 // gives the direction. Zero positionAmt is empty.
                 if ($positionSide === 'BOTH') {
-                    $amount = (float) ($position['positionAmt'] ?? 0);
+                    $amount = (string) ($position['positionAmt'] ?? '0');
 
-                    if ($amount === 0.0) {
+                    if (Math::equal($amount, '0')) {
                         return false;
                     }
 
-                    return ($direction === 'LONG' && $amount > 0)
-                        || ($direction === 'SHORT' && $amount < 0);
+                    return ($direction === 'LONG' && Math::gt($amount, '0'))
+                        || ($direction === 'SHORT' && Math::lt($amount, '0'));
                 }
 
                 // Hedge mode: literal LONG / SHORT match.

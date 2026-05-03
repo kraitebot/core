@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Support\MarketRegime;
 
 use Kraite\Core\Enums\RegimeBand;
+use Kraite\Core\Support\Math;
 
 /**
  * Black Swan Composite Score (BSCS) — pure-PHP signal math.
@@ -271,19 +272,23 @@ final class RegimeCalculator
             return 0.0;
         }
 
-        $totalVol = 0.0;
+        $totalVol = '0';
         foreach ($bars as $bar) {
-            $totalVol += (float) $bar['volume'];
+            $totalVol = Math::add($totalVol, (string) $bar['volume']);
         }
 
-        $last24Vol = 0.0;
+        $last24Vol = '0';
         foreach (array_slice($bars, -self::HOURS_PER_DAY) as $bar) {
-            $last24Vol += (float) $bar['volume'];
+            $last24Vol = Math::add($last24Vol, (string) $bar['volume']);
         }
 
-        $dailyAvg14d = $totalVol / self::BASELINE_DAYS;
+        $dailyAvg14d = Math::div($totalVol, (string) self::BASELINE_DAYS, 12);
 
-        return $dailyAvg14d > 0.0 ? $last24Vol / $dailyAvg14d : 0.0;
+        if (Math::lte($dailyAvg14d, '0')) {
+            return 0.0;
+        }
+
+        return (float) Math::div($last24Vol, $dailyAvg14d, 12);
     }
 
     /**

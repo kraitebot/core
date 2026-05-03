@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.17.0 - 2026-05-03
+
+### Improvements
+
+- [IMPROVED] **`(float)` → BCMath migration packs 1-12 + nano-pack.** 107 net `(float)` casts removed from `kraitebot/core/src/` (198 → 91 site count). Migrated paths now route precision-sensitive arithmetic through `Kraite\Core\Support\Math::*` instead of IEEE-754 floats. Coverage spans order mappers (Binance / Bitget / Bybit / KuCoin), recovery (open-positions non-zero filter), drift checking (direction inference + relative-tolerance helper), exchange-information mappers (tick / min / max / notional), billing wallet, position accessors (`Position::daily_variation_percentage`), market-regime helpers (`RegimeCalculator::futVolHot`, `MarketShockCircuitBreaker::priorBarPct`), token-scoring proximity (`SupportResistanceProximity::computeMultiplier`), one-way-mode direction filter (`AssignBestTokensToPositionSlotsJob`), and the price-volatility indicator. The remaining 91 casts encode legitimate boundaries (display coercion, log-using statistics, return-type contracts, downstream consumer cascades, final API surfaces) and were classified explicitly as KEEP.
+
+### Fixes
+
+- [BUG FIX] **`indicators_synced_at` skip-stamp.** The `same_indicator_data` skip branch in `ConcludeSymbolDirectionAtTimeframeJob` was the only successful end-to-end path that did not stamp `indicators_synced_at`. Long-timeframe symbols (1d) sat past the 90-minute system-health watchdog threshold for nearly the full day even though the conclude pipeline ran every cron tick and correctly decided "nothing new". The skip branch now stamps the attempt time alongside the existing concluded / exhausted / path-invalid branches. Watchdog reads the column as a liveness signal — every successful end-to-end branch must stamp it.
+
 ## 1.16.0 - 2026-05-03
 
 ### Features

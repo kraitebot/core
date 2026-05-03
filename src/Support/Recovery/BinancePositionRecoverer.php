@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\Recovery;
 
 use Illuminate\Support\Str;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 use Throwable;
 
@@ -69,7 +70,7 @@ final class BinancePositionRecoverer extends AbstractPositionRecoverer
         $open = [];
         foreach ($positions as $p) {
             $amt = (string) ($p['positionAmt'] ?? '0');
-            if ((float) $amt === 0.0) {
+            if (Math::equal($amt, '0')) {
                 continue;
             }
 
@@ -234,7 +235,7 @@ final class BinancePositionRecoverer extends AbstractPositionRecoverer
         $orders = [];
         foreach ($byOrder as $row) {
             $totalQty = $row['qty_total'];
-            $avgPrice = (float) $totalQty > 0
+            $avgPrice = Math::gt((string) $totalQty, '0')
                 ? bcdiv($row['price_qty_sum'], $totalQty, 8)
                 : '0';
 
@@ -582,7 +583,7 @@ final class BinancePositionRecoverer extends AbstractPositionRecoverer
         // Binance's STOP_MARKET (algo) carries `triggerPrice` in the
         // open-algo-orders response shape — fall back to that when the
         // canonical `price` field is empty.
-        if ((float) $price === 0.0) {
+        if (Math::equal($price, '0')) {
             $price = (string) ($exchangeOrder['triggerPrice'] ?? '0');
         }
 

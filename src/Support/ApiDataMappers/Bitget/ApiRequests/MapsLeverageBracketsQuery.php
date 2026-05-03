@@ -72,6 +72,9 @@ trait MapsLeverageBracketsQuery
             $grouped[$symbol]['brackets'][] = [
                 'bracket' => (int) ($tier['level'] ?? 0),
                 'initialLeverage' => (int) ($tier['leverage'] ?? 0),
+                // Brackets stay float — downstream lookup code does
+                // float math; full migration to BCMath needs cascading
+                // consumer updates.
                 'notionalCap' => (float) ($tier['endUnit'] ?? 0),
                 'notionalFloor' => (float) ($tier['startUnit'] ?? 0),
                 'maintMarginRatio' => (float) ($tier['keepMarginRate'] ?? 0),

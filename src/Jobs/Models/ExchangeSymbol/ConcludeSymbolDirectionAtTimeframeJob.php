@@ -141,6 +141,20 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
 
         // Check if we're concluding on the same data we already have
         if ($this->isSameIndicatorData($exchangeSymbol, $indicatorData, $this->timeframe)) {
+            // Stamp the attempt time even though no fresh indicator data
+            // emerged this run. `indicators_synced_at` is "last time the
+            // pipeline ran end-to-end on this symbol" (see exhaustion +
+            // path-invalidation branches below for the same rationale).
+            // Without this stamp, every long-timeframe symbol whose
+            // candle hasn't closed since the last conclude — e.g. a 1d
+            // symbol mid-day — ages past the system-health watchdog
+            // threshold and floods the operator with false-positive
+            // staleness alerts even though the conclude pipeline ran
+            // every cron cycle and correctly decided "nothing new".
+            $exchangeSymbol->updateSaving([
+                'indicators_synced_at' => Carbon::now(),
+            ]);
+
             $response = [
                 'result' => 'skipped',
                 'reason' => 'same_indicator_data',

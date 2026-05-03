@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Bybit\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
 trait MapsOpenOrdersQuery
@@ -54,14 +55,14 @@ trait MapsOpenOrdersQuery
         $avgPrice = $order['avgPrice'] ?? '0';
 
         // If there's a trigger price set, this is a conditional order
-        if ((float) $triggerPrice > 0) {
+        if (Math::gt((string) $triggerPrice, '0')) {
             return $triggerPrice;
         }
 
         return match ($orderType) {
             'Limit' => $price,
-            'Market' => (float) $avgPrice > 0 ? $avgPrice : '0',
-            default => (float) $price > 0 ? $price : '0',
+            'Market' => Math::gt((string) $avgPrice, '0') ? $avgPrice : '0',
+            default => Math::gt((string) $price, '0') ? $price : '0',
         };
     }
 }

@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
 trait MapsPositionsQuery
@@ -64,14 +65,19 @@ trait MapsPositionsQuery
 
         return collect($positionsList)
             ->filter(static function ($position) {
-                // Only include positions with non-zero total size
-                return (float) ($position['total'] ?? 0) !== 0.0;
+                // Only include positions with non-zero total size — BCMath
+                // comparison preserves precision on long-decimal sizes.
+                return ! Math::equal((string) ($position['total'] ?? '0'), '0');
             })
             ->map(static function ($position) {
                 // BitGet uses holdSide: 'long' or 'short' (always populated,
                 // even in one-way mode it reflects the actual direction)
                 $holdSide = $position['holdSide'] ?? 'long';
                 $position['side'] = $holdSide;
+                // size/positionAmt remain float for downstream contract.
+                // Full BCMath migration of the position-quantity surface
+                // is a follow-up — touching the mapper alone breaks every
+                // consumer that does float math on positionAmt.
                 $size = abs((float) ($position['total'] ?? 0));
                 $position['size'] = $size;
 

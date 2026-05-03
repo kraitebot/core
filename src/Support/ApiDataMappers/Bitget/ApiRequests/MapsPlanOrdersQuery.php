@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
 /**
@@ -91,19 +92,19 @@ trait MapsPlanOrdersQuery
     {
         // Check stopLossTriggerPrice first (for TPSL orders)
         $stopLossPrice = $order['stopLossTriggerPrice'] ?? '';
-        if ($stopLossPrice !== '' && (float) $stopLossPrice > 0) {
+        if ($stopLossPrice !== '' && Math::gt((string) $stopLossPrice, '0')) {
             return (string) $stopLossPrice;
         }
 
         // Check stopSurplusTriggerPrice (take-profit)
         $takeProfitPrice = $order['stopSurplusTriggerPrice'] ?? '';
-        if ($takeProfitPrice !== '' && (float) $takeProfitPrice > 0) {
+        if ($takeProfitPrice !== '' && Math::gt((string) $takeProfitPrice, '0')) {
             return (string) $takeProfitPrice;
         }
 
         // Fallback to triggerPrice (for normal_plan orders)
         $triggerPrice = $order['triggerPrice'] ?? '0';
-        if ((float) $triggerPrice > 0) {
+        if (Math::gt((string) $triggerPrice, '0')) {
             return (string) $triggerPrice;
         }
 

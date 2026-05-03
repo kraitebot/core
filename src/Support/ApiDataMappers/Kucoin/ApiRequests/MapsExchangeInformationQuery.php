@@ -130,14 +130,18 @@ trait MapsExchangeInformationQuery
                     'pair' => $symbol,
                     'pricePrecision' => $pricePrecision,
                     'quantityPrecision' => $quantityPrecision,
-                    'tickSize' => (float) $tickSize,
+                    // Preserve raw exchange strings — DECIMAL columns
+                    // and downstream consumers accept the string form
+                    // unchanged, and skipping the float cast keeps full
+                    // precision on KuCoin's high-decimal lot multipliers.
+                    'tickSize' => (string) $tickSize,
                     'minPrice' => null,
-                    'maxPrice' => isset($contract['maxPrice']) ? (float) $contract['maxPrice'] : null,
+                    'maxPrice' => isset($contract['maxPrice']) ? (string) $contract['maxPrice'] : null,
                     'minNotional' => null,
 
                     // KuCoin-specific: lot size and multiplier for min order calculation
-                    'kucoinLotSize' => isset($contract['lotSize']) ? (float) $contract['lotSize'] : null,
-                    'kucoinMultiplier' => isset($contract['multiplier']) ? (float) $contract['multiplier'] : null,
+                    'kucoinLotSize' => isset($contract['lotSize']) ? (string) $contract['lotSize'] : null,
+                    'kucoinMultiplier' => isset($contract['multiplier']) ? (string) $contract['multiplier'] : null,
 
                     // Status and contract information
                     'status' => ($contract['status'] ?? '') === 'Open' ? 'Trading' : 'Break',

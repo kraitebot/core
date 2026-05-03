@@ -6,6 +6,7 @@ namespace Kraite\Core\Concerns\Position;
 
 use Kraite\Core\Models\Indicator;
 use Kraite\Core\Models\IndicatorHistory;
+use Kraite\Core\Support\Math;
 
 trait HasAccessors
 {
@@ -98,20 +99,24 @@ trait HasAccessors
             ->orderByDesc('timestamp')
             ->first();
 
-        // Extract open[0] if present
+        // Extract open[0] if present.
         $open = null;
         if ($row && is_array($row->data) && isset($row->data['open'][0])) {
-            $open = (float) $row->data['open'][0];
+            $open = (string) $row->data['open'][0];
         }
 
-        if ($open === null || $open === 0.0) {
+        if ($open === null || Math::equal($open, '0')) {
             return '0.00';
         }
 
-        $current = (float) $symbol->current_price;
-        $percent = (($current - $open) / $open) * 100.0;
+        $current = (string) $symbol->current_price;
+        $delta = Math::sub($current, $open);
+        $percent = Math::mul(
+            Math::div($delta, $open, 12),
+            '100'
+        );
 
-        return number_format($percent, 2, '.', '');
+        return number_format((float) $percent, 2, '.', '');
     }
 
     /**
