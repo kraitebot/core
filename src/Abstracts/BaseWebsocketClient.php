@@ -104,6 +104,18 @@ abstract class BaseWebsocketClient
 
     protected float $lastFrameAt = 0.0;
 
+    /**
+     * Whether protocol-level pings count toward the idle-watchdog's
+     * "still alive" signal.
+     *
+     * Default `true` preserves the legacy contract for streams whose
+     * data cadence is sparse (user-data: order events only, can be
+     * hours of silence on a quiet account). Strict-data streams
+     * (mark-price: 1Hz expected) override to `false` so a silent
+     * data feed with intact TCP-keepalive trips the watchdog.
+     */
+    protected bool $pingsCountAsAlive = true;
+
     protected int $framesReceived = 0;
 
     protected float $connectedAt = 0.0;
@@ -210,11 +222,31 @@ abstract class BaseWebsocketClient
 
                 // Auto-pong on every incoming ping + a periodic pong every
                 // 15 minutes so idle connections don't get dropped by the
-                // exchange's stale-client sweep. Both handlers bump
-                // lastFrameAt so pings-only traffic still counts as "alive"
-                // against the idle-timeout watchdog.
+                // exchange's stale-client sweep.
+                //
+                // Two semantically-different streams use this client:
+                //
+                //   - Mark-price stream: data is expected ~1Hz, so the
+                //     idle watchdog must NOT count protocol-level pings
+                //     as "alive" — otherwise a silent data feed with
+                //     intact TCP-keepalive masks the death and the
+                //     watchdog never trips.
+                //   - User-data stream: legitimately silent for long
+                //     stretches on quiet accounts (only emits on order
+                //     events), so server pings ARE the proof that TCP
+                //     is alive and the watchdog should accept them.
+                //
+                // The `$pingsCountAsAlive` flag (default true → preserve
+                // legacy contract) lets each subclass / instance opt
+                // into stricter "data-only" liveness. Mark-price daemon
+                // sets it to false. 2026-05-03 incidents validated both
+                // failure modes: mark-price stream went silent + watchdog
+                // false-passed; user-data stream legitimately silent +
+                // watchdog false-failed.
                 $conn->on('ping', function () use ($conn) {
-                    $this->lastFrameAt = microtime(true);
+                    if ($this->pingsCountAsAlive) {
+                        $this->lastFrameAt = microtime(true);
+                    }
                     $conn->send(new Frame('', true, Frame::OP_PONG));
                 });
 

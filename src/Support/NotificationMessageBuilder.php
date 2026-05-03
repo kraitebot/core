@@ -1126,10 +1126,58 @@ final class NotificationMessageBuilder
                     $status = is_string($oo['status'] ?? null) ? $oo['status'] : '?';
                     $isGhost = ! empty($oo['is_ghost']);
                     $tag = $isGhost ? ' [ghost]' : '';
-                    $orderLines[] = "  • #{$oid} {$type} {$side} ({$status}){$tag}";
+
+                    // Exchange-side ids if present — operator can paste
+                    // these straight into the exchange UI's order search.
+                    $exchangeOrderId = is_string($oo['exchange_order_id'] ?? null)
+                        ? $oo['exchange_order_id']
+                        : null;
+                    $clientOrderId = is_string($oo['client_order_id'] ?? null)
+                        ? $oo['client_order_id']
+                        : null;
+
+                    $idParts = [];
+                    if ($exchangeOrderId !== null && $exchangeOrderId !== '') {
+                        $idParts[] = "exch:{$exchangeOrderId}";
+                    }
+                    if ($clientOrderId !== null && $clientOrderId !== '') {
+                        $idParts[] = "client:{$clientOrderId}";
+                    }
+                    $idSuffix = $idParts === [] ? '' : '  '.implode(' ', $idParts);
+
+                    $orderLines[] = "  • #{$oid} {$type} {$side} ({$status}){$tag}{$idSuffix}";
                 }
                 $orderBody = empty($orderLines) ? '(none)' : implode("\n", $orderLines);
                 $count = count($orphanOrders);
+
+                // Compact order-id summary for the Pushover body —
+                // a single line with the local Order id(s) so the
+                // operator can paste straight into the admin UI's
+                // order search without opening the email. Format:
+                // single order  → "order #1219 (exch:29235944015)"
+                // multi orders  → "orders #1219, #1220, #1221"
+                $orderIdSummary = '(none)';
+                if (! empty($orphanOrders)) {
+                    if ($count === 1) {
+                        $oo = $orphanOrders[0] ?? [];
+                        $oid = isset($oo['id']) ? (int) $oo['id'] : 0;
+                        $exch = is_string($oo['exchange_order_id'] ?? null) && $oo['exchange_order_id'] !== ''
+                            ? $oo['exchange_order_id']
+                            : null;
+                        $orderIdSummary = $exch !== null
+                            ? "order #{$oid} (exch:{$exch})"
+                            : "order #{$oid}";
+                    } else {
+                        $idsCsv = implode(
+                            ', ',
+                            array_map(
+                                static fn (array $oo): string => '#'.(isset($oo['id']) ? (int) $oo['id'] : 0),
+                                $orphanOrders
+                            )
+                        );
+                        $orderIdSummary = "orders {$idsCsv}";
+                    }
+                }
 
                 $actions = [];
                 if ($ghostsCancelled > 0) {
@@ -1150,7 +1198,7 @@ final class NotificationMessageBuilder
                         "Account: {$accountName} ({$exchange})\n\n".
                         "Orphan orders:\n{$orderBody}\n\n".
                         "Spotter actions:{$actionsBody}",
-                    'pushoverMessage' => "Orphan: {$pair} {$direction} ({$accountName}) — {$count} order(s); {$actionsSummary}",
+                    'pushoverMessage' => "Orphan: {$pair} {$direction} ({$accountName}) — {$orderIdSummary}; {$actionsSummary}",
                     'actionUrl' => null,
                     'actionLabel' => null,
                     'priority' => 0,

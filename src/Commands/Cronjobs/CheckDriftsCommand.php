@@ -6,6 +6,7 @@ namespace Kraite\Core\Commands\Cronjobs;
 
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
 use Kraite\Core\Jobs\Lifecycles\Order\PrepareSyncOrdersJob;
 use Kraite\Core\Jobs\Lifecycles\Position\PrepareCancelOrphanOrdersJob;
 use Kraite\Core\Models\Account;
@@ -18,6 +19,7 @@ use Kraite\Core\Support\Drift\PositionDriftReport;
 use Kraite\Core\Support\NotificationService;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Support\BaseCommand;
+use Throwable;
 
 /**
  * CheckDriftsCommand
@@ -191,6 +193,59 @@ final class CheckDriftsCommand extends BaseCommand
                 continue;
             }
 
+            // Pre-flight reconcile: an order can sit in
+            // PARTIALLY_FILLED / NEW locally for hours after the
+            // exchange already moved it to a terminal state — typical
+            // path is "position cancelled via MARKET-CANCEL flatten,
+            // related limit/algo orders auto-cancelled by Binance, but
+            // the local DB write never landed because the
+            // cancel-position workflow had already torn down the sync
+            // path". Hit `apiSync()` synchronously per candidate so
+            // the local Order row reflects whatever the exchange
+            // currently says BEFORE we decide it's an orphan. If sync
+            // bumps the row to a terminal status, it falls out of
+            // `ORPHAN_ORDER_STATUSES` and we skip the alert + skip
+            // the lifecycle dispatch.
+            //
+            // Only orders carrying an `exchange_order_id` get synced
+            // — ghosts (no exchange id) never reached the exchange,
+            // so there's nothing to query and the inline DB-cancel
+            // path below handles them.
+            foreach ($orders as $candidate) {
+                if ($candidate->exchange_order_id === null || $candidate->exchange_order_id === '') {
+                    continue;
+                }
+
+                try {
+                    $candidate->apiSync();
+                } catch (Throwable $exception) {
+                    Log::channel('jobs')->warning(
+                        '[DRIFT-AUDIT] orphan pre-flight sync failed',
+                        [
+                            'order_id' => $candidate->id,
+                            'exchange_order_id' => $candidate->exchange_order_id,
+                            'error' => $exception->getMessage(),
+                        ]
+                    );
+                }
+            }
+
+            // Re-pull the orders fresh from DB. `apiSync` writes via
+            // the model's status setter; refreshing here keeps the
+            // collection consistent with the post-sync state and
+            // re-applies the ORPHAN_ORDER_STATUSES filter so any
+            // newly-terminal rows drop out of the orphan set.
+            $orders = Order::query()
+                ->whereIn('id', $orders->pluck('id')->all())
+                ->whereIn('status', self::ORPHAN_ORDER_STATUSES)
+                ->get();
+
+            if ($orders->isEmpty()) {
+                $this->verboseComment("  Position #{$position->id}: all candidates resolved to terminal status after exchange sync — no orphan, no alert.");
+
+                continue;
+            }
+
             // Two-track cleanup, per orphan parent:
             //
             //  1. Ghost orphans (no exchange_order_id) — these never made
@@ -326,6 +381,11 @@ final class CheckDriftsCommand extends BaseCommand
             'status' => $o->status,
             'is_algo' => (bool) $o->is_algo,
             'is_ghost' => $o->exchange_order_id === null || $o->exchange_order_id === '',
+            // Exchange-side identifiers so the operator can paste them
+            // directly into Binance's order-history search rather than
+            // chasing the local id back to its exchange counterpart.
+            'exchange_order_id' => $o->exchange_order_id,
+            'client_order_id' => $o->client_order_id,
         ])->all();
 
         NotificationService::send(

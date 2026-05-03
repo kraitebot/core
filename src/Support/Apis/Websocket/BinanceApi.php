@@ -25,6 +25,13 @@ final class BinanceApi
             'base_url' => config('kraite.api.url.binance.stream', 'wss://fstream.binance.com'),
             'api_key' => $credentials->get('binance_api_key'),
             'api_secret' => $credentials->get('binance_api_secret'),
+            // Mark-price stream is strict-data (1Hz expected). Pings
+            // do NOT count as "alive" — a server-pinging-but-no-data
+            // failure must trip the idle watchdog. The user-data
+            // daemon constructs its own BinanceApiClient directly and
+            // leaves the default true so a legitimately silent
+            // account doesn't false-trip.
+            'pings_count_as_alive' => false,
         ]);
     }
 

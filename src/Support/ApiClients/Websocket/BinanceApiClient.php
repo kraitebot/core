@@ -30,6 +30,15 @@ final class BinanceApiClient extends BaseWebsocketClient
             'idleTimeoutSeconds' => $config['idle_timeout_seconds'] ?? null,
         ]);
 
+        // Strict-data streams (mark-price) opt out of "ping counts as
+        // alive" so the idle watchdog detects silent data feeds even
+        // when the server's TCP keepalive is healthy. Sparse-data
+        // streams (user-data) leave the default true so a quiet
+        // account doesn't false-trip the watchdog.
+        if (array_key_exists('pings_count_as_alive', $config)) {
+            $this->pingsCountAsAlive = (bool) $config['pings_count_as_alive'];
+        }
+
         $this->loop->addPeriodicTimer($this->rateLimitInterval, function () {
             $this->messageCount = 0;
         });

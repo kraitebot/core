@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.19.0 - 2026-05-03
+
+### Fixes
+
+- [BUG FIX] **WebSocket idle-watchdog now distinguishes data-frames from protocol pings.** `BaseWebsocketClient` adds a `$pingsCountAsAlive` flag (default `true` to preserve the user-data-stream contract — quiet accounts can sit hours without order events but server pings prove TCP is alive). `BinanceApi::markPrices()` opts out (sets `false`) so the strict-data mark-price stream's idle counter only resets on actual data frames. Background: 2026-05-03 incident — mark-price went silent at 21:05, server kept pinging every ~3min, watchdog idle counter cycled 28→88→148s and never reached the 30s threshold consistently because the ping handler bumped `$lastFrameAt`. Force-reconnect didn't fire until a single ping was missed (idle 196s). Stale-price alerts fired during the 3-minute window. Now: silent data with intact TCP-keepalive trips the watchdog within 30-40s.
+- [BUG FIX] **Drift-spotter pre-flight syncs orphan candidates from the exchange before alerting.** `CheckDriftsCommand::auditOrphanOrders` now calls `apiSync()` synchronously on every orphan candidate that carries an `exchange_order_id` BEFORE deciding it's an orphan. Any candidate whose post-sync status is terminal (FILLED / CANCELLED / EXPIRED) drops out of the orphan set automatically — no notification fires, no cancel-orphan-orders lifecycle dispatched. Background: order #1219 (ETCUSDT MARKET BUY) was FILLED on Binance but stuck at PARTIALLY_FILLED locally for ~50min after the parent position was force-cancelled via MARKET-CANCEL flatten. The drift watchdog kept firing the alert every 5min even though the exchange said the order was already terminal. Now: first watchdog tick auto-syncs and falls silent.
+- [BUG FIX] **Notification body carries exchange + client order IDs.** `position_orphan_orders_detected` email body now includes per-line `exch:<exchange_order_id> client:<client_order_id>` after each Order's local id. Pushover compact body shows the local id + exchange id (single-order case) or comma-separated local ids (multi-order case) so the operator can paste straight into the exchange UI's order search instead of querying the DB to translate.
+
 ## 1.18.1 - 2026-05-03
 
 ### Fixes
