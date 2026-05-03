@@ -54,6 +54,11 @@ final class AccountFactory extends Factory
             // state. Live accounts auto-correct via the reactive flip on
             // -4061 / equivalent if the wrong default ever leaks.
             'on_hedge_mode' => false,
+            // Both default to false (Kraite-exclusive account) — matches
+            // the migration default. Tests opting into "user-also-trades"
+            // scenarios set these explicitly.
+            'allow_other_positions' => false,
+            'allow_other_orders' => false,
         ];
     }
 

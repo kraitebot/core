@@ -57,7 +57,11 @@ final class ConfirmPriceAlignmentWithDirectionJob extends BaseQueueableJob
                 'direction' => null,
                 'indicators_values' => null,
                 'indicators_timeframe' => null,
-                'indicators_synced_at' => null,
+                // "Last attempt" stamp survives invalidation — see
+                // ConcludeSymbolDirectionAtTimeframeJob for rationale.
+                // Avoids spam from the system-health watchdog when the
+                // symbol legitimately can't be concluded right now.
+                'indicators_synced_at' => now(),
                 'has_no_indicator_data' => true,
                 'pivot_r3' => null,
                 'pivot_r2' => null,
@@ -93,7 +97,7 @@ final class ConfirmPriceAlignmentWithDirectionJob extends BaseQueueableJob
                 'direction' => null,
                 'indicators_values' => null,
                 'indicators_timeframe' => null,
-                'indicators_synced_at' => null,
+                'indicators_synced_at' => now(),
                 'has_price_trend_misalignment' => true,
                 'pivot_r3' => null,
                 'pivot_r2' => null,

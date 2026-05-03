@@ -72,6 +72,8 @@ final class Account extends BaseModel
         'can_trade' => 'boolean',
         'is_active' => 'boolean',
         'on_hedge_mode' => 'boolean',
+        'allow_other_positions' => 'boolean',
+        'allow_other_orders' => 'boolean',
         'override_tp' => 'boolean',
         'override_sl' => 'boolean',
         'position_leverage_long' => 'integer',
@@ -230,6 +232,44 @@ final class Account extends BaseModel
     public function balanceHistory(): HasMany
     {
         return $this->hasMany(AccountBalanceHistory::class);
+    }
+
+    /**
+     * Source-of-truth balance figure for margin sizing.
+     *
+     * When the account is Kraite-exclusive (both `allow_other_*=false`)
+     * the full wallet balance is fair game — Kraite knows everything
+     * locked elsewhere. The helper returns `total-wallet-balance`
+     * from the most recent `account-balance` snapshot stamped by
+     * `StoreAccountBalanceJob`.
+     *
+     * When at least one `allow_other_*=true` (the operator may also
+     * be placing positions or orders directly on the exchange) the
+     * helper returns `available-balance` — the conservative figure
+     * Binance reports as free margin remaining after locked-in
+     * orders and initial margin of all open positions. Avoids
+     * blowing the margin ratio when Kraite cannot see what the
+     * operator is doing.
+     *
+     * Cold-start fallback: when no balance snapshot exists yet, or
+     * the snapshot is missing the expected key, the helper falls
+     * back to the account's persisted `margin` column.
+     */
+    public function balanceForTrading(): string
+    {
+        $key = ($this->allow_other_positions || $this->allow_other_orders)
+            ? 'available-balance'
+            : 'total-wallet-balance';
+
+        $snapshot = ApiSnapshot::getFrom($this, 'account-balance');
+
+        $value = $snapshot[$key] ?? null;
+
+        if ($value === null || $value === '') {
+            return (string) ($this->margin ?? '0');
+        }
+
+        return (string) $value;
     }
 
     /**

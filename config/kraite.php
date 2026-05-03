@@ -193,6 +193,31 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Health Watchdog
+    |--------------------------------------------------------------------------
+    |
+    | orphan_kraite_match_window_minutes:
+    |   When `accounts.allow_other_orders=true` the orphan-cleanup
+    |   watchdog cancels exchange orders only when they match the
+    |   `client_order_id` of a Kraite Order linked to a position that
+    |   transitioned to a terminal state within this rolling window.
+    |   Older orphans are treated as user-placed and left alone.
+    |
+    |   The watchdog itself runs every 5 minutes inside
+    |   `kraite:cron-check-system-health`, so a 60-minute window
+    |   gives 12 ticks of coverage for the typical post-close
+    |   ladder-leftover scenario without spilling into truly
+    |   long-stale orders.
+    */
+    'health_watchdog' => [
+        'orphan_kraite_match_window_minutes' => (int) env(
+            'HEALTH_WATCHDOG_ORPHAN_MATCH_WINDOW_MINUTES',
+            60
+        ),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | API Throttlers
     |--------------------------------------------------------------------------
     |

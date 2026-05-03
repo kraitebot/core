@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.16.0 - 2026-05-03
+
+### Features
+
+- [NEW FEATURE] **Per-account orphan-handling flags** (`accounts.allow_other_positions`, `accounts.allow_other_orders`, both nullable booleans default `false`). Toggle whether the operator is allowed to place positions / orders on the exchange account outside Kraite's control. When `false` (Kraite-exclusive), the orphan-cleanup watchdog auto-cancels stray exchange orders and auto-closes stray exchange positions. When `true`, only Kraite-leftover orphans (matched by `client_order_id` against positions Kraite closed within the configurable match window) are cancelled — operator-placed orders / positions are preserved.
+- [NEW FEATURE] **`Account::balanceForTrading()` helper.** Returns Binance `available-balance` when at least one `allow_other_*=true` (free margin remaining after locked-in orders + initial margin of all open positions — the conservative figure that keeps us safe when the user is also trading). Returns `total-wallet-balance` when both flags are `false` (Kraite-exclusive — full utilisation). Cold-start fallback to the `accounts.margin` column when no `account-balance` snapshot exists yet.
+- [NEW FEATURE] **`Kraite\Core\Support\Health\OrphanReconciler`** — pure-classification helper that compares an exchange-side snapshot (open orders + algo orders + open positions) against Kraite's local DB state and returns an `OrphanReport` of order ids to cancel + position keys to close. Per-account behaviour driven by the `allow_other_*` flag matrix. Pure PHP — no DB queries, no API calls, no Step dispatch. Comprehensive unit-test coverage.
+- [NEW FEATURE] **Orphan-cleanup as the eleventh check in `kraite:cron-check-system-health`.** Runs every 5 minutes on Binance + Bitget active accounts, executes inline (cancel + close via per-exchange API client primitives without Step orchestration), emits one Pushover + email per (account, symbol) cleanup cycle via the existing `system_health_alert` canonical. Position-key normalisation handles both hedge and one-way modes (one-way derives LONG/SHORT from `positionAmt` sign so the comparison is consistent with the local DB schema).
+- [NEW FEATURE] **`kraite.health_watchdog.orphan_kraite_match_window_minutes` config key** (default `60`, env-overridable). Defines the rolling window during which exchange orders matched to recently-closed Kraite positions are still considered Kraite-leftovers when `allow_other_orders=true`.
+
+### Fixes
+
+- [BUG FIX] **`indicators_synced_at` semantics correction.** Four sites in the conclude pipeline (timeframes-exhausted, path-invalid, missing-history, price-misalignment) now stamp `indicators_synced_at = now()` on no-conclusion outcomes instead of `null`. The column now means "last attempt", not "last successful conclusion" — critical for the system-health watchdog to distinguish "pipeline broken" from "pipeline ran, no direction emerged". Previously every uncon-concludable symbol triggered an `indicator_stale_*` alert every 5 minutes.
+- [BUG FIX] **`NotificationMessageBuilder::build()` missing match arm for `system_health_alert`.** The canonical was seeded on 2026-05-02 but the format-time match arm was never added; every `emit()` from the unified watchdog (across all 10 prior checks) silently threw `InvalidArgumentException` at format-time and never delivered Pushover or email. Match arm added — produces title + detail + detected_at + signal name body, with severity passed through. All eleven signals now deliver.
+
 ## 1.15.0 - 2026-05-03
 
 ### Features

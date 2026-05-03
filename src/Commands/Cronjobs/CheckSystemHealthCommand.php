@@ -79,6 +79,7 @@ final class CheckSystemHealthCommand extends BaseCommand
             'checkDatabaseConnection',
             'checkRedisConnection',
             'checkHorizonQueueDepth',
+            'checkOrphanReconciliation',
         ];
 
         $alertCount = 0;
@@ -449,6 +450,398 @@ final class CheckSystemHealthCommand extends BaseCommand
         return 1;
     }
 
+
+    /**
+     * #11 — Orphan reconciliation per Binance + Bitget account.
+     *
+     * Pulls the exchange's open-orders / algo-orders / positions
+     * snapshot per active account, compares against Kraite's local
+     * `opened()` Position rows + non-terminal Order rows + the rolling
+     * window of recently-closed Kraite positions, and uses
+     * `OrphanReconciler` to classify what should be cancelled / closed.
+     *
+     * Per-account behaviour follows the `allow_other_*` flags:
+     *   - both `false` (Kraite-exclusive): every orphan flagged
+     *   - `allow_other_orders=true`: only Kraite-leftover orphan orders flagged
+     *   - `allow_other_positions=true`: orphan positions ignored entirely
+     *
+     * Match-window for "Kraite-leftover orders" is configurable via
+     * `kraite.health_watchdog.orphan_kraite_match_window_minutes`
+     * (default 60). Cleanup execution is deferred to a follow-up
+     * iteration; this pass does detection + per (account, symbol)
+     * Pushover so the operator can act on confirmed orphans before
+     * we wire automatic cancel/close primitives across both
+     * exchanges.
+     */
+    private function checkOrphanReconciliation(): int
+    {
+        $accounts = Account::query()
+            ->where('is_active', true)
+            ->whereIn('api_system_id', function ($q): void {
+                $q->select('id')
+                    ->from('api_systems')
+                    ->whereIn('canonical', ['binance', 'bitget']);
+            })
+            ->get();
+
+        $alerts = 0;
+
+        foreach ($accounts as $account) {
+            try {
+                $alerts += $this->reconcileAccountOrphans($account);
+            } catch (Throwable $exception) {
+                Log::channel('jobs')->error('[SYSTEM-HEALTH] orphan reconcile threw', [
+                    'account_id' => $account->id,
+                    'error' => $exception->getMessage(),
+                ]);
+
+                $this->emit(
+                    signal: "orphan_reconcile_threw_account_{$account->id}",
+                    severity: 'medium',
+                    title: "Orphan reconciliation raised an exception (account #{$account->id})",
+                    detail: "Account {$account->name}: {$exception->getMessage()}. Watchdog will retry on next tick.",
+                );
+                $alerts++;
+            }
+        }
+
+        return $alerts;
+    }
+
+    /**
+     * Single-account reconciliation pass — gathers exchange + DB state,
+     * delegates classification to `OrphanReconciler`, emits one Pushover
+     * per (account, symbol) group of detected orphans. Returns the
+     * number of alerts emitted.
+     */
+    private function reconcileAccountOrphans(Account $account): int
+    {
+        $openResp = $account->apiQueryOpenOrders();
+        $exchangeOpenOrders = collect($openResp->result ?? []);
+
+        // Algo endpoint exists on Binance only as a separate
+        // call — Bitget bundles algos into apiQueryOpenOrders. The
+        // additional algo pull on Bitget is harmless (returns empty)
+        // but Binance's algos are otherwise invisible.
+        $algoOrders = collect();
+        try {
+            $algoResp = $account->apiQueryAlgoOrders();
+            $algoOrders = collect($algoResp->result ?? []);
+        } catch (Throwable) {
+            // Bitget / one-way without algos: silent skip.
+        }
+
+        $exchangePositionsResp = $account->apiQueryPositions();
+        $exchangePositions = collect($exchangePositionsResp->result ?? []);
+
+        $exchangeOrderMeta = $this->mapExchangeOrderMeta($exchangeOpenOrders, $algoOrders);
+
+        // PHP auto-converts numeric-string array keys to int. The
+        // OrphanReconciler signature wants `array<int, string>`, and
+        // every downstream cancel API needs a string orderId, so
+        // normalise once here rather than threading casts everywhere.
+        $exchangeOpenOrderIds = array_map(static fn ($k): string => (string) $k, array_keys($exchangeOrderMeta));
+
+        // Position-key normalisation: hedge accounts return positions
+        // already keyed `SYMBOL:LONG` / `SYMBOL:SHORT` (matching the
+        // local DB); one-way accounts return `SYMBOL:BOTH`, which has
+        // no analogue in the local schema (direction is logical, not
+        // exchange-side). Derive LONG/SHORT from `positionAmt` sign
+        // so the reconciler compares apples to apples regardless of
+        // mode. Without this, every real position on a one-way account
+        // mis-classifies as an orphan.
+        $exchangePositionKeys = [];
+        foreach ($exchangePositions as $key => $p) {
+            $amt = (string) ($p['positionAmt'] ?? '0');
+            if (\Kraite\Core\Support\Math::equal($amt, '0')) {
+                continue;
+            }
+            [$symbol, $side] = array_pad(explode(':', (string) $key), 2, 'BOTH');
+            if ($side === 'BOTH') {
+                $side = \Kraite\Core\Support\Math::gt($amt, '0') ? 'LONG' : 'SHORT';
+            }
+            $exchangePositionKeys[] = "{$symbol}:{$side}";
+        }
+
+        $kraiteOpen = $account->positions()->opened()->with('orders')->get();
+        $kraiteOpenOrderIds = $kraiteOpen
+            ->flatMap(fn ($position) => $position->orders)
+            ->whereNotIn('status', ['FILLED', 'CANCELLED', 'EXPIRED'])
+            ->pluck('exchange_order_id')
+            ->filter()
+            ->map(fn ($id): string => (string) $id)
+            ->all();
+
+        $kraitePositionKeys = $kraiteOpen
+            ->map(fn ($p): string => $p->parsed_trading_pair.':'.$p->direction)
+            ->all();
+
+        $matchWindow = (int) config(
+            'kraite.health_watchdog.orphan_kraite_match_window_minutes',
+            60
+        );
+
+        $kraiteRecentlyClosedOrderIds = $account->positions()
+            ->whereIn('status', ['closed', 'cancelled', 'failed'])
+            ->where('updated_at', '>=', now()->subMinutes($matchWindow))
+            ->with('orders')
+            ->get()
+            ->flatMap(fn ($p) => $p->orders)
+            ->pluck('exchange_order_id')
+            ->filter()
+            ->map(fn ($id): string => (string) $id)
+            ->all();
+
+        $report = \Kraite\Core\Support\Health\OrphanReconciler::reconcile(
+            exchangeOpenOrderIds: $exchangeOpenOrderIds,
+            exchangePositionKeys: $exchangePositionKeys,
+            kraiteOpenOrderIds: $kraiteOpenOrderIds,
+            kraitePositionKeys: $kraitePositionKeys,
+            kraiteRecentlyClosedOrderIds: $kraiteRecentlyClosedOrderIds,
+            allowOtherOrders: $account->allow_other_orders,
+            allowOtherPositions: $account->allow_other_positions,
+        );
+
+        if ($report->isEmpty()) {
+            return 0;
+        }
+
+        $alerts = 0;
+
+        $ordersBySymbol = collect($report->ordersToCancel)
+            ->groupBy(fn (string $orderId): string => $exchangeOrderMeta[$orderId]['symbol'] ?? 'UNKNOWN');
+
+        foreach ($ordersBySymbol as $symbol => $orderIds) {
+            $idsArray = $orderIds->all();
+            $cancelled = [];
+            $failed = [];
+
+            foreach ($idsArray as $orderId) {
+                $orderId = (string) $orderId;
+                $meta = $exchangeOrderMeta[$orderId] ?? null;
+                if ($meta === null) {
+                    continue;
+                }
+
+                try {
+                    $this->cancelOrphanOrder($account, $orderId, $symbol, (bool) $meta['is_algo']);
+                    $cancelled[] = $orderId;
+                } catch (Throwable $exception) {
+                    $failed[] = "{$orderId} ({$exception->getMessage()})";
+                    Log::channel('jobs')->error('[SYSTEM-HEALTH] orphan cancel threw', [
+                        'account_id' => $account->id,
+                        'orderId' => $orderId,
+                        'error' => $exception->getMessage(),
+                    ]);
+                }
+            }
+
+            $this->emit(
+                signal: "orphan_orders_account_{$account->id}_{$symbol}",
+                severity: 'high',
+                title: "Orphan exchange orders cleaned on {$account->name} / {$symbol}",
+                detail: sprintf(
+                    'Cancelled %d order(s); %d failed. allow_other_orders=%s, match_window=%dmin. Cancelled: %s. Failed: %s.',
+                    count($cancelled),
+                    count($failed),
+                    $account->allow_other_orders ? 'true' : 'false',
+                    $matchWindow,
+                    $cancelled === [] ? 'none' : implode(', ', $cancelled),
+                    $failed === [] ? 'none' : implode(' | ', $failed),
+                ),
+            );
+            $alerts++;
+        }
+
+        foreach ($report->positionsToClose as $key) {
+            [$symbol, $direction] = array_pad(explode(':', $key), 2, null);
+            $closed = false;
+            $error = null;
+
+            // Resolve the absolute position quantity from the live
+            // snapshot — local validators hard-require `quantity` even
+            // when `closePosition=true` makes the field advisory at the
+            // exchange level. The lookup mirrors the position-key
+            // normalisation we did earlier (one-way mode reports
+            // `BOTH`, hedge reports the explicit side).
+            $positionQuantity = $this->resolvePositionQuantity(
+                $exchangePositions,
+                $symbol,
+                $direction,
+                $account->isHedgeMode(),
+            );
+
+            try {
+                $this->closeOrphanPosition($account, $symbol, $direction, $positionQuantity);
+                $closed = true;
+            } catch (Throwable $exception) {
+                $error = $exception->getMessage();
+                Log::channel('jobs')->error('[SYSTEM-HEALTH] orphan close threw', [
+                    'account_id' => $account->id,
+                    'key' => $key,
+                    'error' => $error,
+                ]);
+            }
+
+            $this->emit(
+                signal: "orphan_position_account_{$account->id}_{$key}",
+                severity: 'high',
+                title: "Orphan exchange position {$key} on {$account->name}",
+                detail: $closed
+                    ? "Auto-closed via reduce-only MARKET (allow_other_positions=false)."
+                    : "Auto-close FAILED: {$error}. Operator must intervene manually.",
+            );
+            $alerts++;
+        }
+
+        return $alerts;
+    }
+
+    /**
+     * Cancel a single orphan order via the per-exchange API client.
+     * Bypasses the Order model entirely — we only need symbol + id
+     * for both regular and algo cancellation primitives.
+     */
+    private function cancelOrphanOrder(Account $account, string $orderId, string $symbol, bool $isAlgo): void
+    {
+        $properties = new \Kraite\Core\Support\ValueObjects\ApiProperties;
+        $properties->set('account', $account);
+
+        if ($isAlgo) {
+            $properties->set('options.symbol', $symbol);
+            $properties->set('options.algoId', $orderId);
+            $account->withApi()->cancelAlgoOrder($properties);
+
+            return;
+        }
+
+        $properties->set('options.symbol', $symbol);
+        $properties->set('options.orderId', $orderId);
+        $account->withApi()->cancelOrder($properties);
+    }
+
+    /**
+     * Close an orphan position via reduce-only MARKET. The opposing
+     * side flattens the underlying exposure regardless of mode (hedge
+     * or one-way) — Binance + Bitget both accept this primitive
+     * with `closePosition=true` so the engine ignores the qty and
+     * flat-closes whatever it finds.
+     */
+    private function closeOrphanPosition(Account $account, string $symbol, ?string $direction, string $quantity): void
+    {
+        if ($direction === null) {
+            throw new \RuntimeException("Orphan position key missing direction: {$symbol}");
+        }
+
+        if ($quantity === '0' || $quantity === '') {
+            // Race against snapshot: position dissolved between read
+            // and close. Treat as already-closed.
+            return;
+        }
+
+        // Binance's `closePosition=true` is a STOP/TP-algo-only flag
+        // (`-4136 Target strategy invalid for orderType MARKET`). The
+        // correct primitive for a flat-close MARKET is the explicit
+        // quantity + side reversal:
+        //   - LONG flat → side=SELL, quantity=|positionAmt|
+        //   - SHORT flat → side=BUY,  quantity=|positionAmt|
+        // Hedge mode encodes intent via `positionSide`; one-way mode
+        // needs `reduceOnly=true` so the order doesn't accidentally
+        // open a reverse position when the slot is already flat.
+        $properties = new \Kraite\Core\Support\ValueObjects\ApiProperties;
+        $properties->set('account', $account);
+        $properties->set('options.symbol', $symbol);
+        $properties->set('options.type', 'MARKET');
+        $properties->set('options.side', $direction === 'LONG' ? 'SELL' : 'BUY');
+        $properties->set('options.quantity', $quantity);
+
+        if ($account->isHedgeMode()) {
+            $properties->set('options.positionSide', $direction);
+        } else {
+            $properties->set('options.reduceOnly', 'true');
+        }
+
+        $account->withApi()->placeOrder($properties);
+    }
+
+    /**
+     * Walk the live exchange-positions snapshot to find the absolute
+     * quantity for a given orphan key. Hedge accounts key snapshots
+     * by explicit side (`SYMBOL:LONG` / `SYMBOL:SHORT`); one-way
+     * accounts key by `SYMBOL:BOTH` regardless of direction. Returns
+     * the absolute value as a string suitable for the placeOrder
+     * `quantity` field. Returns "0" if the position has already
+     * dissolved between the snapshot read and this call (rare race;
+     * `closePosition=true` is still safe — Binance ignores quantity
+     * when the flag is set, and our local validator only checks the
+     * field is present and non-empty).
+     */
+    private function resolvePositionQuantity(
+        \Illuminate\Support\Collection $exchangePositions,
+        string $symbol,
+        ?string $direction,
+        bool $isHedgeMode,
+    ): string {
+        $expectedKey = $isHedgeMode
+            ? "{$symbol}:{$direction}"
+            : "{$symbol}:BOTH";
+
+        $row = $exchangePositions->get($expectedKey);
+
+        if ($row === null) {
+            return '0';
+        }
+
+        $amt = (string) ($row['positionAmt'] ?? '0');
+
+        // Math::abs() doesn't exist; idiomatic absolute via subtract-
+        // from-zero when negative. Keeps decimal precision intact for
+        // the placeOrder `quantity` field — `(float)` would round long
+        // tails on tokens with high precision (PEPE-class et al).
+        $abs = \Kraite\Core\Support\Math::lt($amt, '0')
+            ? \Kraite\Core\Support\Math::sub('0', $amt)
+            : $amt;
+
+        return \Kraite\Core\Support\Math::gt($abs, '0') ? $abs : '0';
+    }
+
+    /**
+     * Build a map of exchange order id → metadata (symbol, is_algo)
+     * so the cleanup layer knows which API primitive to call without
+     * a second exchange round-trip.
+     *
+     * @param  \Illuminate\Support\Collection<int, array<string, mixed>>  $openOrders
+     * @param  \Illuminate\Support\Collection<int, array<string, mixed>>  $algoOrders
+     * @return array<string, array{symbol: string, is_algo: bool}>
+     */
+    private function mapExchangeOrderMeta(
+        \Illuminate\Support\Collection $openOrders,
+        \Illuminate\Support\Collection $algoOrders,
+    ): array {
+        $map = [];
+
+        foreach ($openOrders as $o) {
+            $id = $o['orderId'] ?? null;
+            if ($id !== null) {
+                $map[(string) $id] = [
+                    'symbol' => (string) ($o['symbol'] ?? 'UNKNOWN'),
+                    'is_algo' => false,
+                ];
+            }
+        }
+
+        foreach ($algoOrders as $a) {
+            $id = $a['algoId'] ?? ($a['orderId'] ?? null);
+            if ($id !== null) {
+                $map[(string) $id] = [
+                    'symbol' => (string) ($a['symbol'] ?? 'UNKNOWN'),
+                    'is_algo' => true,
+                ];
+            }
+        }
+
+        return $map;
+    }
 
     /**
      * Shared eligibility predicate used by every per-symbol check.

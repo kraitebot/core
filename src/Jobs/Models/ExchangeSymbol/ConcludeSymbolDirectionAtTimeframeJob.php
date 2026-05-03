@@ -251,7 +251,14 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
                 'direction' => null,
                 'indicators_values' => null,
                 'indicators_timeframe' => null,
-                'indicators_synced_at' => null,
+                // Stamp the attempt time even though no direction
+                // emerged — `indicators_synced_at` is "last time the
+                // pipeline ran end-to-end on this symbol", not "last
+                // successful conclusion". Without this stamp, the
+                // system-health watchdog flags every uncon-concludable
+                // symbol every 5min until the next attempt, flooding
+                // the operator with false-positive staleness alerts.
+                'indicators_synced_at' => Carbon::now(),
                 'has_invalid_indicator_direction' => true,
                 'pivot_r3' => null,
                 'pivot_r2' => null,
@@ -333,12 +340,13 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
         }
 
         if (! $pathValid) {
-            // Path invalid - invalidate symbol
+            // Path invalid - invalidate symbol but keep the attempt stamp
+            // (see exhaustion branch above for rationale).
             $exchangeSymbol->updateSaving([
                 'direction' => null,
                 'indicators_values' => null,
                 'indicators_timeframe' => null,
-                'indicators_synced_at' => null,
+                'indicators_synced_at' => Carbon::now(),
                 'has_early_direction_change' => true,
                 'pivot_r3' => null,
                 'pivot_r2' => null,

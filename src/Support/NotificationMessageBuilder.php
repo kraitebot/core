@@ -1157,6 +1157,36 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'system_health_alert' => (function () use ($context) {
+                $signal = (string) ($context['signal'] ?? 'unknown_signal');
+                $severityValue = (string) ($context['severity'] ?? 'high');
+                $title = (string) ($context['title'] ?? 'System health alert');
+                $detail = (string) ($context['detail'] ?? '(no detail)');
+                $detectedAt = (string) ($context['detected_at'] ?? '');
+
+                $severityEnum = match (mb_strtolower($severityValue)) {
+                    'critical' => NotificationSeverity::Critical,
+                    'medium' => NotificationSeverity::Medium,
+                    default => NotificationSeverity::High,
+                };
+
+                $emailBody = "{$title}\n\n{$detail}";
+                if ($detectedAt !== '') {
+                    $emailBody .= "\n\nDetected at: {$detectedAt}";
+                }
+                $emailBody .= "\nSignal: {$signal}";
+
+                return [
+                    'severity' => $severityEnum,
+                    'title' => $title,
+                    'emailMessage' => $emailBody,
+                    'pushoverMessage' => "[{$severityValue}] {$title}\n{$detail}",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 0,
+                ];
+            })(),
+
             // Fail loud on unknown canonicals. Previously this returned a
             // generic placeholder notification — meaning a typo at a call
             // site shipped an incoherent live notification with no runtime
