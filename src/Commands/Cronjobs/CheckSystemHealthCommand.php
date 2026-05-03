@@ -73,7 +73,16 @@ final class CheckSystemHealthCommand extends BaseCommand
             'checkIndicatorFreshness',
             'checkAccountBalanceFreshness',
             'checkDaemonHeartbeat',
-            'checkDispatcherTickRate',
+            // 'checkDispatcherTickRate' disabled 2026-05-03: signal
+            // mismatch — `steps_dispatcher.last_selected_at` updates
+            // only on root-step CREATE (via `StepsDispatcher::getNextGroup()`),
+            // not on every dispatch attempt. During quiet periods
+            // between minute-level crons MAX naturally exceeds 60s
+            // and fires false-positive alerts even though Horizon is
+            // healthy and the dispatcher is processing. Re-enable
+            // after the step-dispatcher path package gains a true
+            // per-tick stamp column (column on `steps_dispatcher`
+            // written by every dispatch attempt regardless of work).
             'checkSchedulerLiveness',
             'checkFailedJobsOverflow',
             'checkDatabaseConnection',
