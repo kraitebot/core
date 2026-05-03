@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.18.0 - 2026-05-03
+
+### Fixes
+
+- [BUG FIX] **`NotificationService::send` failure containment.** The `$user->notify()` call now runs inside a `try/catch (Throwable)` block. Channel exceptions (Pushover 429, SMTP timeout, expired token, queue connection blip) are logged as `[NotificationService] notify() failed; swallowed to protect the caller` and the method returns `false` instead of propagating up. Notifications are observability — a thrown channel exception used to cascade into "process death → respawn → mark prices stale → watchdog fires more notifications → Pushover 429 again". Confirmed by the 2026-05-03 afternoon incident on the price daemon.
+
+### Improvements
+
+- [IMPROVED] **Dropped the dead `accounts.margin_ratio_threshold_to_notify` column.** The column was scaffolded with the intent of warning the operator when an account's margin ratio approached liquidation territory, but the bot does not own liquidation handling — that is explicitly out of scope (operators handle liquidations directly via the exchange UI). Zero readers in production code, the migration default (1.50) and the `AccountFactory` default (0.80) disagreed on the scale, and the dashboard stub used the unrelated Binance-UI 0–100 percent. Dropped via migration with a corresponding `down()` rollback. Out of product scope, retired rather than wired.
+
 ## 1.17.0 - 2026-05-03
 
 ### Improvements

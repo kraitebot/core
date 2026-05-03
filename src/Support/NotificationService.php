@@ -210,17 +210,37 @@ final class NotificationService
             $additionalParameters['priority'] = $messageData['priority'];
         }
 
-        // Send notification using Laravel's notification system
-        $user->notify(
-            new AlertNotification(
-                message: $messageData['emailMessage'],
-                title: $messageData['title'],
-                canonical: $canonical,
-                severity: $messageData['severity'],
-                pushoverMessage: $messageData['pushoverMessage'],
-                additionalParameters: $additionalParameters
-            )
-        );
+        // Send notification using Laravel's notification system.
+        //
+        // Failure-containment contract: a thrown channel exception
+        // (Pushover 429, SMTP timeout, expired token, queue blip,
+        // anything) MUST NOT propagate up to the caller. Notifications
+        // are observability — the price daemon, the user-data daemon,
+        // the health watchdog all call this synchronously, and a
+        // bubbling exception cascades into "process dies → respawn →
+        // mark prices stale → watchdog fires more notifications →
+        // Pushover 429 again". 2026-05-03 incident.
+        try {
+            $user->notify(
+                new AlertNotification(
+                    message: $messageData['emailMessage'],
+                    title: $messageData['title'],
+                    canonical: $canonical,
+                    severity: $messageData['severity'],
+                    pushoverMessage: $messageData['pushoverMessage'],
+                    additionalParameters: $additionalParameters
+                )
+            );
+        } catch (Throwable $e) {
+            Log::warning('[NotificationService] notify() failed; swallowed to protect the caller', [
+                'canonical' => $canonical,
+                'recipient_id' => $user->id ?? null,
+                'channel_error' => $e->getMessage(),
+                'channel_exception' => $e::class,
+            ]);
+
+            return false;
+        }
 
         // Cache key already set atomically before sending (for cache-based throttling)
         // No need to set it again here

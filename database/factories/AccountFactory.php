@@ -37,7 +37,6 @@ final class AccountFactory extends Factory
             'margin_percentage_long' => 5.00,
             'margin_percentage_short' => 5.00,
             'profit_percentage' => 0.01,
-            'margin_ratio_threshold_to_notify' => 0.80,
             'total_limit_orders_filled_to_notify' => 3,
             'stop_market_initial_percentage' => 0.05,
             'total_positions_short' => 0,

@@ -138,7 +138,6 @@ final class DashboardApiController extends Controller
         return [
             'gross_revenue' => round(random_int(1000, 5000) + (random_int(0, 99) / 100), precision: 2),
             'daily_gross' => round(random_int(50, 300) + (random_int(0, 99) / 100), precision: 2),
-            'margin_ratio' => round(random_int(20, 100) + (random_int(0, 99) / 100), precision: 2),
             'drawdown' => round(random_int(-100, -5) + (random_int(0, 99) / 100), precision: 2),
             'clean_revenue' => round(random_int(500, 4000) + (random_int(0, 99) / 100), precision: 2),
             'avg_variation' => round(random_int(-50, 50) + (random_int(0, 99) / 100), precision: 2),
