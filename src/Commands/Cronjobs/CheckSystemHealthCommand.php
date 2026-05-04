@@ -132,12 +132,19 @@ final class CheckSystemHealthCommand extends BaseCommand
     }
 
     /**
-     * #0 — `exchange_symbols.mark_price_synced_at` per symbol that's
-     * tradeable OR carries an open position. The price daemon writes
-     * this column on every WS frame; staleness past 60s = the daemon
-     * is no longer publishing fresh prices for a symbol the bot has
-     * skin in. Same predicate as the indicator check to keep the
-     * alert volume actionable across both.
+     * #0 — `exchange_symbol_prices.mark_price_synced_at` per symbol
+     * that's tradeable OR carries an open position. The price daemon
+     * writes this column on every WS frame; staleness past 60s =
+     * the daemon is no longer publishing fresh prices for a symbol
+     * the bot has skin in. Same predicate as the indicator check
+     * to keep the alert volume actionable across both.
+     *
+     * Cutover note (2026-05-04): the freshness column moved from
+     * `exchange_symbols` to the dedicated `exchange_symbol_prices`
+     * sidecar. The query joins on `exchange_symbol_id` so
+     * eligibility predicates (tradeable / open-position) still
+     * apply on the parent table while the freshness filter
+     * targets the narrow table.
      */
     private function checkMarkPriceFreshness(): int
     {
@@ -145,10 +152,16 @@ final class CheckSystemHealthCommand extends BaseCommand
 
         $stale = $this->eligibleExchangeSymbolsQuery()
             ->notDelisted()
-            ->whereNotNull('mark_price_synced_at')
-            ->where('mark_price_synced_at', '<', $threshold)
-            ->orderBy('mark_price_synced_at')
-            ->get(['id', 'token', 'quote', 'mark_price_synced_at']);
+            ->join('exchange_symbol_prices', 'exchange_symbol_prices.exchange_symbol_id', '=', 'exchange_symbols.id')
+            ->whereNotNull('exchange_symbol_prices.mark_price_synced_at')
+            ->where('exchange_symbol_prices.mark_price_synced_at', '<', $threshold)
+            ->orderBy('exchange_symbol_prices.mark_price_synced_at')
+            ->get([
+                'exchange_symbols.id',
+                'exchange_symbols.token',
+                'exchange_symbols.quote',
+                'exchange_symbol_prices.mark_price_synced_at',
+            ]);
 
         $alerts = 0;
         foreach ($stale as $row) {
@@ -158,7 +171,7 @@ final class CheckSystemHealthCommand extends BaseCommand
                 signal: "mark_price_stale_{$pair}",
                 severity: 'high',
                 title: "Mark price stale for {$pair}",
-                detail: "exchange_symbols.mark_price_synced_at is {$age}s old (threshold: ".self::MARK_PRICE_STALENESS_SECONDS."s) for exchange_symbol #{$row->id}. Price daemon is no longer publishing fresh prices for a symbol the bot has skin in (open position or tradeable).",
+                detail: "exchange_symbol_prices.mark_price_synced_at is {$age}s old (threshold: ".self::MARK_PRICE_STALENESS_SECONDS."s) for exchange_symbol #{$row->id}. Price daemon is no longer publishing fresh prices for a symbol the bot has skin in (open position or tradeable).",
             );
             $alerts++;
         }

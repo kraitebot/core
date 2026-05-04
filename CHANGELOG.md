@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.25.0 - 2026-05-04
+
+### Features
+
+- [NEW FEATURE] **`exchange_symbol_prices` sidecar table.** Splits the hot `mark_price` + `mark_price_synced_at` pair out of `exchange_symbols` into a dedicated 1:1 narrow table so the 1-second-cadence price daemon's bulk UPDATE no longer contends with every other writer of `exchange_symbols` (correlation/elasticity refresh, indicator pipeline, etc.). Phase A cutover: new table + INSERT...SELECT backfill; daemon write paths cut over in the same release; old columns on `exchange_symbols` stay populated as a historical snapshot until a future migration drops them after parity soak.
+- [NEW FEATURE] **`kraite:purge-old-data` command.** Single artisan command that purges `api_request_logs` (5-day retention) + `model_logs` (30-day retention) on a daily schedule; replaces the standalone `purge-model-logs` schedule entry. Chunked deletes (default 1000 rows/batch) avoid long table locks; `--dry-run` previews counts.
+- [NEW FEATURE] **Lifecycle scenario tables (4).** Backing schema for the admin position-lifecycle configurator — `lifecycle_scenarios`, `lifecycle_scenario_tokens` (with `frozen_config` JSON snapshot), `lifecycle_scenario_frames`, `lifecycle_scenario_frame_events`. Event-sourced semantics: each frame stores user events; computed state is always derived, never persisted.
+
+### Improvements
+
+- [IMPROVED] **`api_request_logs.payload` nulled on 200-class responses.** `BaseApiClient::recordSuccessfulResponse()` now sets `payload = null` once `http_response_code < 400`. Successful payloads provide no forensic value and dominated row size (~70%); errors keep the original payload because they take a different code path. Combined with the new 5-day retention, hot table size dropped 14 GB → 2 GB after backfill + OPTIMIZE on production.
+- [IMPROVED] **`mark_price_synced_at` index dropped from `exchange_symbol_prices`.** Per-tick rewrite of ~500 secondary-index entries was the dominant cost behind the 100s mark-price UPDATE blocker. Watchdog read on a 2.3K-row, 0.16 MB table is essentially free without the index — net win on every tick.
+- [IMPROVED] **`#0 mark-price freshness` health check joins through the sidecar.** Eligibility predicates (tradeable / open-position) stay on `exchange_symbols`; freshness filter targets `exchange_symbol_prices.mark_price_synced_at` post-cutover.
+
 ## 1.24.0 - 2026-05-04
 
 ### Features

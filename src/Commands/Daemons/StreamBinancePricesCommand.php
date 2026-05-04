@@ -147,6 +147,15 @@ final class StreamBinancePricesCommand extends Command
      * price refresh — their DB-log cost and model-hydration overhead
      * would dominate the daemon's CPU budget. Raw UPDATE keeps the write
      * path deterministic and cheap.
+     *
+     * Cutover note (2026-05-04): writes go to the dedicated
+     * `exchange_symbol_prices` sidecar instead of `exchange_symbols`.
+     * The sidecar has no other writers, so the daemon's row locks
+     * no longer contend with the indicator pipeline / direction
+     * burst at :30 / api_request_logs INSERTs. Memory ref:
+     * db_lock_contention_mark_price_daemon.md. Reads on
+     * `ExchangeSymbol::$mark_price` are proxied through the
+     * accessor on the model so consumers stay zero-touch.
      */
     private function updateExchangeSymbols(array $prices): void
     {
@@ -169,7 +178,7 @@ final class StreamBinancePricesCommand extends Command
 
         foreach (array_chunk($batch, 500) as $chunk) {
             $ids = array_column($chunk, 'id');
-            $case = 'CASE id';
+            $case = 'CASE exchange_symbol_id';
             foreach ($chunk as $row) {
                 $case .= ' WHEN '.(int) $row['id'].' THEN '.$this->quoteNumeric($row['price']);
             }
@@ -179,7 +188,7 @@ final class StreamBinancePricesCommand extends Command
             $ts = $now->toDateTimeString();
 
             DB::statement(
-                "UPDATE exchange_symbols SET mark_price = {$case}, mark_price_synced_at = ? WHERE id IN ({$idsList})",
+                "UPDATE exchange_symbol_prices SET mark_price = {$case}, mark_price_synced_at = ? WHERE exchange_symbol_id IN ({$idsList})",
                 [$ts]
             );
         }

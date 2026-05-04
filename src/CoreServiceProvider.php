@@ -25,6 +25,7 @@ use Kraite\Core\Commands\Cronjobs\FetchKlinesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeCandlesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeFailedBacktestedKlinesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeModelLogsCommand;
+use Kraite\Core\Commands\Cronjobs\PurgeOldDataCommand;
 use Kraite\Core\Commands\Cronjobs\CheckBinanceListenKeysStaleCommand;
 use Kraite\Core\Commands\Cronjobs\CheckSystemHealthCommand;
 use Kraite\Core\Commands\Cronjobs\RefreshBinanceListenKeysCommand;
@@ -97,6 +98,7 @@ final class CoreServiceProvider extends ServiceProvider
             PurgeCandlesCommand::class,
             PurgeFailedBacktestedKlinesCommand::class,
             PurgeModelLogsCommand::class,
+            PurgeOldDataCommand::class,
             RefreshExchangeSymbolsCommand::class,
             StoreAccountsBalancesCommand::class,
             StreamBinancePricesCommand::class,

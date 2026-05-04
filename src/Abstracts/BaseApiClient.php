@@ -192,6 +192,14 @@ abstract class BaseApiClient
         $logData['response'] = json_decode((string) $response->getBody(), associative: true);
         $logData['http_headers_returned'] = $response->getHeaders();
 
+        // Drop the request payload once the call is confirmed successful.
+        // The payload column dominates row size (~70% on average) and successful
+        // responses provide no forensic value — failures, retries, and 4xx/5xx
+        // paths still keep the original payload because they take a different
+        // code path (handleRequestException / retryRequest) that does not null
+        // it out.
+        $logData['payload'] = null;
+
         $this->updateRequestLogData($logData);
 
         if ($this->exceptionHandler) {

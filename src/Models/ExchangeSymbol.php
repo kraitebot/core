@@ -7,6 +7,7 @@ namespace Kraite\Core\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Kraite\Core\Abstracts\BaseModel;
 use Kraite\Core\Concerns\ExchangeSymbol\HasAccessors;
@@ -139,6 +140,84 @@ final class ExchangeSymbol extends BaseModel
     public function apiSystem(): BelongsTo
     {
         return $this->belongsTo(ApiSystem::class);
+    }
+
+    /**
+     * Sidecar 1:1 carrying the hot mark-price pair. The price
+     * daemon writes here on every WS tick; reads go through the
+     * `mark_price` / `mark_price_synced_at` accessors that proxy
+     * to this row first, falling back to the legacy column on
+     * `exchange_symbols` during the cutover-soak window.
+     *
+     * @return HasOne<ExchangeSymbolPrice, $this>
+     */
+    public function priceRow(): HasOne
+    {
+        return $this->hasOne(ExchangeSymbolPrice::class);
+    }
+
+    /**
+     * Read mark_price from the sidecar table when present; fall
+     * back to the legacy column on `exchange_symbols` otherwise.
+     * Both are normalised to the sidecar's 8-decimal precision so
+     * consumers get a consistent format regardless of which side
+     * served the read (the legacy column on the parent table is
+     * decimal(36,18), the sidecar is decimal(20,8)). Once the
+     * cutover-soak migration drops the legacy column, the
+     * fallback is removed in a follow-up commit and this
+     * accessor reads only from the relation.
+     */
+    public function getMarkPriceAttribute($value): ?string
+    {
+        $sidecar = $this->priceRow;
+
+        if ($sidecar !== null && $sidecar->mark_price !== null) {
+            return self::normalisePriceString((string) $sidecar->mark_price);
+        }
+
+        return $value !== null ? self::normalisePriceString((string) $value) : null;
+    }
+
+    /**
+     * Read mark_price_synced_at from the sidecar table when
+     * present; fall back to the legacy column otherwise.
+     * Returns a Carbon-flavoured datetime — Eloquent may produce
+     * either `Illuminate\Support\Carbon` or `Carbon\CarbonImmutable`
+     * depending on the cast configuration; the broader
+     * `Carbon\CarbonInterface` accommodates both.
+     */
+    public function getMarkPriceSyncedAtAttribute($value): ?\Carbon\CarbonInterface
+    {
+        $sidecar = $this->priceRow;
+
+        if ($sidecar !== null && $sidecar->mark_price_synced_at !== null) {
+            return $sidecar->mark_price_synced_at;
+        }
+
+        if ($value === null) {
+            return null;
+        }
+
+        return $value instanceof \Carbon\CarbonInterface
+            ? $value
+            : \Illuminate\Support\Carbon::parse($value);
+    }
+
+    /**
+     * Normalise a decimal price string to the sidecar's 8-decimal
+     * representation. The legacy `exchange_symbols.mark_price`
+     * column is decimal(36,18); reads through that path return
+     * an over-padded string ("7.770000000000000000") that doesn't
+     * match the sidecar's 8-decimal format. Trim back to the
+     * canonical 8-decimal so consumers get one shape.
+     */
+    private static function normalisePriceString(string $value): string
+    {
+        if (! is_numeric($value)) {
+            return $value;
+        }
+
+        return number_format((float) $value, 8, '.', '');
     }
 
     protected static function newFactory(): ExchangeSymbolFactory
