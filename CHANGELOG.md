@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.23.0 - 2026-05-04
+
+### Features
+
+- [NEW FEATURE] **Telegram as a third notification channel.** `AlertNotification` exposes `toTelegram()` alongside the existing `toMail()` / `toPushover()` methods. Channel selection driven by the user's `notification_channels` array (string `'telegram'` resolves to `\NotificationChannels\Telegram\TelegramChannel::class` via the `User` accessor). Routing target: `users.telegram_chat_id` (new nullable column) for real users, `kraite.admin_telegram_chat_id` (new nullable column) for the virtual admin path through `Kraite::admin()`. HTML parse-mode, escape-safe. Message body falls back `telegramMessage → pushoverMessage → message` so canonicals get a sensible default without authoring three variants. End-to-end live verified via `test:notification slow_query_detected` — Pushover + Mail + Telegram all delivered.
+- [NEW FEATURE] **Auto-welcome on first chat_id pairing.** `UserObserver` watches `users.telegram_chat_id` transitions (created with a value OR null→set on update) and fires a one-off `sendMessage` directly through the Telegram Bot API. `KraiteObserver` mirrors the behaviour for `kraite.admin_telegram_chat_id`. Welcome body explicitly states the channel is one-way ("alerts only — replies aren't read"). Failure-contained: bad token / Telegram 401 / network blip → log + swallow, never aborts the surrounding model save.
+- [NEW FEATURE] **Disk-pressure health check.** Twelfth check on `CheckSystemHealthCommand` (`checkDiskPressure`). Reads `disk_free_space('/')` / `disk_total_space('/')`; emits `disk_pressure_low` signal when free < 15%. Body includes free / total / percent breakdown so the operator can `du -sh` straight from the alert. Logs grow faster than DB rows on this server (`horizon.log` 43 MB with .1..10 rotated copies); disk pressure shows up before any other capacity signal.
+
+### Improvements
+
+- [IMPROVED] **`KraiteSeeder` seeds `admin_telegram_chat_id` from `ADMIN_USER_TELEGRAM_CHAT_ID` env via `kraite.admin_user_telegram_chat_id` config key.** Mirrors the existing pushover-key flow.
+
 ## 1.22.0 - 2026-05-04
 
 ### Fixes

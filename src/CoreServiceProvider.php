@@ -66,6 +66,7 @@ use Kraite\Core\Observers\ApiSystemObserver;
 use Kraite\Core\Observers\ExchangeSymbolObserver;
 use Kraite\Core\Observers\ForbiddenHostnameObserver;
 use Kraite\Core\Observers\IndicatorObserver;
+use Kraite\Core\Observers\KraiteObserver;
 use Kraite\Core\Observers\NotificationLogObserver;
 use Kraite\Core\Observers\OrderObserver;
 use Kraite\Core\Observers\PositionObserver;
@@ -140,6 +141,7 @@ final class CoreServiceProvider extends ServiceProvider
         ApiSystem::observe(ApiSystemObserver::class);
         ExchangeSymbol::observe(ExchangeSymbolObserver::class);
         Indicator::observe(IndicatorObserver::class);
+        Kraite::observe(KraiteObserver::class);
         NotificationLog::observe(NotificationLogObserver::class);
         Order::observe(OrderObserver::class);
         Position::observe(PositionObserver::class);

@@ -59,6 +59,14 @@ final class CheckSystemHealthCommand extends BaseCommand
 
     private const SCHEDULER_LIVENESS_SECONDS = 120;
 
+    /**
+     * Disk-pressure threshold. Below this percent of free space on
+     * the root filesystem, emit a high-severity alert. Logs grow
+     * faster than DB rows on this server (see horizon.log size),
+     * so disk pressure shows up before any other capacity signal.
+     */
+    private const DISK_FREE_PERCENT_MIN = 15;
+
     private const HORIZON_QUEUES = ['default', 'priority', 'positions', 'orders', 'cronjobs', 'indicators', 'user-data-stream'];
 
     protected $signature = 'kraite:cron-check-system-health
@@ -89,6 +97,7 @@ final class CheckSystemHealthCommand extends BaseCommand
             'checkRedisConnection',
             'checkHorizonQueueDepth',
             'checkOrphanReconciliation',
+            'checkDiskPressure',
         ];
 
         $alertCount = 0;
@@ -454,6 +463,56 @@ final class CheckSystemHealthCommand extends BaseCommand
             severity: 'medium',
             title: 'Horizon queue depth high',
             detail: "Pending queue depth across canonical queues = {$depth} (threshold: ".self::HORIZON_QUEUE_DEPTH_THRESHOLD."). Workers are not keeping up — investigate stuck jobs or insufficient processes.",
+        );
+
+        return 1;
+    }
+
+    /**
+     * #12 — Disk pressure on the root filesystem.
+     *
+     * Logs grow faster than DB rows on this server (see horizon.log
+     * size — 43 MB with .1..10 rotated copies). Disk pressure shows
+     * up before any other capacity signal: failed_jobs writes start
+     * failing when /var is full, supervisor stdout writes block, and
+     * the price daemon's reactphp loop wedges on log writes that
+     * can't flush.
+     *
+     * Threshold: 15 % free. Below that, alert with current free /
+     * total / used breakdown so the operator can `du -sh /var/log`
+     * and friends straight from the alert body.
+     *
+     * Free / total reads use PHP's `disk_free_space()` /
+     * `disk_total_space()` against `/`. Both can return false on
+     * permission failures; we treat that as "can't tell, don't
+     * fire" — separate `check_threw_*` envelope handles the
+     * exception path through the `handle()` runner if PHP itself
+     * throws.
+     */
+    private function checkDiskPressure(): int
+    {
+        $free = @disk_free_space('/');
+        $total = @disk_total_space('/');
+
+        if ($free === false || $total === false || $total <= 0) {
+            return 0;
+        }
+
+        $freePercent = ($free / $total) * 100;
+
+        if ($freePercent >= self::DISK_FREE_PERCENT_MIN) {
+            return 0;
+        }
+
+        $freeGib = number_format($free / (1024 ** 3), 2);
+        $totalGib = number_format($total / (1024 ** 3), 2);
+        $freePercentStr = number_format($freePercent, 1);
+
+        $this->emit(
+            signal: 'disk_pressure_low',
+            severity: 'high',
+            title: 'Disk pressure on root filesystem',
+            detail: "Root filesystem free = {$freeGib} GiB / {$totalGib} GiB ({$freePercentStr}% free, threshold: ".self::DISK_FREE_PERCENT_MIN."%). Logs and supervisor stdout writes will start failing before any other capacity signal. Investigate `du -sh /var/log /home/waygou/ingestion.kraite.com/storage/logs` and rotate / prune.",
         );
 
         return 1;

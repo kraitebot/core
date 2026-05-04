@@ -228,7 +228,8 @@ final class NotificationService
                     canonical: $canonical,
                     severity: $messageData['severity'],
                     pushoverMessage: $messageData['pushoverMessage'],
-                    additionalParameters: $additionalParameters
+                    additionalParameters: $additionalParameters,
+                    telegramMessage: $messageData['telegramMessage'] ?? null,
                 )
             );
         } catch (Throwable $e) {

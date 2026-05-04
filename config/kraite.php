@@ -15,6 +15,7 @@ return [
     'admin_user_pushover_application_key' => env('ADMIN_USER_PUSHOVER_APPLICATION_KEY'),
     'admin_user_pushover_user_key' => env('ADMIN_USER_PUSHOVER_USER_KEY'),
     'admin_user_pushover_key' => env('ADMIN_USER_PUSHOVER_KEY'),
+    'admin_user_telegram_chat_id' => env('ADMIN_USER_TELEGRAM_CHAT_ID'),
 
     /*
     |--------------------------------------------------------------------------

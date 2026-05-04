@@ -26,6 +26,7 @@ use RuntimeException;
  * @property string $password
  * @property string|null $remember_token
  * @property string|null $pushover_key
+ * @property string|null $telegram_chat_id
  * @property array<int, string> $notification_channels
  * @property array|null $behaviours
  * @property \Illuminate\Support\Carbon|null $last_logged_in_at
@@ -391,6 +392,19 @@ final class User extends Authenticatable
     }
 
     /**
+     * Route notifications for the Telegram channel.
+     *
+     * Returns the user's `telegram_chat_id` (captured once after they
+     * DM the bot configured via `TELEGRAM_BOT_TOKEN`). When null,
+     * Laravel's notification dispatcher silently skips the channel —
+     * no exception, no log noise.
+     */
+    public function routeNotificationForTelegram($notification): ?string
+    {
+        return $this->telegram_chat_id;
+    }
+
+    /**
      * Get the notification channels with proper class mapping.
      *
      * @return array<int, string>
@@ -407,6 +421,7 @@ final class User extends Authenticatable
             return match ($channel) {
                 'pushover' => PushoverChannel::class,
                 'mail' => 'mail',
+                'telegram' => \NotificationChannels\Telegram\TelegramChannel::class,
                 default => $channel
             };
         }, array: $channels);

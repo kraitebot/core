@@ -10,6 +10,7 @@ use Illuminate\Notifications\Notification;
 use Kraite\Core\Mail\AlertMail;
 use NotificationChannels\Pushover\PushoverChannel;
 use NotificationChannels\Pushover\PushoverMessage;
+use NotificationChannels\Telegram\TelegramMessage;
 
 /**
  * AlertNotification
@@ -35,6 +36,7 @@ final class AlertNotification extends Notification
      * @param  string|null  $pushoverMessage  Override message for Pushover (defaults to $message)
      * @param  string|null  $exchange  Exchange name for email subject (e.g., 'binance', 'bybit')
      * @param  string|null  $serverIp  Server IP address for email subject (e.g., '192.168.1.100')
+     * @param  string|null  $telegramMessage  Override message for Telegram (defaults to $pushoverMessage if present, else $message — keeps the chat-friendly compact format aligned across the two terse channels)
      */
     public function __construct(
         public string $message,
@@ -45,7 +47,8 @@ final class AlertNotification extends Notification
         public ?\Kraite\Core\Enums\NotificationSeverity $severity = null,
         public ?string $pushoverMessage = null,
         public ?string $exchange = null,
-        public ?string $serverIp = null
+        public ?string $serverIp = null,
+        public ?string $telegramMessage = null,
     ) {}
 
     /**
@@ -134,6 +137,40 @@ final class AlertNotification extends Notification
         }
 
         return $message;
+    }
+
+    /**
+     * Get the Telegram representation of the notification.
+     *
+     * Routes to `$notifiable->routeNotificationForTelegram()` (the
+     * user's `telegram_chat_id`). Falls back to pushover message
+     * text if `telegramMessage` wasn't explicitly set — both
+     * channels render in compact form, so the same body usually
+     * fits.
+     *
+     * @param  mixed  $notifiable
+     */
+    public function toTelegram($notifiable): TelegramMessage
+    {
+        $body = $this->telegramMessage ?? $this->pushoverMessage ?? $this->message;
+
+        $title = $this->title;
+        if (config('kraite.prefix_hostname_on_notifications', false)) {
+            $hostname = gethostname();
+            $title = "[{$hostname}] {$title}";
+        }
+
+        // Telegram MarkdownV2 reserves a tight set of special chars
+        // that must be backslash-escaped EVERYWHERE they appear.
+        // Easier: use HTML parse mode — only `<`, `>`, `&` need
+        // escaping in the body. Title in <b>...</b>.
+        $safeTitle = htmlspecialchars($title, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $safeBody = htmlspecialchars($body, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+        return TelegramMessage::create()
+            ->to((string) $notifiable->telegram_chat_id)
+            ->content("<b>{$safeTitle}</b>\n\n{$safeBody}")
+            ->options(['parse_mode' => 'HTML']);
     }
 
     /**

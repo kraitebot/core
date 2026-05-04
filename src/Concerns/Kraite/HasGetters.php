@@ -28,6 +28,7 @@ trait HasGetters
                 $user->setAttribute('name', 'System Administrator');
                 $user->setAttribute('email', $engine->email);
                 $user->setAttribute('pushover_key', $engine->admin_pushover_user_key);
+                $user->setAttribute('telegram_chat_id', $engine->admin_telegram_chat_id ?? null);
                 $user->setAttribute('notification_channels', $engine->notification_channels ?? ['pushover']);
                 $user->setAttribute('is_active', true);
             });
