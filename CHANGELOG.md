@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.22.0 - 2026-05-04
+
+### Fixes
+
+- [BUG FIX] **`ProcessUserDataEventJob::applyToOrderModel` no longer overwrites `orders.quantity` from WS pushes.** The previous shape wrote `event->filledQuantity` (cumulative-executed amount) into the local `orders.quantity` column — which is supposed to hold the ORIGINAL placed quantity. During multi-fill MARKETs on thin books, intermediate `ORDER_TRADE_UPDATE` PARTIALLY_FILLED frames carry e.g. `filledQuantity=18.5` of an `originalQuantity=81.9` order, and that 18.5 was overwriting the local row's 81.9 — only to be later "corrected" back to 81.9 on the FILLED frame, with out-of-order PARTIALLY_FILLED frames re-corrupting it again. The OrderObserver-side capture of `reference_quantity` could land at any moment in that window, persisting a stale value. `ActivatePositionJob::validateReferenceFields` then threw `MARKET order quantity drift: reference_quantity=18.5, quantity=81.9` and tipped the lifecycle into the cancel-cascade for a position that had actually filled correctly on the exchange. Reproduced 2026-05-04 04:48 on ONDOUSDT position #271 — close-cascade flat-closed the long near breakeven, fees ate the rest = negative trade. Fix: WS push only updates `status` and `price` (from `averagePrice`); `quantity` stays frozen at placement. Cumulative fill progress already lives in `api_data_stream` rows. Pinned with four TDD cases covering PARTIALLY_FILLED corruption, FILLED no-op, out-of-order regression, and the happy NEW→FILLED progression.
+
 ## 1.21.0 - 2026-05-04
 
 ### Fixes

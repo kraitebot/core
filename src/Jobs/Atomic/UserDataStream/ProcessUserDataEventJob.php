@@ -245,14 +245,21 @@ class ProcessUserDataEventJob extends BaseQueueableJob
             ? $event->averagePrice
             : $event->price;
 
-        $quantity = $event->filledQuantity !== null && Math::gt($event->filledQuantity, '0')
-            ? $event->filledQuantity
-            : $event->originalQuantity;
-
+        // `orders.quantity` holds the ORIGINAL placed quantity. WS
+        // events carry `filledQuantity` (cumulative-executed) — which
+        // is NOT the same thing and must never overwrite the placed
+        // value. The 2026-05-04 ONDO #271 incident corrupted the
+        // local row to mid-fill values (18.5 of 81.9), causing the
+        // OrderObserver-side capture of `reference_quantity` to be
+        // wrong, which in turn made `ActivatePositionJob` throw on
+        // a fake quantity drift and tipped the lifecycle into the
+        // cancel-cascade. Cumulative fill progress lives only in
+        // `api_data_stream` rows; the local Order's `quantity`
+        // stays frozen at placement until the order is cancelled
+        // / replaced upstream.
         $updates = array_filter([
             'status' => $event->normalizedStatus,
             'price' => $price,
-            'quantity' => $quantity,
         ], static fn ($value) => $value !== null);
 
         if ($updates === []) {
