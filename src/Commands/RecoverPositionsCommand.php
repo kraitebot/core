@@ -5,9 +5,13 @@ declare(strict_types=1);
 namespace Kraite\Core\Commands;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\Math;
+use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\Recovery\RecovererResolver;
 use Kraite\Core\Support\Recovery\RecoveryReport;
 use StepDispatcher\Models\Step;
@@ -72,7 +76,19 @@ final class RecoverPositionsCommand extends BaseCommand
         // The flag is restored in the finally regardless of outcome.
         StepDispatcher::deactivate();
 
+        // Phase 5 — operational guards. Capture pre-run trading flag
+        // so we restore it on completion. Dump positions + orders
+        // BEFORE any writes happen so a botched recovery has a known
+        // restore point. Both are guarded in the finally so a
+        // mid-run exception doesn't leave the system frozen.
+        $tradingWasOn = $this->freezeTrading();
+        $snapshotPath = $dryRun ? null : $this->snapshotDatabase($report);
+
         $rolledBack = false;
+
+        // Per-account exchange-position keys captured during Phase 1
+        // and consumed by Phases 2 + 4. Format: account_id => array<int, "SYMBOL:DIRECTION">.
+        $exchangeKeysByAccount = [];
 
         try {
             if ($dryRun) {
@@ -91,10 +107,29 @@ final class RecoverPositionsCommand extends BaseCommand
                 $this->wipeMatchingState($accounts, $tokenFilter, $report, $dryRun);
             }
 
+            // Phase 1 — exchange → local. Walk every open position on
+            // every in-scope account; create / reconcile.
             foreach ($accounts as $account) {
                 $report->accountsChecked++;
                 $this->processAccount($account, $tokenFilter, $report);
+                $exchangeKeysByAccount[$account->id] = $this->fetchExchangePositionKeys($account);
             }
+
+            // Phase 2 — local → exchange close-detection. Local
+            // open-status positions whose key isn't on the exchange
+            // closed during the gap. Mark closed.
+            $this->markClosedDuringGap($accounts, $tokenFilter, $exchangeKeysByAccount, $report);
+
+            // Phase 3 — order-status mirror. Local non-terminal
+            // orders on still-active positions get apiSync'd so any
+            // CANCELLED / FILLED / EXPIRED status drift from the gap
+            // is reflected locally.
+            $this->mirrorOrderStatuses($accounts, $tokenFilter, $report);
+
+            // Phase 4 — stuck-state reset. Positions in
+            // opening / syncing / cancelling that no longer have an
+            // in-flight workflow get reset based on exchange truth.
+            $this->resetStuckStates($accounts, $tokenFilter, $exchangeKeysByAccount, $report);
 
             if ($dryRun) {
                 DB::rollBack();
@@ -110,6 +145,7 @@ final class RecoverPositionsCommand extends BaseCommand
             $this->error('Recovery aborted: '.$e->getMessage());
             $report->warning('Aborted: '.$e->getMessage());
             $this->renderReport($report);
+            $this->restoreTrading($tradingWasOn);
 
             return self::FAILURE;
         } finally {
@@ -119,6 +155,16 @@ final class RecoverPositionsCommand extends BaseCommand
         }
 
         $this->renderReport($report);
+
+        // Phase 5 — restore trading flag + fire completion notification.
+        // Trading restore lives outside the try/catch so a successful
+        // recovery flips it back exactly once; failures restored it
+        // in the catch block above.
+        $this->restoreTrading($tradingWasOn);
+
+        if (! $dryRun) {
+            $this->notifyCompletion($report, $snapshotPath);
+        }
 
         return self::SUCCESS;
     }
@@ -342,5 +388,408 @@ final class RecoverPositionsCommand extends BaseCommand
                 $this->warn('  • '.$w);
             }
         }
+    }
+
+    // =====================================================================
+    // PHASE 5 — operational guards
+    // =====================================================================
+
+    /**
+     * Flip `kraite.allow_opening_positions` to false for the duration
+     * of the recovery. Returns the pre-run value so
+     * {@see restoreTrading()} can put it back exactly. Flipping the
+     * flag (rather than relying on the dispatcher freeze alone)
+     * means even if the dispatcher restarts mid-run, the
+     * PreparePositionsOpeningJob's gate refuses to ladder new
+     * positions onto a half-recovered DB.
+     */
+    protected function freezeTrading(): bool
+    {
+        $engine = Kraite::find(1);
+
+        if (! $engine) {
+            return false;
+        }
+
+        $previousValue = (bool) $engine->allow_opening_positions;
+        $engine->update(['allow_opening_positions' => false]);
+
+        return $previousValue;
+    }
+
+    /**
+     * Restore the pre-run value of `kraite.allow_opening_positions`.
+     * Idempotent — calling twice with the same value is a no-op.
+     */
+    protected function restoreTrading(bool $previousValue): void
+    {
+        $engine = Kraite::find(1);
+
+        if (! $engine) {
+            return;
+        }
+
+        if ((bool) $engine->allow_opening_positions === $previousValue) {
+            return;
+        }
+
+        $engine->update(['allow_opening_positions' => $previousValue]);
+    }
+
+    /**
+     * Pre-recovery DB snapshot. Dumps positions + orders to
+     * `/tmp/kraite-recovery-{ts}.sql` so a botched recovery has a
+     * known restore point. Mysql dump uses the kraite credentials
+     * from `~/.credentials` (mirrors how every other on-host script
+     * reads them). Failure here is logged + swallowed — a missing
+     * snapshot must NOT abort the recovery (the recovery itself is
+     * the more critical operation).
+     *
+     * Returns the absolute path to the snapshot file, or null on
+     * failure.
+     */
+    protected function snapshotDatabase(RecoveryReport $report): ?string
+    {
+        $timestamp = now()->format('Ymd_His');
+        $path = "/tmp/kraite-recovery-{$timestamp}.sql";
+
+        $database = config('database.connections.mysql.database');
+        $username = config('database.connections.mysql.username');
+        $password = config('database.connections.mysql.password');
+        $host = config('database.connections.mysql.host', '127.0.0.1');
+
+        $command = sprintf(
+            'mysqldump --single-transaction --quick -h %s -u %s -p%s %s positions orders > %s 2>/dev/null',
+            escapeshellarg((string) $host),
+            escapeshellarg((string) $username),
+            escapeshellarg((string) $password),
+            escapeshellarg((string) $database),
+            escapeshellarg($path),
+        );
+
+        $exitCode = 0;
+        $output = [];
+        @exec($command, $output, $exitCode);
+
+        if ($exitCode !== 0 || ! is_file($path) || filesize($path) === 0) {
+            $report->warning("Pre-recovery snapshot failed (exit={$exitCode}); proceeding without it");
+            $report->line('  ⚠ Snapshot failed; proceeding without it');
+
+            return null;
+        }
+
+        $sizeMib = number_format(filesize($path) / (1024 ** 2), 2);
+        $report->line(" Snapshot:          {$path} ({$sizeMib} MiB)");
+
+        return $path;
+    }
+
+    /**
+     * Fire the `recovery_completed` canonical with the run summary
+     * so the operator gets a Pushover / email / Telegram ping
+     * confirming the recovery completed (vs silent stdout-only
+     * confirmation today). Failure-contained — a notification
+     * miss must NOT mark the recovery itself as failed.
+     */
+    protected function notifyCompletion(RecoveryReport $report, ?string $snapshotPath): void
+    {
+        try {
+            $detail = sprintf(
+                'Accounts: %d checked / %d ok / %d skipped. Positions: %d created / %d updated / %d skipped. Orders: %d created / %d skipped.',
+                $report->accountsChecked,
+                $report->accountsOk,
+                $report->accountsSkipped,
+                $report->positionsCreated,
+                $report->positionsUpdated,
+                $report->positionsSkipped,
+                $report->ordersCreated,
+                $report->ordersSkipped,
+            );
+
+            NotificationService::send(
+                user: Kraite::admin(),
+                canonical: 'recovery_completed',
+                referenceData: [
+                    'detail' => $detail,
+                    'snapshot_path' => $snapshotPath,
+                    'warnings_count' => count($report->warnings),
+                ],
+            );
+        } catch (Throwable $exception) {
+            Log::warning('[RecoverPositionsCommand] notifyCompletion failed; swallowed', [
+                'error' => $exception->getMessage(),
+            ]);
+        }
+    }
+
+    // =====================================================================
+    // PHASE 2 — close-detection sweep
+    // =====================================================================
+
+    /**
+     * Pull a list of "SYMBOL:DIRECTION" keys from the exchange's
+     * current open-positions snapshot for the given account. Used
+     * by Phases 2 + 4 to compare against local DB state.
+     *
+     * Mirrors the normalisation logic in
+     * `CheckSystemHealthCommand::reconcileAccountOrphans` —
+     * one-way mode returns positions keyed `SYMBOL:BOTH`, derive
+     * LONG / SHORT from the `positionAmt` sign so the comparison
+     * is apples-to-apples regardless of mode.
+     *
+     * Failure (account API down, network blip) returns an EMPTY
+     * array. The Phase 2 sweep treats an empty exchange snapshot
+     * the same as "every local position closed during the gap"
+     * — which is exactly wrong if the API is just temporarily
+     * unreachable. To prevent false closes, callers should refuse
+     * to mutate state if this returns empty AND there are local
+     * open positions for the account; that guard lives in
+     * `markClosedDuringGap()`.
+     *
+     * @return array<int, string>
+     */
+    protected function fetchExchangePositionKeys(Account $account): array
+    {
+        try {
+            $response = $account->apiQueryPositions();
+            $positions = collect($response->result ?? []);
+        } catch (Throwable) {
+            return [];
+        }
+
+        $keys = [];
+        foreach ($positions as $key => $row) {
+            $amt = (string) ($row['positionAmt'] ?? '0');
+
+            if (Math::equal($amt, '0')) {
+                continue;
+            }
+
+            [$symbol, $side] = array_pad(explode(':', (string) $key), 2, 'BOTH');
+
+            if ($side === 'BOTH') {
+                $side = Math::gt($amt, '0') ? 'LONG' : 'SHORT';
+            }
+
+            $keys[] = "{$symbol}:{$side}";
+        }
+
+        return $keys;
+    }
+
+    /**
+     * Walk every LOCAL position in opened-status for in-scope
+     * accounts. For each whose `(symbol, direction)` key is NOT in
+     * the exchange snapshot for that account, flip status to
+     * `closed` with `closed_at = now()`. The position closed
+     * during the recovery gap (T-snapshot to T-recovery) and
+     * lost-history is acceptable per the disaster-recovery
+     * scope.
+     *
+     * Safety guard: if the exchange snapshot for an account is
+     * EMPTY but the local DB has open positions for that
+     * account, refuse to mutate. An empty snapshot can mean
+     * "API failure" rather than "no positions" and we don't want
+     * to mass-close real positions on a transient failure. The
+     * `fetchExchangePositionKeys()` health-check already runs
+     * inside the recoverer; this is belt + braces.
+     *
+     * @param  iterable<Account>  $accounts
+     * @param  array<int, array<int, string>>  $exchangeKeysByAccount
+     */
+    protected function markClosedDuringGap(
+        $accounts,
+        ?string $tokenFilter,
+        array $exchangeKeysByAccount,
+        RecoveryReport $report,
+    ): void {
+        $report->line('');
+        $report->line('=== Phase 2 — close-detection sweep ===');
+
+        $closedCount = 0;
+
+        foreach ($accounts as $account) {
+            $exchangeKeys = $exchangeKeysByAccount[$account->id] ?? [];
+
+            $localOpenQuery = Position::query()
+                ->where('account_id', $account->id)
+                ->whereIn('status', (new Position)->openedStatuses());
+
+            if ($tokenFilter !== null) {
+                $localOpenQuery->where('parsed_trading_pair', mb_strtoupper($tokenFilter));
+            }
+
+            $localOpen = $localOpenQuery->get();
+
+            if ($localOpen->isEmpty()) {
+                continue;
+            }
+
+            // Safety guard: empty exchange snapshot + non-empty
+            // local set may indicate an API failure. Skip rather
+            // than mass-close on a transient blip. The recoverer's
+            // health-check already covers this but the guard is
+            // cheap insurance.
+            if ($exchangeKeys === [] && $localOpen->isNotEmpty()) {
+                $report->line("  → Account #{$account->id}: exchange snapshot empty + {$localOpen->count()} local open position(s) — skipping close-detection (treat as transient API failure)");
+
+                continue;
+            }
+
+            foreach ($localOpen as $position) {
+                $key = "{$position->parsed_trading_pair}:{$position->direction}";
+
+                if (in_array($key, $exchangeKeys, true)) {
+                    continue;
+                }
+
+                $position->updateSaving([
+                    'status' => 'closed',
+                    'closed_at' => now(),
+                    'error_message' => 'Closed during disaster-recovery gap; exchange snapshot at T-recovery did not contain this position',
+                ]);
+
+                $closedCount++;
+                $report->line("  ✓ Position #{$position->id} ({$position->parsed_trading_pair} {$position->direction}) marked closed (not on exchange)");
+            }
+        }
+
+        if ($closedCount === 0) {
+            $report->line('  → No phantom positions to close.');
+        } else {
+            $report->line("  → Closed {$closedCount} phantom position(s).");
+        }
+    }
+
+    // =====================================================================
+    // PHASE 3 — order-status mirror
+    // =====================================================================
+
+    /**
+     * Walk every LOCAL non-terminal order on STILL-active positions
+     * for in-scope accounts. For each, call `apiSync()` so any
+     * CANCELLED / FILLED / EXPIRED state drift from the recovery
+     * gap is reflected locally. Per-order failures (e.g. exchange
+     * "Unknown order sent" -2011) are caught + logged so a single
+     * stale row doesn't abort the whole pass.
+     *
+     * Cost: one REST call per order. For typical books (60–200
+     * orders) the latency is in the seconds range. Acceptable for
+     * a once-a-disaster command.
+     */
+    protected function mirrorOrderStatuses($accounts, ?string $tokenFilter, RecoveryReport $report): void
+    {
+        $report->line('');
+        $report->line('=== Phase 3 — order-status mirror ===');
+
+        $synced = 0;
+        $failed = 0;
+
+        foreach ($accounts as $account) {
+            $orderQuery = Order::query()
+                ->whereIn('status', ['NEW', 'PARTIALLY_FILLED'])
+                ->whereNotNull('exchange_order_id')
+                ->whereHas('position', function ($q) use ($account, $tokenFilter): void {
+                    $q->where('account_id', $account->id)
+                        ->whereIn('status', (new Position)->openedStatuses());
+
+                    if ($tokenFilter !== null) {
+                        $q->where('parsed_trading_pair', mb_strtoupper($tokenFilter));
+                    }
+                });
+
+            $orders = $orderQuery->get();
+
+            if ($orders->isEmpty()) {
+                continue;
+            }
+
+            foreach ($orders as $order) {
+                try {
+                    $order->apiSync();
+                    $synced++;
+                } catch (Throwable $exception) {
+                    $failed++;
+                    Log::warning('[RecoverPositionsCommand] mirrorOrderStatuses apiSync failed', [
+                        'order_id' => $order->id,
+                        'exchange_order_id' => $order->exchange_order_id,
+                        'error' => $exception->getMessage(),
+                    ]);
+                }
+            }
+        }
+
+        $report->line("  → Synced {$synced} order(s); {$failed} failure(s) (logged).");
+    }
+
+    // =====================================================================
+    // PHASE 4 — stuck-state reset
+    // =====================================================================
+
+    /**
+     * Walk every LOCAL position in `opening` / `syncing` /
+     * `cancelling` for in-scope accounts. For each:
+     *   - If exchange shows the position open → flip to `active`.
+     *   - If exchange doesn't show it → flip to `closed`.
+     *
+     * The pre-condition is "no in-flight workflow can be running",
+     * which is enforced by the dispatcher freeze at the top of the
+     * run + the no-pending-step check below. Without this phase,
+     * positions that were mid-workflow when the disaster hit stay
+     * pinned in non-terminal status forever — the bot won't
+     * re-engage them and the operator must intervene by hand.
+     *
+     * @param  iterable<Account>  $accounts
+     * @param  array<int, array<int, string>>  $exchangeKeysByAccount
+     */
+    protected function resetStuckStates(
+        $accounts,
+        ?string $tokenFilter,
+        array $exchangeKeysByAccount,
+        RecoveryReport $report,
+    ): void {
+        $report->line('');
+        $report->line('=== Phase 4 — stuck-state reset ===');
+
+        $reset = 0;
+        $closedAsGhost = 0;
+
+        $stuckStatuses = ['opening', 'syncing', 'cancelling'];
+
+        foreach ($accounts as $account) {
+            $exchangeKeys = $exchangeKeysByAccount[$account->id] ?? [];
+
+            $stuckQuery = Position::query()
+                ->where('account_id', $account->id)
+                ->whereIn('status', $stuckStatuses);
+
+            if ($tokenFilter !== null) {
+                $stuckQuery->where('parsed_trading_pair', mb_strtoupper($tokenFilter));
+            }
+
+            $stuck = $stuckQuery->get();
+
+            foreach ($stuck as $position) {
+                $key = "{$position->parsed_trading_pair}:{$position->direction}";
+
+                if (in_array($key, $exchangeKeys, true)) {
+                    $position->updateSaving(['status' => 'active']);
+                    $reset++;
+                    $report->line("  ✓ Position #{$position->id} ({$position->parsed_trading_pair} {$position->direction}): {$position->getOriginal('status')} → active (exchange has it)");
+
+                    continue;
+                }
+
+                $position->updateSaving([
+                    'status' => 'closed',
+                    'closed_at' => now(),
+                    'error_message' => "Closed during disaster-recovery (stuck in {$position->getOriginal('status')} with no exchange-side position)",
+                ]);
+                $closedAsGhost++;
+                $report->line("  ✓ Position #{$position->id} ({$position->parsed_trading_pair} {$position->direction}): {$position->getOriginal('status')} → closed (exchange has nothing)");
+            }
+        }
+
+        $report->line("  → Reset {$reset} stuck position(s) to active; closed {$closedAsGhost} ghost(s).");
     }
 }

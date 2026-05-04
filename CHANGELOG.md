@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.24.0 - 2026-05-04
+
+### Features
+
+- [NEW FEATURE] **`kraite:recover-positions` upgraded to true bidirectional disaster-recovery.** Phase 1 (existing exchange → local gap-fill) is now followed by four new phases that turn the command from a "gap-filler" into a "true-up". Phase 2 walks every LOCAL opened-status position; flips to `closed` if the (account, symbol, direction) key isn't in the exchange snapshot (positions closed during the disaster gap). Safety guard: empty exchange snapshot + non-empty local set is treated as transient API failure (no mass-close). Phase 3 walks every local non-terminal order on still-active positions; calls `apiSync()` per row to mirror current exchange status (orders cancelled / filled / expired during the gap get reflected locally). Phase 4 walks every position stuck in `opening` / `syncing` / `cancelling`; resets to `active` if exchange shows the position, `closed` otherwise (workflow-crash recovery). Phase 5 ships operational guards: `kraite.allow_opening_positions=false` flip with try/finally restore; pre-recovery `mysqldump` of positions + orders to `/tmp/kraite-recovery-{ts}.sql`; new `recovery_completed` notification canonical with run summary. Lost-history accepted per Bruno's call — positions opened+closed entirely within the gap are NOT recreated.
+- [NEW FEATURE] **`recovery_completed` notification canonical.** Seeded via migration `2026_05_04_140000_seed_recovery_completed_notification`. Severity `info`, no throttling (intrinsically once-per-recovery). Fires at the end of a successful (non-dry-run) `kraite:recover-positions` with the summary stats — accounts checked / OK / skipped, positions created / updated / skipped, orders created / skipped, snapshot path, warnings count. Reaches every channel in the admin's `notification_channels` array (Pushover + Mail + Telegram).
+
+### Fixes
+
+- [BUG FIX] **OrderObserver dispatch dedupe race fixed.** `dispatchClosePosition`, `dispatchPositionReplacement`, `dispatchApplyWap` and `ProcessUserDataEventJob::maybeDetectManualPositionClose` all wrap their SELECT-then-INSERT in a `DB::transaction` with `Position::query()->whereKey($id)->lockForUpdate()->first()` BEFORE the dedupe-and-insert pair. The first horizon worker to enter the transaction holds the row lock; every subsequent worker blocks until commit, then sees the freshly-inserted Step and skips. Atomic across every worker, every server, every connection. Background: ETC #211 incident on 2026-05-03 — Binance pushed four `ORDER_TRADE_UPDATE` frames simultaneously, four parallel workers all passed the dedupe check and inserted duplicate `PreparePositionReplacementJob` steps for the same position, two replacement workflows ran in parallel, killed the TP, duplicated LIMIT rungs.
+- [BUG FIX] **`position_opened` state drift resolved.** `KraiteSeeder` now sets `is_active=false` on the `position_opened` canonical entry — matches the commented-out `dispatchOpenedNotification()` call in `ActivatePositionJob::complete()` (TEMP mute on Bruno's call — too chatty on a 12-slot book). Source-of-truth aligned: canonical says off, code is off, seeder enforces off. Re-enable both when adding a digest / quiet-hours filter.
+
 ## 1.23.0 - 2026-05-04
 
 ### Features

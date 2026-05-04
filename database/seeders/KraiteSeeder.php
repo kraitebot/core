@@ -825,6 +825,13 @@ final class KraiteSeeder extends Seeder
                 'verified' => 1,
                 'cache_duration' => 60,
                 'cache_key' => ['position'],
+                // Muted on Bruno's call — too chatty on a 12-slot
+                // book. Matches the commented-out
+                // dispatchOpenedNotification() call in
+                // ActivatePositionJob::complete(). Re-enable both
+                // (here + the call site) when adding a
+                // digest / quiet-hours filter.
+                'is_active' => false,
             ],
             [
                 'canonical' => 'position_closed',

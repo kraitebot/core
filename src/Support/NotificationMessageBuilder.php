@@ -1205,6 +1205,34 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'recovery_completed' => (function () use ($context) {
+                $detail = (string) ($context['detail'] ?? '(no detail)');
+                $snapshotPath = $context['snapshot_path'] ?? null;
+                $warningsCount = (int) ($context['warnings_count'] ?? 0);
+
+                $title = '✅ Recovery Completed';
+
+                $body = "kraite:recover-positions finished.\n\n{$detail}";
+
+                if ($snapshotPath !== null) {
+                    $body .= "\n\nSnapshot: {$snapshotPath}";
+                }
+
+                if ($warningsCount > 0) {
+                    $body .= "\n\nWarnings: {$warningsCount} (see scheduler.log)";
+                }
+
+                return [
+                    'severity' => NotificationSeverity::Info,
+                    'title' => $title,
+                    'emailMessage' => $body,
+                    'pushoverMessage' => $body,
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 0,
+                ];
+            })(),
+
             'system_health_alert' => (function () use ($context) {
                 $signal = (string) ($context['signal'] ?? 'unknown_signal');
                 $severityValue = (string) ($context['severity'] ?? 'high');

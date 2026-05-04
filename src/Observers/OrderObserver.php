@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Observers;
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Jobs\Lifecycles\Order\PrepareOrderCorrectionJob;
@@ -11,6 +12,7 @@ use Kraite\Core\Jobs\Lifecycles\Position\ApplyWapJob;
 use Kraite\Core\Jobs\Lifecycles\Position\ClosePositionJob;
 use Kraite\Core\Jobs\Lifecycles\Position\PreparePositionReplacementJob;
 use Kraite\Core\Models\Order;
+use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\JobProxy;
 use StepDispatcher\Models\Step;
@@ -163,31 +165,46 @@ final class OrderObserver
         // Prevents a second close workflow when both TP and SL reach FILLED in the same
         // sync cycle — the second run would collide with the first and mark the
         // position 'failed' on the "already closing/closed" guard.
-        $alreadyPending = Step::query()
-            ->where('class', ClosePositionJob::class)
-            ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
-            ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-            ->exists();
+        //
+        // Cross-process atomicity: the SELECT-then-INSERT below races
+        // when two horizon workers process simultaneous WS pushes for
+        // the same position (TP-FILLED + SL-FILLED in the same cycle).
+        // `lockForUpdate` on the parent Position row inside a DB
+        // transaction serialises every dispatch attempt for that
+        // position — first worker holds the lock, every other worker
+        // blocks until commit, then sees the freshly-inserted Step
+        // and skips. Atomic across every worker, every server, every
+        // connection. Lock is released on commit/rollback (worker
+        // crash safe).
+        DB::transaction(function () use ($model, $position): void {
+            Position::query()->whereKey($position->id)->lockForUpdate()->first();
 
-        if ($alreadyPending) {
-            return;
-        }
+            $alreadyPending = Step::query()
+                ->where('class', ClosePositionJob::class)
+                ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
+                ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+                ->exists();
 
-        $model->updateSaving(['reference_status' => 'FILLED']);
+            if ($alreadyPending) {
+                return;
+            }
 
-        // Set status to 'closing' immediately so SyncPositionOrdersJob
-        // doesn't override it to 'active' before ClosePositionJob runs
-        $position->updateToClosing();
+            $model->updateSaving(['reference_status' => 'FILLED']);
 
-        Step::create([
-            'class' => ClosePositionJob::class,
-            'queue' => 'positions',
-            'priority' => 'high',
-            'arguments' => [
-                'positionId' => $position->id,
-                'message' => "{$model->type} order #{$model->id} filled — closing position",
-            ],
-        ]);
+            // Set status to 'closing' immediately so SyncPositionOrdersJob
+            // doesn't override it to 'active' before ClosePositionJob runs
+            $position->updateToClosing();
+
+            Step::create([
+                'class' => ClosePositionJob::class,
+                'queue' => 'positions',
+                'priority' => 'high',
+                'arguments' => [
+                    'positionId' => $position->id,
+                    'message' => "{$model->type} order #{$model->id} filled — closing position",
+                ],
+            ]);
+        });
     }
 
     private function dispatchPositionReplacement(Order $model, mixed $position): void
@@ -199,28 +216,48 @@ final class OrderObserver
 
         // Deduplicate: skip if PreparePositionReplacementJob already pending for this position.
         // Prevents multiple dispatches when several orders are cancelled at once.
-        $alreadyPending = Step::query()
-            ->where('class', PreparePositionReplacementJob::class)
-            ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
-            ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-            ->exists();
+        //
+        // Cross-process atomicity: the SELECT-then-INSERT below races
+        // when N horizon workers process simultaneous WS pushes for
+        // the same position. ETC #211 incident on 2026-05-03 — four
+        // LIMITs flipped CANCELLED in the same second from a
+        // symbol-wide DELETE response, four workers fired the
+        // observer concurrently, two won the race past the dedupe,
+        // and two PreparePositionReplacementJob steps ran in
+        // parallel — duplicating LIMIT rungs and killing the TP.
+        //
+        // `lockForUpdate` on the parent Position row inside a DB
+        // transaction serialises every dispatch attempt for that
+        // position — first worker holds the lock, every other worker
+        // blocks until commit, then sees the freshly-inserted Step
+        // and skips. Atomic across every worker, every server, every
+        // connection. No Redis, no schema change, no cache.
+        DB::transaction(function () use ($model, $position): void {
+            Position::query()->whereKey($position->id)->lockForUpdate()->first();
 
-        if ($alreadyPending) {
-            return;
-        }
+            $alreadyPending = Step::query()
+                ->where('class', PreparePositionReplacementJob::class)
+                ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
+                ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+                ->exists();
 
-        $action = $model->status === 'EXPIRED' ? 'expired' : 'cancelled';
+            if ($alreadyPending) {
+                return;
+            }
 
-        Step::create([
-            'class' => PreparePositionReplacementJob::class,
-            'queue' => 'positions',
-            'priority' => 'high',
-            'arguments' => [
-                'positionId' => $position->id,
-                'triggerStatus' => $model->status,
-                'message' => "{$model->type} order #{$model->id} {$action} — preparing replacement",
-            ],
-        ]);
+            $action = $model->status === 'EXPIRED' ? 'expired' : 'cancelled';
+
+            Step::create([
+                'class' => PreparePositionReplacementJob::class,
+                'queue' => 'positions',
+                'priority' => 'high',
+                'arguments' => [
+                    'positionId' => $position->id,
+                    'triggerStatus' => $model->status,
+                    'message' => "{$model->type} order #{$model->id} {$action} — preparing replacement",
+                ],
+            ]);
+        });
     }
 
     /**
@@ -248,27 +285,39 @@ final class OrderObserver
         // the prior WAP has cleared dedup) and dispatch a fresh WAP for it.
         // Without this ordering, a LIMIT that fills during another LIMIT's
         // WAP would have its qty effectively ignored in TP adjustment.
-        $alreadyPending = Step::query()
-            ->where('class', ApplyWapJob::class)
-            ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
-            ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-            ->exists();
+        //
+        // Cross-process atomicity: same race class as the close /
+        // replacement sites. Multiple LIMITs filling simultaneously
+        // → multiple WS pushes → multiple parallel observer fires.
+        // `lockForUpdate` on the parent Position row inside a DB
+        // transaction serialises every WAP dispatch attempt for
+        // that position; the reference_status bump and the Step
+        // INSERT happen atomically with the dedupe check.
+        DB::transaction(function () use ($model, $position): void {
+            Position::query()->whereKey($position->id)->lockForUpdate()->first();
 
-        if ($alreadyPending) {
-            return;
-        }
+            $alreadyPending = Step::query()
+                ->where('class', ApplyWapJob::class)
+                ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
+                ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+                ->exists();
 
-        $model->updateSaving(['reference_status' => 'FILLED']);
+            if ($alreadyPending) {
+                return;
+            }
 
-        Step::create([
-            'class' => ApplyWapJob::class,
-            'queue' => 'positions',
-            'priority' => 'high',
-            'arguments' => [
-                'positionId' => $position->id,
-                'message' => "LIMIT order #{$model->id} filled — applying WAP",
-            ],
-        ]);
+            $model->updateSaving(['reference_status' => 'FILLED']);
+
+            Step::create([
+                'class' => ApplyWapJob::class,
+                'queue' => 'positions',
+                'priority' => 'high',
+                'arguments' => [
+                    'positionId' => $position->id,
+                    'message' => "LIMIT order #{$model->id} filled — applying WAP",
+                ],
+            ]);
+        });
     }
 
     /**

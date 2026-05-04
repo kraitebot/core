@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Jobs\Atomic\UserDataStream;
 
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Jobs\Lifecycles\Position\PreparePositionReplacementJob;
@@ -352,37 +353,50 @@ class ProcessUserDataEventJob extends BaseQueueableJob
             return false;
         }
 
-        $alreadyPending = Step::query()
-            ->where('class', PreparePositionReplacementJob::class)
-            ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
-            ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-            ->exists();
+        // Cross-process atomicity: same race class as the
+        // OrderObserver dispatch sites. A manual exchange-side close
+        // can produce multiple reduce-only fills in rapid succession
+        // (multi-leg flatten) — without this lock, two
+        // ProcessUserDataEventJob workers can both pass the dedupe
+        // check and insert duplicate replacement steps for the same
+        // position. `lockForUpdate` on the parent Position row
+        // serialises every replacement-dispatch attempt for that
+        // position across every worker.
+        return DB::transaction(function () use ($event, $position): bool {
+            Position::query()->whereKey($position->id)->lockForUpdate()->first();
 
-        if ($alreadyPending) {
-            return false;
-        }
+            $alreadyPending = Step::query()
+                ->where('class', PreparePositionReplacementJob::class)
+                ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
+                ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+                ->exists();
 
-        Log::channel('user-data')->info('[USER-DATA] manual close detected via reduce-only fill', [
-            'account_id' => $this->accountId,
-            'position_id' => $position->id,
-            'symbol' => $event->symbol,
-            'exchange_order_id' => $event->exchangeOrderId,
-        ]);
+            if ($alreadyPending) {
+                return false;
+            }
 
-        $resolver = JobProxy::with($position->account);
+            Log::channel('user-data')->info('[USER-DATA] manual close detected via reduce-only fill', [
+                'account_id' => $this->accountId,
+                'position_id' => $position->id,
+                'symbol' => $event->symbol,
+                'exchange_order_id' => $event->exchangeOrderId,
+            ]);
 
-        Step::create([
-            'class' => $resolver->resolve(PreparePositionReplacementJob::class),
-            'queue' => 'positions',
-            'priority' => 'high',
-            'arguments' => [
-                'positionId' => $position->id,
-                'triggerStatus' => 'EXTERNAL_FILL',
-                'message' => 'Reduce-only fill on unowned order — verifying position state',
-            ],
-        ]);
+            $resolver = JobProxy::with($position->account);
 
-        return true;
+            Step::create([
+                'class' => $resolver->resolve(PreparePositionReplacementJob::class),
+                'queue' => 'positions',
+                'priority' => 'high',
+                'arguments' => [
+                    'positionId' => $position->id,
+                    'triggerStatus' => 'EXTERNAL_FILL',
+                    'message' => 'Reduce-only fill on unowned order — verifying position state',
+                ],
+            ]);
+
+            return true;
+        });
     }
 
     /**
