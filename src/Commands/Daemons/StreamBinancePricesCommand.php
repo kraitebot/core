@@ -47,6 +47,20 @@ final class StreamBinancePricesCommand extends Command
     protected $description = 'Daemon that streams Binance mark prices into exchange_symbols via WebSocket.';
 
     /**
+     * Minimum interval between persistence flushes, in seconds. Binance's
+     * `!markPrice@arr@1s` stream emits a full universe snapshot every
+     * second, but the bot's local read paths (slot allocation, dashboard,
+     * stress-fill, BSCS) tolerate single-digit-second staleness and the
+     * exchange-side TP / SL / limit triggers operate independently of
+     * `mark_price`. Persisting every tick generated ~2,500 row writes/sec
+     * sustained across the 2257-symbol universe — pure background pressure
+     * with no operational benefit. Coalescing to once per 5s reduces the
+     * write rate ~5× while keeping mark prices fresh enough for every
+     * downstream consumer.
+     */
+    private const WRITE_INTERVAL_SECONDS = 5;
+
+    /**
      * Binance parsed_trading_pair (e.g. "SOLUSDT") → list of exchange_symbol
      * ids that represent the same underlying token+quote across every
      * exchange we have ingested. One Binance tick refreshes the mark_price
@@ -61,6 +75,16 @@ final class StreamBinancePricesCommand extends Command
     private ?int $binanceSystemId = null;
 
     private int $lastPairMapRefreshAt = 0;
+
+    /**
+     * Monotonic clock (microtime as float) of the last successful flush
+     * to `exchange_symbol_prices`. Frames arriving within
+     * WRITE_INTERVAL_SECONDS of the last flush are dropped — the next
+     * accepted frame carries the freshest snapshot for every symbol so
+     * no information is lost, only the cadence at which it lands in the
+     * DB is reduced.
+     */
+    private float $lastWriteAt = 0.0;
 
     public function handle(): int
     {
@@ -106,6 +130,21 @@ final class StreamBinancePricesCommand extends Command
                     return;
                 }
 
+                // Coalesce frames to one DB flush every WRITE_INTERVAL_SECONDS.
+                // Binance sends a full snapshot of every symbol on every
+                // tick, so dropping intermediate frames loses no
+                // information — the next accepted frame carries the
+                // freshest price for every symbol the bot tracks. The
+                // map refresh runs unconditionally so newly-discovered
+                // symbols still come online inside the 5-min refresh
+                // window even during an idle persistence interval.
+                $now = microtime(true);
+                if ($now - $this->lastWriteAt < self::WRITE_INTERVAL_SECONDS) {
+                    $this->maybeRefreshPairMap();
+
+                    return;
+                }
+
                 // Combined-stream envelope: `{"stream": "...", "data": [...]}`.
                 // The single-stream shape (bare array) is no longer in use
                 // after the 2026-04-24 switch to `/stream?streams=` but we
@@ -123,6 +162,7 @@ final class StreamBinancePricesCommand extends Command
                 }
 
                 $this->updateExchangeSymbols($prices);
+                $this->lastWriteAt = $now;
                 $this->maybeRefreshPairMap();
             },
             'ping' => function () {},

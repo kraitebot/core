@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.26.0 - 2026-05-05
+
+### Fixes
+
+- [BUG FIX] **Market regime notifications activated.** `MarketRegimeNotificationsSeeder` previously seeded `market_regime_critical`, `market_regime_recovered`, and `market_regime_compute_stale` with `is_active = false` (Phase 1 telemetry-only stub). Result: when `AnalyseBscsJob` armed a real cooldown (BSCS score ≥ 80), the call site dispatched the canonical but `NotificationService` resolved no DB row and silently dropped the alert — the operator never learned the cooldown had armed. Today's 07:55 cooldown-arm event was masked exactly this way. Seeder now ships all three rows `is_active=true, verified=true`; smoke-tested end-to-end (3 channels delivered).
+
+### Improvements
+
+- [IMPROVED] **Binance prices daemon: persistence write-rate ÷5.** `StreamBinancePricesCommand` now coalesces `exchange_symbol_prices` writes to `WRITE_INTERVAL_SECONDS = 5` (down from per-tick at 1s cadence). Binance's `!markPrice@arr@1s` stream still feeds the in-memory price map every second so freshness is unchanged for any reader that consumes the in-memory snapshot, but DB persistence drops from ~2,500 row writes/sec across the 2,257-symbol universe to ~500/sec. Local read paths (slot allocation, dashboard, stress-fill, BSCS) tolerate single-digit-second staleness; exchange-side TP / SL / limit triggers operate independently of `mark_price` so the persistence cadence has no effect on order safety.
+
 ## 1.25.0 - 2026-05-04
 
 ### Features
