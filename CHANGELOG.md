@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.27.0 - 2026-05-06
+
+### Features
+
+- [NEW FEATURE] **Binance user-data daemon notification canonicals (6).** Adds the message-builder entries the daemon dispatches against: `binance_user_data_account_connected` (Info — per-account WebSocket opened), `binance_user_data_account_init_failed` (High — per-account init blew up; other accounts unaffected; retried on the next 60s discovery sweep), `binance_user_data_listen_key_expired` (Medium — Binance pushed `listenKeyExpired`; daemon auto-re-inits; frequent firings flag aggressive key invalidation), `binance_user_data_account_reaped` (Info — account no longer eligible; per-account socket closed and listenKey row deleted), `binance_user_data_memory_restart` (Medium — daemon exceeded memory ceiling; supervisor respawn), `binance_listen_key_keepalive_failed` (High — three consecutive keepalive failures; without refresh the listenKey hits Binance's 60-minute hard expiry).
+
 ## 1.26.0 - 2026-05-05
 
 ### Fixes

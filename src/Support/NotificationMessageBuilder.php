@@ -1022,7 +1022,7 @@ final class NotificationMessageBuilder
                         $actionLabel = sprintf(
                             'Top up the remaining %s USDT in %s',
                             number_format($shortfall, 2),
-                            strtoupper($payCurrency),
+                            mb_strtoupper($payCurrency),
                         );
                     } catch (Throwable) {
                         // Route not registered or signing failed — fall back
@@ -1260,6 +1260,107 @@ final class NotificationMessageBuilder
                     'actionUrl' => null,
                     'actionLabel' => null,
                     'priority' => 0,
+                ];
+            })(),
+
+            'binance_user_data_account_connected' => (function () use ($context) {
+                $accountId = (string) ($context['account_id'] ?? 'unknown');
+                $accountName = (string) ($context['account_name'] ?? 'unknown');
+                $body = "User-data WebSocket opened for `{$accountName}` (account #{$accountId}).";
+
+                return [
+                    'severity' => NotificationSeverity::Info,
+                    'title' => "Binance user-data stream connected — {$accountName}",
+                    'emailMessage' => $body,
+                    'pushoverMessage' => $body,
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => -1,
+                ];
+            })(),
+
+            'binance_user_data_account_init_failed' => (function () use ($context) {
+                $accountId = (string) ($context['account_id'] ?? 'unknown');
+                $accountName = (string) ($context['account_name'] ?? 'unknown');
+                $error = (string) ($context['error'] ?? '(no detail)');
+                $body = "Could not initialise the user-data WebSocket for `{$accountName}` (account #{$accountId}).\n\nReason: {$error}\n\nOther accounts on this daemon stay alive; the failing account is retried on the next 60-second discovery sweep.";
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'title' => "Binance user-data init failed — {$accountName}",
+                    'emailMessage' => $body,
+                    'pushoverMessage' => $body,
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 1,
+                ];
+            })(),
+
+            'binance_user_data_listen_key_expired' => (function () use ($context) {
+                $accountId = (string) ($context['account_id'] ?? 'unknown');
+                $accountName = (string) ($context['account_name'] ?? 'unknown');
+                $body = "Binance pushed a `listenKeyExpired` frame for `{$accountName}` (account #{$accountId}). The daemon is re-initialising the WebSocket automatically. Frequent firings on the same account suggest aggressive Binance-side key invalidation — investigate the API-key configuration.";
+
+                return [
+                    'severity' => NotificationSeverity::Medium,
+                    'title' => "Binance listenKey expired — {$accountName}",
+                    'emailMessage' => $body,
+                    'pushoverMessage' => $body,
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 0,
+                ];
+            })(),
+
+            'binance_user_data_account_reaped' => (function () use ($context) {
+                $accountId = (string) ($context['account_id'] ?? 'unknown');
+                $body = "User-data daemon reaped account #{$accountId} — the account is no longer eligible for the user-data stream (deleted, deactivated, or API keys removed). The per-account WebSocket has been closed and the listenKey row deleted.";
+
+                return [
+                    'severity' => NotificationSeverity::Info,
+                    'title' => "Binance user-data account reaped — #{$accountId}",
+                    'emailMessage' => $body,
+                    'pushoverMessage' => $body,
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => -1,
+                ];
+            })(),
+
+            'binance_user_data_memory_restart' => (function () use ($context) {
+                $memoryBytes = (int) ($context['memory_bytes'] ?? 0);
+                $limitBytes = (int) ($context['limit_bytes'] ?? 0);
+                $pid = (string) ($context['pid'] ?? 'unknown');
+                $memoryMb = number_format($memoryBytes / 1048576, 1);
+                $limitMb = number_format($limitBytes / 1048576, 1);
+                $body = "User-data daemon (pid {$pid}) exceeded its memory ceiling and is exiting for supervisor restart.\n\nProcess memory: {$memoryMb} MB\nLimit: {$limitMb} MB\n\nSupervisor will respawn the daemon and re-initialise every account.";
+
+                return [
+                    'severity' => NotificationSeverity::Medium,
+                    'title' => 'Binance user-data daemon — memory restart',
+                    'emailMessage' => $body,
+                    'pushoverMessage' => $body,
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 0,
+                ];
+            })(),
+
+            'binance_listen_key_keepalive_failed' => (function () use ($context) {
+                $accountId = (string) ($context['account_id'] ?? 'unknown');
+                $accountName = (string) ($context['account_name'] ?? 'unknown');
+                $failureCount = (int) ($context['failure_count'] ?? 0);
+                $error = (string) ($context['error'] ?? '(no detail)');
+                $body = "Three consecutive listenKey keepalive failures for `{$accountName}` (account #{$accountId}). Without a successful refresh the listenKey will hit Binance's 60-minute hard expiry and the user-data WebSocket will die.\n\nFailure count: {$failureCount}\nLast error: {$error}";
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'title' => "Binance listenKey keepalive failed — {$accountName}",
+                    'emailMessage' => $body,
+                    'pushoverMessage' => $body,
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 1,
                 ];
             })(),
 
