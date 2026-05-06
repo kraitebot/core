@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.29.0 - 2026-05-06
+
+### Improvements
+
+- [IMPROVED] **`Position::apiClose()` rewritten to use local DB truth.** The legacy implementation called `apiQueryPositions()` first and built the close order from `positionAmt` / `positionSide` returned by the exchange. Binance's REST positions endpoint lags the WS trade ledger by 5-20s under burst load, and during the Position #577 (TONUSDT, 2026-05-06) cancel cascade the snapshot was empty when `apiClose()` queried it — the foreach iterated zero rows, no close was sent, and the position sat naked on the exchange until a later position's close cycle absorbed it as collateral. The new path: a one-shot `Position::buildCloseOrderAttributes()` helper sums every FILLED MARKET + LIMIT row to derive the close quantity, derives `side` from the position's `direction`, and stamps `position_side` from `direction` (the place-order mappers branch on `account->isHedgeMode()` and either inject positionSide or set reduceOnly=true, so the same Order row is correct in both modes). When local DB shows nothing FILLED the helper returns null and `apiClose()` returns an empty `ApiResponse` without firing a request. Also picks up any LIMIT rung that filled mid-cancel-cascade (rare but real on a fast price drop) — the SUM means the close flattens the full local position, not just the MARKET entry.
+- [IMPROVED] **`ClosePositionAtomicallyJob` snapshot pre-flight removed.** The 23-line `apiQueryPositions()` + `positionExistsOnExchange` early-return block at the top of `computeApiable()` was the same race as `apiClose()` (often back-to-back queries within the same job, both seeing the stale ledger). Removed entirely. The existing Binance `-2022 ReduceOnly rejected` handler is now the authoritative "exchange genuinely has nothing to reduce" sentinel — it already throws `NonNotifiableException` for operator reconcile, which is the right outcome when local DB and exchange disagree.
+
 ## 1.28.0 - 2026-05-06
 
 ### Fixes

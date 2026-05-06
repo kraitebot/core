@@ -106,42 +106,23 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
             }
         }
 
-        // Check if position still exists on exchange before trying to close
-        // (TP/SL fill may have already closed it)
-        $accountPositions = $position->account->apiQueryPositions()->result ?? [];
-        $symbol = mb_strtoupper($position->parsed_trading_pair);
-        $direction = mb_strtoupper($position->direction);
-        $positionKey = "{$symbol}:{$direction}";
-
-        $rawAmt = (string) ($accountPositions[$positionKey]['positionAmt']
-            ?? $accountPositions[$positionKey]['total']
-            ?? '0');
-        $absAmt = Math::lt($rawAmt, '0') ? Math::sub('0', $rawAmt) : $rawAmt;
-        $positionExistsOnExchange = isset($accountPositions[$positionKey])
-            && Math::gt($absAmt, '0.0001');
-
-        if (! $positionExistsOnExchange) {
-            // Position already closed on exchange (via TP/SL fill) - nothing to do
-            return [
-                'position_id' => $position->id,
-                'symbol' => $position->parsed_trading_pair,
-                'filled_limit_count' => $position->totalLimitOrdersFilled(),
-                'pump_cooldown_triggered' => $pumpCooldownTriggered,
-                'cooldown_details' => $cooldownDetails,
-                'result' => ['already_closed' => true],
-                'message' => 'Position already closed on exchange (via TP/SL fill)',
-            ];
-        }
-
-        // Close position on exchange.
+        // No pre-flight exchange query before the close. The REST positions
+        // endpoint lags the WS trade ledger by 5-20s under load; a stale empty
+        // response previously skipped the close silently and left Position
+        // #577 (TONUSDT, 2026-05-06) naked on the exchange. `apiClose()` now
+        // builds the close order from local DB truth and lets Binance return
+        // -2022 if the exchange genuinely has nothing left to reduce — that
+        // path is the authoritative "already closed" signal and is handled
+        // below.
         //
         // Binance -2022 ("ReduceOnly Order is rejected") is terminal — no retry.
-        // It fires when Binance's matching engine receives the close before the
-        // position ledger reflects the fresh entry fill (TOC/TOU race), or when
-        // positionSide/qty mismatch the hedge-mode ledger. Retrying sends another
-        // bad order — we cannot recover from this state automatically. Fail
-        // deterministically so the cancel workflow marks the position 'failed'
-        // and an operator can reconcile the exchange-side position manually.
+        // It fires when the position has already been flattened on the
+        // exchange (TP/SL fill, manual close, prior cancel cascade) or when
+        // positionSide/qty mismatch the hedge-mode ledger. Retrying sends
+        // another bad order — we cannot recover from this state
+        // automatically. Fail deterministically so the cancel workflow marks
+        // the position 'failed' and an operator can reconcile the exchange-side
+        // position manually.
         try {
             $apiResponse = $position->apiClose();
         } catch (ClientException $e) {

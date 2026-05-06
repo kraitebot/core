@@ -89,81 +89,96 @@ trait InteractsWithApis
         );
     }
 
-    // V4 ready.
+    /**
+     * Build the local-truth attributes for a MARKET-CANCEL close order.
+     *
+     * Returns null when no FILLED MARKET / LIMIT orders exist on the
+     * position — there's nothing to close.
+     *
+     * Quantity is the SUM of every FILLED MARKET + LIMIT row, not just
+     * the MARKET entry, so a LIMIT rung that filled mid-cancel-cascade
+     * (rare but real on a fast price drop) is still flattened.
+     *
+     * `position_side` is always set from `direction`. The Binance/Bybit/
+     * Kucoin place-order mappers branch on `account->isHedgeMode()` and
+     * either inject positionSide (hedge) or set reduceOnly=true (one-way),
+     * so the same Order row is correct in both modes.
+     *
+     * @return array{type:string, side:string, position_side:string, quantity:string, position_id:int}|null
+     */
+    public function buildCloseOrderAttributes(): ?array
+    {
+        $filledQuantity = (string) $this->orders()
+            ->whereIn('type', ['MARKET', 'LIMIT'])
+            ->where('status', 'FILLED')
+            ->sum('quantity');
+
+        if (! Math::gt($filledQuantity, '0')) {
+            return null;
+        }
+
+        $direction = mb_strtoupper((string) $this->direction);
+        $closeSide = $direction === 'LONG'
+            ? $this->apiMapper()->sideType('SELL')
+            : $this->apiMapper()->sideType('BUY');
+
+        return [
+            'type' => 'MARKET-CANCEL',
+            'side' => $closeSide,
+            'position_side' => $direction,
+            'quantity' => $filledQuantity,
+            'position_id' => $this->id,
+        ];
+    }
+
+    /**
+     * Close the position on the exchange via a reduceOnly MARKET-CANCEL
+     * built from local DB truth.
+     *
+     * Bitget routes through its dedicated flash-close endpoint
+     * (`apiCloseBitget`). Every other exchange shares this Binance-shaped
+     * path. We do NOT pre-query the exchange's positions endpoint here —
+     * the REST snapshot lags the WS trade ledger by 5-20s under load,
+     * and a stale empty response previously caused this method to skip
+     * the close silently and leave a residual on the exchange (Position
+     * #577 TONUSDT, 2026-05-06). The local DB is updated by
+     * `ProcessUserDataEventJob` from the user-data WS push, which lands
+     * before the positions endpoint catches up.
+     *
+     * If the exchange truly has nothing to reduce (e.g. SL filled
+     * microseconds before our close), Binance returns -2022 ReduceOnly
+     * rejected and `ClosePositionAtomicallyJob` translates that into a
+     * NonNotifiableException for operator reconcile.
+     */
     public function apiClose(): ApiResponse
     {
-        // BitGet uses a dedicated flash close endpoint
         if ($this->account->apiSystem->canonical === 'bitget') {
             return $this->apiCloseBitget();
         }
 
-        $apiResponse = $this->account->apiQueryPositions();
-        $positions = $apiResponse->result;
-        $want = mb_strtoupper(mb_trim($this->parsed_trading_pair));
+        $attributes = $this->buildCloseOrderAttributes();
 
-        $matching = collect($positions)->filter(static function ($p) use ($want) {
-            if (! isset($p['symbol'], $p['positionSide'], $p['positionAmt'])) {
-                return false;
-            }
-            if (mb_strtoupper(mb_trim($p['symbol'])) !== $want) {
-                return false;
-            }
-
-            // Epsilon-style "non-zero" — keep float for the comparison
-            // since 0.0001 is the operational dust threshold; upgrading
-            // to BCMath here would require a config knob for the scale
-            // and isn't the precision-critical path. Same shape kept
-            // intentionally; the upstream value is normalised already.
-            $amt = (string) $p['positionAmt'];
-            $abs = Math::lt($amt, '0') ? Math::sub('0', $amt) : $amt;
-
-            return Math::gt($abs, '0.0001');
-        });
-
-        $symbols = $matching->pluck('symbol')->unique()->values();
-        if ($symbols->count() > 1) {
+        if ($attributes === null) {
             return new ApiResponse;
         }
 
-        foreach ($matching as $positionData) {
-            $side = Math::lt((string) $positionData['positionAmt'], '0')
-            ? $this->apiMapper()->sideType('BUY')
-            : $this->apiMapper()->sideType('SELL');
+        $order = Order::create($attributes);
+        $apiResponse = $order->apiPlace();
 
-            // BCMath-aware absolute value preserves precision on
-            // long-decimal positionAmt values that float would truncate.
-            $rawAmt = (string) $positionData['positionAmt'];
-            $absAmt = Math::lt($rawAmt, '0') ? Math::sub('0', $rawAmt) : $rawAmt;
+        $order->apiSync();
+        $order->refresh();
 
-            $data = [
-                'type' => 'MARKET-CANCEL',
-                'side' => $side,
-                'position_side' => $positionData['positionSide'],
-                'quantity' => $absAmt,
-                'position_id' => $this->id,
-            ];
-
-            $order = Order::create($data);
-            $apiResponse = $order->apiPlace();
-
-            // Sync to get FILLED status and fill price (market orders fill immediately)
-            $order->apiSync();
-
-            // Set closing_price from the fill price
-            $order->refresh();
-            if ($order->price !== null && $order->status === 'FILLED') {
-                $this->updateSaving(['closing_price' => $order->price]);
-            }
-
-            // Set reference fields (snapshot of order state after first sync)
-            $order->updateSaving([
-                'reference_price' => $order->price,
-                'reference_quantity' => $order->quantity,
-                'reference_status' => $order->status,
-            ]);
+        if ($order->price !== null && $order->status === 'FILLED') {
+            $this->updateSaving(['closing_price' => $order->price]);
         }
 
-        return $apiResponse ?? new ApiResponse;
+        $order->updateSaving([
+            'reference_price' => $order->price,
+            'reference_quantity' => $order->quantity,
+            'reference_status' => $order->status,
+        ]);
+
+        return $apiResponse;
     }
 
     /**
