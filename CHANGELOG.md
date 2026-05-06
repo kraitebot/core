@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.28.0 - 2026-05-06
+
+### Fixes
+
+- [BUG FIX] **MARKET reference_price drift no longer kicks the cancel-cascade.** `ActivatePositionJob::validateMarketOrders()` was running `validateReferenceFields()` on the MARKET entry, requiring `reference_price === price` at 8-decimal precision. The exchange determines the MARKET fill price (slippage + multi-trade VWAP); local `reference_price` is an informational snapshot from the first sync after `PlaceMarketOrderJob` — it isn't a value we ever set or modify. When Binance returned a multi-trade VWAP that didn't snap to the tick the mark-price snapshot was rounded to (6 of the last 293 MARKET fills, all sub-cent), the validator threw, the lifecycle entered `CancelPositionJob`, and the cancel cascade raced Binance's positions ledger — leaving a residual position naked on the exchange (Position #577 TONUSDT, 2026-05-06). Drift checks remain on LIMIT/PROFIT-LIMIT/STOP-MARKET (we set those prices; drift = real third-party-modify signal).
+
 ## 1.27.0 - 2026-05-06
 
 ### Features

@@ -10,6 +10,7 @@ use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
+use Throwable;
 
 /**
  * ActivatePositionJob (Atomic)
@@ -19,9 +20,10 @@ use Kraite\Core\Support\NotificationService;
  *
  * Validation rules:
  * - Order count: 1 MARKET + N LIMIT + 1 TP + 1 SL
- * - MARKET: status=FILLED, reference_status=FILLED
+ * - MARKET: status=FILLED, reference_status=FILLED (no price/quantity
+ *   reference check — fill values are exchange-determined)
  * - LIMIT/PROFIT-LIMIT/STOP-MARKET: status=NEW, reference_status=NEW
- * - All orders: reference_price == price, reference_quantity == quantity
+ * - LIMIT/TP/SL: reference_price == price, reference_quantity == quantity
  *   (Bitget TP/SL may have quantity=0, which is valid)
  *
  * Throws Exception on any mismatch, which triggers
@@ -185,7 +187,7 @@ final class ActivatePositionJob extends BaseQueueableJob
             try {
                 $order->apiSync();
                 $order->refresh();
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 // apiSync failures are logged + ignored here — if the
                 // exchange call dies we fall through to the throw
                 // below, which is the right behaviour.
@@ -212,7 +214,13 @@ final class ActivatePositionJob extends BaseQueueableJob
             );
         }
 
-        $this->validateReferenceFields($order, 'MARKET');
+        // No reference_price drift check on MARKET. The exchange determines
+        // the fill price (slippage / multi-trade VWAP); local
+        // `reference_price` is an informational snapshot from the first
+        // sync, not a value we ever set or modify. Drift between the two
+        // is expected on any non-trivial fill and must not gate activation
+        // — Position #577 (TONUSDT, 2026-05-06) was cancelled with a
+        // residual on the exchange because of a 0.00175% drift here.
     }
 
     /**
