@@ -104,15 +104,19 @@ final class AnalyseBscsJob extends BaseQueueableJob
         }
 
         // Score below threshold. If a cooldown was just expiring, mark
-        // recovered. Otherwise nothing to do.
+        // recovered. The cooldown timestamp is cleared so subsequent ticks
+        // recognise the state as "no cooldown" and do NOT re-enter this
+        // branch — without the null, every tick after the first recovery
+        // re-fired the notification (Pos #577 sibling incident, 2026-05-06).
         if ($hadCooldown) {
             $kraite->updateSaving([
                 'bscs_block_active' => false,
+                'bscs_cooldown_until' => null,
             ]);
 
             $this->notifyRecovered($score);
 
-            return $this->result('cooldown_released', $score, $index->cooldownUntil()?->toIso8601String());
+            return $this->result('cooldown_released', $score, null);
         }
 
         return $this->result('noop_below_threshold', $score, null);

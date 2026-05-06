@@ -7,6 +7,7 @@ namespace Kraite\Core\Observers;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kraite\Core\Exceptions\NonNotifiableException;
+use Kraite\Core\Jobs\Atomic\Position\SyncPositionQuantityFromExchangeJob;
 use Kraite\Core\Jobs\Lifecycles\Order\PrepareOrderCorrectionJob;
 use Kraite\Core\Jobs\Lifecycles\Position\ApplyWapJob;
 use Kraite\Core\Jobs\Lifecycles\Position\ClosePositionJob;
@@ -156,6 +157,19 @@ final class OrderObserver
         // When a DCA order fills, recalculate profit order based on breakEvenPrice
         if ($model->type === 'LIMIT' && $model->status === 'FILLED') {
             $this->dispatchApplyWap($model, $position);
+        }
+
+        // LIMIT orders: PARTIALLY_FILLED triggers a position-quantity-only
+        // refresh from the exchange. Strictly NOT routed through WAP — TP
+        // price recalc is reserved for full fills. This branch keeps the
+        // local positions.quantity mirror tracking the running net size
+        // during the multi-chunk DCA fill window. reference_status is
+        // intentionally NOT bumped to PARTIALLY_FILLED so that subsequent
+        // chunk arrivals (each one a distinct fill event landing at the
+        // same status) still re-fire this branch instead of being swallowed
+        // by the upstream `status === reference_status` early-return.
+        if ($model->type === 'LIMIT' && $model->status === 'PARTIALLY_FILLED') {
+            $this->dispatchSyncPositionQuantity($position);
         }
     }
 
@@ -315,6 +329,59 @@ final class OrderObserver
                 'arguments' => [
                     'positionId' => $position->id,
                     'message' => "LIMIT order #{$model->id} filled — applying WAP",
+                ],
+            ]);
+        });
+    }
+
+    /**
+     * Dispatch SyncPositionQuantityFromExchangeJob when a LIMIT order
+     * lands in PARTIALLY_FILLED. The job pulls the live exchange
+     * position size and rewrites positions.quantity. WAP is not invoked
+     * — partial fills must not retrigger TP price recalculation.
+     *
+     * Skip when:
+     *   - position is not in an active state (close / cancel workflow
+     *     owns the row)
+     *
+     * Cross-process atomicity: same race shape as the WAP / replacement
+     * sites — multiple chunked partial fills can arrive concurrently.
+     * The position-row `lockForUpdate` inside a DB transaction
+     * serialises every dispatch attempt; the dedupe SELECT and the
+     * Step INSERT happen atomically.
+     *
+     * Reference-status is intentionally NOT bumped here. Each partial
+     * fill chunk is a distinct event arriving at the same status — if
+     * we bumped reference_status to PARTIALLY_FILLED, the upstream
+     * `status === reference_status` early-return in updated() would
+     * silently swallow chunks 2..N. Step-level dedupe (Pending /
+     * Dispatched / Running) gives us the safety we need without that
+     * invariant collision.
+     */
+    private function dispatchSyncPositionQuantity(mixed $position): void
+    {
+        if (! in_array($position->status, $position->activeStatuses(), true)) {
+            return;
+        }
+
+        DB::transaction(function () use ($position): void {
+            Position::query()->whereKey($position->id)->lockForUpdate()->first();
+
+            $alreadyPending = Step::query()
+                ->where('class', SyncPositionQuantityFromExchangeJob::class)
+                ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
+                ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+                ->exists();
+
+            if ($alreadyPending) {
+                return;
+            }
+
+            Step::create([
+                'class' => SyncPositionQuantityFromExchangeJob::class,
+                'queue' => 'positions',
+                'arguments' => [
+                    'positionId' => $position->id,
                 ],
             ]);
         });

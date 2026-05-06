@@ -6,6 +6,7 @@ namespace Kraite\Core\Commands\Cronjobs;
 
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
 use Kraite\Core\Jobs\Lifecycles\Order\PrepareSyncOrdersJob;
 use Kraite\Core\Jobs\Lifecycles\Position\PrepareCancelOrphanOrdersJob;
 use Kraite\Core\Models\Account;
@@ -27,7 +28,7 @@ use StepDispatcher\Support\BaseCommand;
  * cron (which fires every minute) — not as a replacement, but as a
  * safety net for the cases where the reactive loop missed something.
  *
- * Two scopes per cycle:
+ * Three scopes per cycle:
  *
  * Scope 1 — Active position drift:
  *   - Iterates positions in `active` status that have been QUIET for the
@@ -47,9 +48,27 @@ use StepDispatcher\Support\BaseCommand;
  *     orphan and sends one summary `position_orphan_orders_detected`
  *     pushover.
  *
- * The 10-minute quiet window exists so the spotter never fires a
+ * Scope 3 — Position structure integrity:
+ *   - Iterates every position in `active` status (NO quiet window — a
+ *     missing order on an active position is a real anomaly that must
+ *     be surfaced as fast as possible).
+ *   - Verifies the DB-side order set matches what the position snapshot
+ *     promised: 1 MARKET entry + N LIMIT orders (N = total_limit_orders)
+ *     + 1 PROFIT-* take profit + 1 STOP-MARKET stop loss, all in
+ *     non-terminal status (i.e. not CANCELLED / EXPIRED / REJECTED).
+ *   - On any gap: globally halts new opens by flipping
+ *     `kraite.allow_opening_positions = false` and sends one
+ *     `position_structure_broken` notification per broken position.
+ *   - The flag is sticky — recovery is operator-driven only.
+ *   - DB-only check; trusts the user-data-stream + sync-orders pipeline
+ *     to keep `orders.status` fresh.
+ *
+ * The 10-minute quiet window exists so Scopes 1 and 2 never fire a
  * concurrent heal while the reactive cron is mid-write on the same
- * position. Both scopes apply that filter.
+ * position. Scope 3 deliberately skips that filter — it relies on the
+ * fact that a position only enters `active` status after the full order
+ * set has been physically inserted, so any mismatch on `active` cannot
+ * be a creation race.
  */
 final class CheckDriftsCommand extends BaseCommand
 {
@@ -66,6 +85,13 @@ final class CheckDriftsCommand extends BaseCommand
     public const ORPHAN_ORDER_STATUSES = ['NEW', 'PARTIALLY_FILLED'];
 
     /**
+     * Order statuses that count as "no longer live" for structural
+     * integrity purposes — a row in any of these states is treated as
+     * if the order is gone.
+     */
+    public const STRUCTURALLY_DEAD_STATUSES = ['CANCELLED', 'EXPIRED', 'REJECTED'];
+
+    /**
      * Position-level pair statuses that warrant a heal dispatch.
      */
     private const HEAL_PAIR_STATUSES = [
@@ -75,6 +101,7 @@ final class CheckDriftsCommand extends BaseCommand
 
     protected $signature = 'kraite:cron-check-drifts
                             {--account_id= : Limit the audit to a single account}
+                            {--skip-structure-audit : Skip the active-position structural integrity scope (drift + orphan scopes still run)}
                             {--output : Display command output (silent by default)}';
 
     protected $description = 'Proactive 5-minute drift spotter — audits active positions and orphan orders, dispatches existing healers, notifies admin.';
@@ -93,6 +120,10 @@ final class CheckDriftsCommand extends BaseCommand
 
         $this->auditActivePositionDrift($cutoff, $accountFilter);
         $this->auditOrphanOrders($cutoff, $accountFilter);
+
+        if (! $this->option('skip-structure-audit')) {
+            $this->auditPositionStructureIntegrity($accountFilter);
+        }
 
         return self::SUCCESS;
     }
@@ -223,7 +254,7 @@ final class CheckDriftsCommand extends BaseCommand
                 try {
                     $candidate->apiSync();
                 } catch (\Throwable $exception) {
-                    \Illuminate\Support\Facades\Log::channel('jobs')->warning(
+                    Log::channel('jobs')->warning(
                         '[DRIFT-AUDIT] orphan silent-sync failed',
                         [
                             'order_id' => $candidate->id,
@@ -367,6 +398,131 @@ final class CheckDriftsCommand extends BaseCommand
                 'orphan_orders' => $orphanList,
                 'ghosts_cancelled_in_db' => $ghostsCancelledInDb,
                 'cancel_lifecycle_dispatched' => $cancelLifecycleDispatched,
+            ],
+            relatable: $position,
+            cacheKeys: ['position' => $position->id],
+        );
+    }
+
+    /**
+     * Scope 3 — structural integrity of every active position.
+     *
+     * Walks each `active` position in the DB (no quiet window — by the
+     * time a position is `active` its full order set must already exist)
+     * and verifies the live row count per category against what the
+     * position snapshot promised at open. Any gap halts new opens
+     * globally and notifies the operator.
+     */
+    private function auditPositionStructureIntegrity(?int $accountFilter): void
+    {
+        $activePositions = Position::query()
+            ->where('status', 'active')
+            ->when($accountFilter, fn ($q) => $q->where('account_id', $accountFilter))
+            ->with(['orders', 'account.apiSystem'])
+            ->get();
+
+        if ($activePositions->isEmpty()) {
+            $this->verboseInfo('Structure audit: no active positions to inspect.');
+
+            return;
+        }
+
+        $this->verboseInfo("Structure audit: inspecting {$activePositions->count()} active position(s).");
+
+        foreach ($activePositions as $position) {
+            $missing = $this->detectMissingStructure($position);
+
+            if ($missing === []) {
+                continue;
+            }
+
+            $this->verboseComment("  Position #{$position->id}: missing ".implode(', ', array_keys($missing)));
+
+            $this->haltOpensGlobally($position);
+            $this->notifyStructureBroken($position, $missing);
+        }
+    }
+
+    /**
+     * Compare the live order set on a position against its snapshot
+     * promise. A row counts as missing when it's physically absent OR
+     * its status is in `STRUCTURALLY_DEAD_STATUSES`.
+     *
+     * Returns a map of category → human label for every missing
+     * component, e.g. ['MARKET' => 'market entry', 'LIMITS' => '3/4 limits live'].
+     * Empty array means the position is structurally whole.
+     *
+     * @return array<string, string>
+     */
+    private function detectMissingStructure(Position $position): array
+    {
+        $missing = [];
+
+        $market = $position->marketOrder();
+        if ($market === null || in_array($market->status, self::STRUCTURALLY_DEAD_STATUSES, true)) {
+            $missing['MARKET'] = 'market entry order';
+        }
+
+        if ($position->profitOrder() === null) {
+            $missing['TAKE_PROFIT'] = 'take-profit order';
+        }
+
+        $stop = $position->stopMarketOrder();
+        if ($stop === null || in_array($stop->status, self::STRUCTURALLY_DEAD_STATUSES, true)) {
+            $missing['STOP_LOSS'] = 'stop-loss order';
+        }
+
+        $expectedLimits = (int) $position->total_limit_orders;
+        $liveLimits = $position->limitOrders()->count();
+        if ($liveLimits < $expectedLimits) {
+            $missing['LIMITS'] = "{$liveLimits}/{$expectedLimits} limit orders live";
+        }
+
+        return $missing;
+    }
+
+    /**
+     * Flip `kraite.allow_opening_positions` to false so the existing
+     * `HasTradingGuards` gate halts every new-position dispatch path
+     * across all accounts. Idempotent — already-false stays false. The
+     * flag is sticky on purpose: only an operator clears it after
+     * inspecting the broken position.
+     */
+    private function haltOpensGlobally(Position $position): void
+    {
+        $engine = Kraite::query()->first();
+        if ($engine === null) {
+            return;
+        }
+
+        if ((bool) $engine->allow_opening_positions === false) {
+            return;
+        }
+
+        $engine->update(['allow_opening_positions' => false]);
+
+        $this->verboseComment("  Position #{$position->id}: kraite.allow_opening_positions flipped to false (global open halt).");
+    }
+
+    /**
+     * @param  array<string, string>  $missing
+     */
+    private function notifyStructureBroken(Position $position, array $missing): void
+    {
+        $account = $position->account;
+
+        NotificationService::send(
+            user: Kraite::admin(),
+            canonical: 'position_structure_broken',
+            referenceData: [
+                'account_id' => $account?->id,
+                'account_name' => $account?->name,
+                'exchange' => $account?->apiSystem?->canonical,
+                'position_id' => $position->id,
+                'pair' => $position->parsed_trading_pair,
+                'direction' => $position->direction,
+                'expected_limit_orders' => (int) $position->total_limit_orders,
+                'missing' => $missing,
             ],
             relatable: $position,
             cacheKeys: ['position' => $position->id],

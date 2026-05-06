@@ -1205,6 +1205,50 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            // Structural integrity break on an `active` position:
+            // one or more of the expected order rows (1 MARKET +
+            // N LIMIT + 1 PROFIT-* + 1 STOP-MARKET) is either absent
+            // or sitting in CANCELLED / EXPIRED / REJECTED. By the
+            // time a position is `active`, that whole set must already
+            // be live, so any gap is a real anomaly. The spotter has
+            // already flipped `kraite.allow_opening_positions = false`
+            // to halt new opens globally; recovery is operator-driven.
+            'position_structure_broken' => (static function () use ($context) {
+                $pair = is_string($context['pair'] ?? null) ? $context['pair'] : 'unknown';
+                $direction = is_string($context['direction'] ?? null) ? $context['direction'] : '?';
+                $accountName = is_string($context['account_name'] ?? null) ? $context['account_name'] : 'account';
+                $exchange = is_string($context['exchange'] ?? null) ? $context['exchange'] : 'exchange';
+                $positionId = isset($context['position_id']) ? (int) $context['position_id'] : null;
+                $expectedLimits = isset($context['expected_limit_orders']) ? (int) $context['expected_limit_orders'] : 0;
+                $missing = is_array($context['missing'] ?? null) ? $context['missing'] : [];
+
+                $missingLines = [];
+                foreach ($missing as $key => $label) {
+                    $keyStr = is_string($key) ? $key : (string) $key;
+                    $labelStr = is_string($label) ? $label : (string) $label;
+                    $missingLines[] = "  • {$keyStr} — {$labelStr}";
+                }
+                $missingBody = empty($missingLines) ? '(none)' : implode("\n", $missingLines);
+
+                $missingShort = empty($missing) ? 'none' : implode(', ', array_keys($missing));
+
+                return [
+                    'severity' => NotificationSeverity::Critical,
+                    'title' => 'Position Structure Broken — Opens Halted',
+                    'emailMessage' => "Active position #{$positionId} {$pair} {$direction} is missing one or more of its expected orders.\n\n".
+                        "Account: {$accountName} ({$exchange})\n".
+                        "Expected limit orders (snapshot): {$expectedLimits}\n\n".
+                        "Missing components:\n{$missingBody}\n\n".
+                        "Action taken automatically: `kraite.allow_opening_positions` flipped to FALSE — every new-position open is now halted globally.\n\n".
+                        "Recovery is manual. Inspect the position, fix the missing order(s), then flip the flag back to TRUE to resume opens.\n\n".
+                        "Inspect:\n[CMD]SELECT id, type, side, status, price, quantity, updated_at FROM orders WHERE position_id = {$positionId} ORDER BY id;[/CMD]",
+                    'pushoverMessage' => "🚨 Structure broken: #{$positionId} {$pair} {$direction} ({$accountName}) — missing {$missingShort}. Opens HALTED globally.",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 1,
+                ];
+            })(),
+
             'recovery_completed' => (function () use ($context) {
                 $detail = (string) ($context['detail'] ?? '(no detail)');
                 $snapshotPath = $context['snapshot_path'] ?? null;

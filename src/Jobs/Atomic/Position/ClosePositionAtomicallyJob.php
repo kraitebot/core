@@ -5,15 +5,15 @@ declare(strict_types=1);
 namespace Kraite\Core\Jobs\Atomic\Position;
 
 use Carbon\Carbon;
-use GuzzleHttp\Exception\ClientException;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
-use Kraite\Core\Exceptions\NonNotifiableException;
+use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\IndicatorHistory;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
+use Throwable;
 
 /**
  * ClosePositionAtomicallyJob (Atomic)
@@ -110,29 +110,45 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
         // endpoint lags the WS trade ledger by 5-20s under load; a stale empty
         // response previously skipped the close silently and left Position
         // #577 (TONUSDT, 2026-05-06) naked on the exchange. `apiClose()` now
-        // builds the close order from local DB truth and lets Binance return
-        // -2022 if the exchange genuinely has nothing left to reduce — that
-        // path is the authoritative "already closed" signal and is handled
-        // below.
-        //
-        // Binance -2022 ("ReduceOnly Order is rejected") is terminal — no retry.
-        // It fires when the position has already been flattened on the
-        // exchange (TP/SL fill, manual close, prior cancel cascade) or when
-        // positionSide/qty mismatch the hedge-mode ledger. Retrying sends
-        // another bad order — we cannot recover from this state
-        // automatically. Fail deterministically so the cancel workflow marks
-        // the position 'failed' and an operator can reconcile the exchange-side
-        // position manually.
+        // builds the close order from local DB truth and trusts Binance's
+        // own -2022 response as the authoritative "nothing to reduce" signal:
+        // when Binance rejects a reduceOnly order with -2022 the position
+        // has already been flattened (TP/SL fill, manual close, prior cancel
+        // cascade), and we map that to the same `already_closed=true` shape
+        // the legacy snapshot pre-flight returned. Position #755 (TONUSDT)
+        // and #803 (CAKEUSDT) — TP-fill close paths — were mismarked
+        // `failed` on 2026-05-06 because the legacy handler raised
+        // NonNotifiableException on this signal; treating -2022 as success
+        // restores the natural TP-close exit path.
         try {
             $apiResponse = $position->apiClose();
-        } catch (ClientException $e) {
-            if (str_contains($e->getMessage(), '-2022')) {
-                throw new NonNotifiableException(sprintf(
-                    'Binance rejected reduceOnly close for position #%d on %s with -2022. Position on exchange may still be open — operator must reconcile manually. Original: %s',
-                    $position->id,
-                    $position->parsed_trading_pair,
-                    $e->getMessage()
-                ));
+        } catch (Throwable $e) {
+            // Each exchange has its own "nothing to reduce" rejection. All
+            // four signals collapse to the same `already_closed=true` shape
+            // — the position has been flattened (TP/SL fill, manual close,
+            // prior cancel cascade), and the local close call is a harmless
+            // no-op confirmation.
+            //
+            //   Binance: -2022     "ReduceOnly Order is rejected"
+            //   Bitget:   22002    "No position to close"  (flash close)
+            //   Bybit:   110043 / 110017 (variants — not yet observed in prod)
+            //   Kucoin:  330005    (variant — not yet observed in prod)
+            $message = $e->getMessage();
+            $alreadyClosed = str_contains($message, '-2022')
+                || str_contains($message, 'ReduceOnly Order is rejected')
+                || str_contains($message, '(code 22002)')
+                || str_contains($message, 'No position to close');
+
+            if ($alreadyClosed) {
+                return [
+                    'position_id' => $position->id,
+                    'symbol' => $position->parsed_trading_pair,
+                    'filled_limit_count' => $position->totalLimitOrdersFilled(),
+                    'pump_cooldown_triggered' => $pumpCooldownTriggered,
+                    'cooldown_details' => $cooldownDetails,
+                    'result' => ['already_closed' => true],
+                    'message' => 'Position already closed on exchange (exchange returned "nothing to reduce")',
+                ];
             }
 
             throw $e;
@@ -159,7 +175,7 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
      * exchange_symbol.
      */
     private function notifyPumpCooldown(
-        \Kraite\Core\Models\ExchangeSymbol $exchangeSymbol,
+        ExchangeSymbol $exchangeSymbol,
         string $changePercent,
         string $threshold,
         string $currentPrice,

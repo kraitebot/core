@@ -163,7 +163,23 @@ trait InteractsWithApis
         }
 
         $order = Order::create($attributes);
-        $apiResponse = $order->apiPlace();
+
+        try {
+            $apiResponse = $order->apiPlace();
+        } catch (Throwable $e) {
+            // Speculative Order::create above already wrote a NEW row to
+            // the local DB. apiPlace throws when the exchange rejects
+            // (e.g. -2022 / 22002 "nothing to reduce" — the position has
+            // already been flattened on the exchange). The caller maps
+            // that rejection to `already_closed=true` success — but
+            // without this cleanup the local row sits forever as a NEW
+            // MARKET-CANCEL with no exchange_order_id, an orphan that
+            // never syncs and clutters the orders table on every
+            // TP-fill close path.
+            $order->delete();
+
+            throw $e;
+        }
 
         $order->apiSync();
         $order->refresh();
