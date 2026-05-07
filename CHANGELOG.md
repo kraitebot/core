@@ -2,7 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
-## 1.30.0 - 2026-05-06
+## 1.31.0 - 2026-05-07
+
+### Features
+
+- [NEW FEATURE] **`PurgePositionTrailJob` atomic janitor.** Deletes the diagnostic breadcrumb trail (model_logs, api_request_logs, api_snapshots, steps, steps_archive) for a position whose lifecycle ended cleanly (`status='closed'` only — `cancelled` and `failed` exits keep their full forensic trail). Single DB transaction; covers both Position-bound and Order-bound polymorphic rows; excludes the janitor's own running step row from the steps deletion so the job can complete and be archived normally. Fired automatically by the new `PositionObserver::updated()` hook on the `closed` transition; idempotent on re-run. Targets the three biggest 24h-growth tables (model_logs +534k/day, steps +432k/day, api_request_logs +237k/day). Verified end-to-end against prod: dispatched manually for Position #1223 (SOLUSDT) → 1496 breadcrumb rows wiped in <1s, position row + 7 orders untouched. Bulk fan-out across all 359 already-closed positions cleared 412,339 rows total in 25s.
+- [NEW FEATURE] **`OptimizeBreadcrumbTablesCommand` + per-table managed maintenance window.** New `kraite:cron-optimize-breadcrumb-tables` rebuilds breadcrumb-table `.ibd` files via `OPTIMIZE TABLE`, reclaiming the disk space InnoDB DELETE leaves stranded inside the file. Each rebuild runs inside its own maintenance window: `MaintenanceMode::pauseStepsDispatch()` engages → wait for in-flight Running/Dispatched steps to drain (60s cap) → run the OPTIMIZE → resume in finally (cache-TTL safety net auto-resumes if the process crashes mid-rebuild). Sequential per-table (parallel mode tripled per-table duration in production benchmarks because all 5 rebuilds shared the same disk bandwidth).
+- [NEW FEATURE] **`Kraite\Core\Support\MaintenanceMode` helper.** Cache-backed flag (Redis in prod, array in tests) for short-window pause/resume of `steps:dispatch`. Default 30-minute TTL safety net guarantees auto-recovery if the consumer crashes before clearing the flag. Public surface: `pauseStepsDispatch(reason, ttlSeconds)`, `resumeStepsDispatch()`, `isStepsDispatchPaused()`, `stepsDispatchPauseInfo()`. Designed as a generic gating point so any future short-maintenance command (table rebuilds, schema migrations, bulk reseeds) can reuse the same pattern.
+
+### Improvements
+
+- [IMPROVED] **`PositionObserver::updated()` wired to dispatch the breadcrumb janitor.** Previously the observer only ran the `creating()` UUID stamp; the new `updated()` hook is gated by `wasChanged('status')` AND `status === 'closed'` so it only fires once per clean lifecycle exit. `cancelled` and `failed` exits keep their full diagnostic trail untouched.
 
 ### Features
 

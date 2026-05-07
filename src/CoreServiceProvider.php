@@ -15,19 +15,20 @@ use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
 use Kraite\Core\Commands\Backtest\BacktestTokenCommand;
 use Kraite\Core\Commands\Cronjobs\AnalyseBscsCommand;
+use Kraite\Core\Commands\Cronjobs\CheckBinanceListenKeysStaleCommand;
 use Kraite\Core\Commands\Cronjobs\CheckDriftsCommand;
+use Kraite\Core\Commands\Cronjobs\CheckSystemHealthCommand;
 use Kraite\Core\Commands\Cronjobs\ComputeMarketRegimeCommand;
 use Kraite\Core\Commands\Cronjobs\ConcludeSymbolsDirectionCommand;
 use Kraite\Core\Commands\Cronjobs\CreatePositionsCommand;
 use Kraite\Core\Commands\Cronjobs\DetectMarketShockCommand;
 use Kraite\Core\Commands\Cronjobs\DisableVolatileTokensCommand;
 use Kraite\Core\Commands\Cronjobs\FetchKlinesCommand;
+use Kraite\Core\Commands\Cronjobs\OptimizeBreadcrumbTablesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeCandlesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeFailedBacktestedKlinesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeModelLogsCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeOldDataCommand;
-use Kraite\Core\Commands\Cronjobs\CheckBinanceListenKeysStaleCommand;
-use Kraite\Core\Commands\Cronjobs\CheckSystemHealthCommand;
 use Kraite\Core\Commands\Cronjobs\RefreshBinanceListenKeysCommand;
 use Kraite\Core\Commands\Cronjobs\RefreshExchangeSymbolsCommand;
 use Kraite\Core\Commands\Cronjobs\RenewSubscriptionsCommand;
@@ -99,6 +100,7 @@ final class CoreServiceProvider extends ServiceProvider
             PurgeFailedBacktestedKlinesCommand::class,
             PurgeModelLogsCommand::class,
             PurgeOldDataCommand::class,
+            OptimizeBreadcrumbTablesCommand::class,
             RefreshExchangeSymbolsCommand::class,
             StoreAccountsBalancesCommand::class,
             StreamBinancePricesCommand::class,
