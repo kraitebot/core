@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.32.0 - 2026-05-08
+
+### Fixes
+
+- [BUG FIX] **Stale mark-price freshness gate in token discovery.** `HasTokenDiscovery::executeTokenAssignment()` now drops candidate symbols whose sidecar `mark_price_synced_at` is older than `kraite.token_discovery.mark_price_max_age_seconds` (default 30) BEFORE scoring. When the price daemon stalls (Binance WS hiccup, daemon crash, frame loss), every reader of mark_price returns the last value silently. Token discovery uses mark_price for the wrong-side-pivot check; sizing uses it as the divisor turning notional intent into MARKET order quantity. Acting on a 60-second-stale price across many accounts in the same tick is the structural risk this gate exists to prevent. A general daemon stall now produces zero opens across every account in the same tick instead of a wave of stale-priced bad picks. Null sidecar (legacy column path / brand-new symbol / test fixture) is allowed through; the throwing computations in `HasTradingComputations` catch the null-everything case downstream as defence in depth.
+
+### Improvements
+
+- [IMPROVED] **Per-account fan-out blast-radius hardening across 6 cron / orchestrator points.** A single account's exception during a slot-rotation tick used to abort every subsequent account in the iteration. Wrapped each per-account / per-position / per-rung loop in a try/catch + log + continue pattern: `CreatePositionsCommand` (per-account), `SyncOrdersCommand` (per-position), `DispatchPositionSlotsJob` (per-position), `DispatchAccountBalancesJob` (per-account), `DispatchLimitOrdersJob` (per-rung), `CheckSystemHealthCommand` (per-account balance probe). One bad row no longer poisons the whole tick.
+- [IMPROVED] **Indexed orphan / live-step lookup** in `CreatePositionsCommand` and `DispatchPositionSlotsJob`. Switched from the unindexed `whereJsonContains('arguments->positionId', $id)` predicate to an indexed `(relatable_type, relatable_id, state)` tuple covered by `idx_p_steps_rel_state_idx`, with a JSON OR-fallback for the brief Pending-without-relatable transition window. `Step::create` now populates `relatable_type` / `relatable_id` explicitly so the indexed path is hot.
+- [IMPROVED] **N+1 single-query refactor** in `CreatePositionsCommand` — replaced the per-user `accounts()` lazy load with a single eager-loaded `Account::whereHas('user')` query.
+- [IMPROVED] Counters and structured logging on the hardened fan-out points (`positions_dispatched` / `positions_failed` / `rungs_dispatched` / `rungs_failed`) so a partial-tick recovery is observable rather than silent.
+
+### Configuration
+
+- [NEW FEATURE] `kraite.token_discovery.mark_price_max_age_seconds` config key (env `TOKEN_DISCOVERY_MARK_PRICE_MAX_AGE_SECONDS`, default 30). Set to 0 to disable the freshness gate.
+
 ## 1.31.0 - 2026-05-07
 
 ### Features

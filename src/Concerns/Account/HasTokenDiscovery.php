@@ -263,6 +263,42 @@ trait HasTokenDiscovery
         });
 
         /*
+         * Step 2b: Stale Mark-Price Freshness Gate
+         *
+         * When the price daemon stalls (Binance WS hiccup, daemon
+         * crash, frame loss), every reader of mark_price keeps
+         * returning the last value the daemon wrote — silently. Token
+         * discovery uses mark_price for the wrong-side-pivot check
+         * downstream and sizing uses it as the divisor turning
+         * notional intent into MARKET order quantity. Acting on a
+         * 60-second-stale price across 200 accounts in the same tick
+         * is the structural risk this gate exists to prevent.
+         *
+         * Behaviour:
+         *  - Sidecar `mark_price_synced_at` strictly older than the
+         *    configured threshold → symbol dropped from the pool.
+         *  - Null sidecar (legacy column path, brand-new symbol,
+         *    test fixture) → allowed through. The throwing
+         *    computations in HasTradingComputations catch the
+         *    null-everything case downstream as defence in depth.
+         *  - Threshold set to 0 → gate disabled entirely.
+         */
+        $markPriceMaxAgeSeconds = (int) config('kraite.token_discovery.mark_price_max_age_seconds', 30);
+        if ($markPriceMaxAgeSeconds > 0) {
+            $freshnessThreshold = now()->subSeconds($markPriceMaxAgeSeconds);
+
+            $this->availableExchangeSymbols = $this->availableExchangeSymbols->filter(static function ($symbol) use ($freshnessThreshold) {
+                $syncedAt = $symbol->mark_price_synced_at;
+
+                if ($syncedAt === null) {
+                    return true;
+                }
+
+                return $syncedAt->greaterThanOrEqualTo($freshnessThreshold);
+            });
+        }
+
+        /*
          * Step 3: Get BTC ExchangeSymbol for BTC Bias
          *
          * Find BTC's ExchangeSymbol with:
@@ -876,31 +912,6 @@ trait HasTokenDiscovery
     }
 
     /**
-     * Compute the S/R proximity multiplier for a candidate during selection.
-     *
-     * Reads the symbol's stored pivot columns (R1/R3/S1/S3) and its live
-     * mark_price (refreshed by StreamBinancePricesCommand at ~1Hz), then
-     * delegates to SupportResistanceProximity for the pure math. Returns
-     * 1.0 when any required input is missing so missing pivot data never
-     * unintentionally filters a symbol — the gate is additive and
-     * opt-in, not a hard requirement.
-     */
-    protected function supportResistanceMultiplierFor(ExchangeSymbol $symbol, string $direction): float
-    {
-        $safeZone = (float) config('kraite.token_discovery.sr_safe_zone', 0.20);
-
-        return SupportResistanceProximity::computeMultiplier(
-            direction: $direction,
-            markPrice: $symbol->mark_price,
-            r1: $symbol->pivot_r1,
-            r3: $symbol->pivot_r3,
-            s1: $symbol->pivot_s1,
-            s3: $symbol->pivot_s3,
-            safeZone: $safeZone,
-        );
-    }
-
-    /**
      * Resolve the test-only god-mode symbol override for this slot.
      *
      * Returns the resolved ExchangeSymbol when ALL of:
@@ -971,5 +982,30 @@ trait HasTokenDiscovery
         }
 
         return $candidate;
+    }
+
+    /**
+     * Compute the S/R proximity multiplier for a candidate during selection.
+     *
+     * Reads the symbol's stored pivot columns (R1/R3/S1/S3) and its live
+     * mark_price (refreshed by StreamBinancePricesCommand at ~1Hz), then
+     * delegates to SupportResistanceProximity for the pure math. Returns
+     * 1.0 when any required input is missing so missing pivot data never
+     * unintentionally filters a symbol — the gate is additive and
+     * opt-in, not a hard requirement.
+     */
+    protected function supportResistanceMultiplierFor(ExchangeSymbol $symbol, string $direction): float
+    {
+        $safeZone = (float) config('kraite.token_discovery.sr_safe_zone', 0.20);
+
+        return SupportResistanceProximity::computeMultiplier(
+            direction: $direction,
+            markPrice: $symbol->mark_price,
+            r1: $symbol->pivot_r1,
+            r3: $symbol->pivot_r3,
+            s1: $symbol->pivot_s1,
+            s3: $symbol->pivot_s3,
+            safeZone: $safeZone,
+        );
     }
 }

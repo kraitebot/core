@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Lifecycles\Account;
 
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Jobs\Lifecycles\Position\DispatchPositionJob;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Proxies\JobProxy;
 use StepDispatcher\Models\Step;
+use Throwable;
 
 /**
  * DispatchPositionSlotsJob
@@ -79,35 +82,70 @@ final class DispatchPositionSlotsJob extends BaseQueueableJob
         // The 2026-04-25 17:33 cluster of 12 Failed steps (positions
         // #241 + #242) was exactly this. Same shape as the orphan-
         // recovery dedup in CreatePositionsCommand.
+        $failed = 0;
+
         foreach ($positions as $position) {
-            $hasLiveStep = Step::query()
-                ->whereIn('class', $candidateClasses)
-                ->whereJsonContains('arguments->positionId', $position->id)
-                ->whereNotIn('state', $terminalStates)
-                ->exists();
+            // Per-position try/catch — at peak slot rotation a single
+            // position's Step::create can throw (DB transient, observer
+            // chain blowing up on a malformed exchange_symbol relation,
+            // etc.). One bad row must not abort the rest of the slot
+            // dispatch — the account would silently lose every position
+            // after the failing index in the iteration order.
+            try {
+                // Indexed orphan / live-step lookup. The legacy
+                // `whereJsonContains('arguments->positionId', …)`
+                // predicate was unindexed and slow at scale; the
+                // (`relatable_type`, `relatable_id`, `state`) tuple is
+                // covered by `idx_p_steps_rel_state_idx`. The
+                // OR-fallback against the JSON path stays for the
+                // brief transition window where pre-existing Pending
+                // steps may not yet have `relatable_*` populated by
+                // the framework's HandlesStepLifecycle hook.
+                $hasLiveStep = Step::query()
+                    ->whereIn('class', $candidateClasses)
+                    ->whereNotIn('state', $terminalStates)
+                    ->where(static function ($query) use ($position) {
+                        $query->where(static function ($qq) use ($position) {
+                            $qq->where('relatable_type', Position::class)
+                                ->where('relatable_id', $position->id);
+                        })->orWhereJsonContains('arguments->positionId', $position->id);
+                    })
+                    ->exists();
 
-            if ($hasLiveStep) {
-                $skipped++;
+                if ($hasLiveStep) {
+                    $skipped++;
 
-                continue;
+                    continue;
+                }
+
+                Step::create([
+                    'class' => $dispatchJobClass,
+                    'queue' => 'positions',
+                    'relatable_type' => Position::class,
+                    'relatable_id' => $position->id,
+                    'arguments' => ['positionId' => $position->id],
+                    'block_uuid' => (string) Str::uuid(),
+                    'workflow_id' => $workflowId,
+                    'index' => 1,
+                ]);
+
+                $dispatched++;
+            } catch (Throwable $e) {
+                $failed++;
+                Log::channel('jobs')->error('[DISPATCH-SLOTS] per-position dispatch threw — continuing', [
+                    'account_id' => $this->account->id,
+                    'position_id' => $position->id,
+                    'exception' => $e::class,
+                    'message' => $e->getMessage(),
+                ]);
             }
-
-            Step::create([
-                'class' => $dispatchJobClass,
-                'queue' => 'positions',
-                'arguments' => ['positionId' => $position->id],
-                'block_uuid' => (string) Str::uuid(),
-                'workflow_id' => $workflowId,
-                'index' => 1,
-            ]);
-
-            $dispatched++;
         }
 
         return [
             'account_id' => $this->account->id,
             'positions_dispatched' => $dispatched,
             'positions_skipped_already_live' => $skipped,
+            'positions_failed' => $failed,
             'message' => 'Position dispatching initiated',
         ];
     }

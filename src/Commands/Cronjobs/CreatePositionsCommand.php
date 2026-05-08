@@ -4,16 +4,17 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Commands\Cronjobs;
 
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Kraite\Core\Jobs\Lifecycles\Account\PreparePositionsOpeningJob;
 use Kraite\Core\Jobs\Lifecycles\Position\DispatchPositionJob;
 use Kraite\Core\Models\Account;
-use Kraite\Core\Models\User;
+use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Proxies\JobProxy;
 use Kraite\Core\Trading\Kraite;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Support\BaseCommand;
+use Throwable;
 
 final class CreatePositionsCommand extends BaseCommand
 {
@@ -60,21 +61,30 @@ final class CreatePositionsCommand extends BaseCommand
             $this->verboseNewLine();
         }
 
-        $users = User::where('can_trade', true)->get();
+        // Single eager-loaded query for every account whose owner is
+        // also `can_trade=true`. Avoids the N+1 shape where the legacy
+        // outer-then-inner loop re-queried `user->accounts()` per user.
+        // Account count is the natural unit of work for this cron, so
+        // we drive the iteration off the account collection directly.
+        $accounts = Account::query()
+            ->with(['apiSystem', 'user'])
+            ->where('is_active', true)
+            ->where('can_trade', true)
+            ->whereHas('user', static fn ($q) => $q->where('can_trade', true))
+            ->get();
 
-        $this->verboseInfo("Found {$users->count()} user(s) with can_trade=true");
+        $this->verboseInfo("Found {$accounts->count()} tradeable account(s).");
 
-        foreach ($users as $user) {
-            /** @var Collection<int, Account> $accounts */
-            $accounts = $user->accounts()
-                ->with('apiSystem')
-                ->where('is_active', true)
-                ->where('can_trade', true)
-                ->get();
-
-            $this->verboseComment("User #{$user->id}: {$accounts->count()} tradeable account(s)");
-
-            foreach ($accounts as $account) {
+        foreach ($accounts as $account) {
+            // Per-account try/catch — keeps one account's failure (a
+            // hung API client throwing inside the orphan check, a DB
+            // deadlock on the open-positions count, a malformed
+            // exchange_symbol relation, anything) from killing the
+            // entire cron tick. Without this guard, account #47
+            // throwing meant accounts 48..N skipped the rest of this
+            // 3-minute cycle. With 200+ accounts on the box, that
+            // blast radius is unacceptable.
+            try {
                 // Self-heal first — orphan 'new' positions (their previous
                 // DispatchPositionJob step was swept during operator
                 // cleanup, supervisor restart, or any cleanup that lost a
@@ -86,6 +96,16 @@ final class CreatePositionsCommand extends BaseCommand
                 $this->recoverOrphanPositionsForAccount($account);
 
                 $this->attemptOpeningPositionsForAccount($account);
+            } catch (Throwable $e) {
+                Log::channel('jobs')->error('[CREATE-POSITIONS] per-account iteration threw — continuing with the rest of the accounts', [
+                    'account_id' => $account->id,
+                    'account_name' => $account->name,
+                    'exception' => $e::class,
+                    'message' => $e->getMessage(),
+                ]);
+
+                $exceptionClass = $e::class;
+                $this->verboseWarn("    → Account #{$account->id} threw {$exceptionClass} — skipped, rest of accounts continue.");
             }
         }
 
@@ -124,19 +144,43 @@ final class CreatePositionsCommand extends BaseCommand
         $recovered = 0;
 
         foreach ($orphanPositions as $position) {
+            // Indexed orphan lookup. The legacy
+            // `whereJsonContains('arguments->positionId', …)` predicate
+            // is unindexed and degrades to a near-full scan of the
+            // steps table at scale. The indexed
+            // (`relatable_type`, `relatable_id`, `state`) tuple is
+            // covered by `idx_p_steps_rel_state_idx`.
+            //
+            // The OR-fallback against the JSON path stays for the
+            // brief transition window where pre-existing Pending steps
+            // (created before this change) may not yet have their
+            // `relatable_*` columns populated — those columns are set
+            // by the framework when the worker picks the step up. The
+            // window closes as soon as the dispatcher promotes any
+            // such Pending row to Dispatched / Running.
             $hasLiveStep = Step::query()
                 ->whereIn('class', $candidateClasses)
-                ->whereJsonContains('arguments->positionId', $position->id)
                 ->whereNotIn('state', $terminalStates)
+                ->where(static function ($query) use ($position) {
+                    $query->where(static function ($qq) use ($position) {
+                        $qq->where('relatable_type', Position::class)
+                            ->where('relatable_id', $position->id);
+                    })->orWhereJsonContains('arguments->positionId', $position->id);
+                })
                 ->exists();
 
             if ($hasLiveStep) {
                 continue;
             }
 
+            // Populate `relatable_*` at create time so the next tick's
+            // orphan check resolves it via the indexed path even while
+            // the step is still Pending.
             Step::create([
                 'class' => $exchangeDispatchClass,
                 'queue' => 'positions',
+                'relatable_type' => Position::class,
+                'relatable_id' => $position->id,
                 'arguments' => ['positionId' => $position->id],
             ]);
 

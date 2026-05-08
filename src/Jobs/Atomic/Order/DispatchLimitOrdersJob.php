@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\Order;
 
+use Illuminate\Support\Facades\Log;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Proxies\JobProxy;
 use Kraite\Core\Trading\Kraite;
 use StepDispatcher\Models\Step;
+use Throwable;
 
 /**
  * DispatchLimitOrdersJob (Orchestrator)
@@ -109,19 +111,44 @@ final class DispatchLimitOrdersJob extends BaseQueueableJob
 
         if ($totalCreated > 0) {
             $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
+            $rungsDispatched = 0;
+            $rungsFailed = 0;
+
             collect($this->limitOrders)
-                ->each(function (Order $order, int $rungIndex) use ($resolver, $blockUuid): void {
-                    Step::create([
-                        'class' => $resolver->resolve(PlaceLimitOrderJob::class),
-                        'queue' => 'orders',
-                        'arguments' => [
-                            'orderId' => $order->id,
-                            'rungIndex' => $rungIndex + 1,
-                        ],
-                        'block_uuid' => $blockUuid,
-                        'index' => $rungIndex + 1,
-                        'workflow_id' => null,
-                    ]);
+                ->each(function (Order $order, int $rungIndex) use ($resolver, $blockUuid, &$rungsDispatched, &$rungsFailed): void {
+                    // Per-rung try/catch — a transient Step::create
+                    // failure on rung 2 must not abort rungs 3..N. The
+                    // ladder is already in DB as Order rows; the
+                    // PlaceLimitOrderJob steps are the only piece that
+                    // could fail here. Logging the failure and
+                    // continuing produces a partial-but-known ladder
+                    // state the lifecycle's resolve-exception path can
+                    // recover from rather than a half-dispatched
+                    // surprise.
+                    try {
+                        Step::create([
+                            'class' => $resolver->resolve(PlaceLimitOrderJob::class),
+                            'queue' => 'orders',
+                            'relatable_type' => Order::class,
+                            'relatable_id' => $order->id,
+                            'arguments' => [
+                                'orderId' => $order->id,
+                                'rungIndex' => $rungIndex + 1,
+                            ],
+                            'block_uuid' => $blockUuid,
+                            'index' => $rungIndex + 1,
+                            'workflow_id' => null,
+                        ]);
+                        $rungsDispatched++;
+                    } catch (Throwable $e) {
+                        $rungsFailed++;
+                        Log::channel('jobs')->error('[DISPATCH-LIMITS] per-rung dispatch threw — continuing', [
+                            'order_id' => $order->id,
+                            'rung_index' => $rungIndex + 1,
+                            'exception' => $e::class,
+                            'message' => $e->getMessage(),
+                        ]);
+                    }
                 });
         }
 

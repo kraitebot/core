@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Commands\Cronjobs;
 
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
@@ -11,7 +13,11 @@ use Kraite\Core\Models\Account;
 use Kraite\Core\Models\BinanceListenKey;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Kraite;
+use Kraite\Core\Models\Position;
+use Kraite\Core\Support\Health\OrphanReconciler;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
+use Kraite\Core\Support\ValueObjects\ApiProperties;
 use StepDispatcher\Support\BaseCommand;
 use Throwable;
 
@@ -225,7 +231,7 @@ final class CheckSystemHealthCommand extends BaseCommand
                 signal: "indicator_stale_{$pair}",
                 severity: 'high',
                 title: "Indicators stale for {$pair}",
-                detail: "No `indicator_histories` row newer than ".self::INDICATOR_STALENESS_MINUTES."min for exchange_symbol #{$row->id}. Direction-decision logic is reading frozen signals.",
+                detail: 'No `indicator_histories` row newer than '.self::INDICATOR_STALENESS_MINUTES."min for exchange_symbol #{$row->id}. Direction-decision logic is reading frozen signals.",
             );
             $alerts++;
         }
@@ -249,21 +255,35 @@ final class CheckSystemHealthCommand extends BaseCommand
 
         $alerts = 0;
         foreach ($accounts as $account) {
-            $latest = DB::table('account_balance_history')
-                ->where('account_id', $account->id)
-                ->max('created_at');
+            // Per-account try/catch — a transient DB error on the
+            // staleness probe for one account must not abort the
+            // remaining accounts' freshness checks. Watchdog runs
+            // every 7 minutes; per-row isolation keeps the rest of
+            // the fleet observable even when one account's row
+            // throws.
+            try {
+                $latest = DB::table('account_balance_history')
+                    ->where('account_id', $account->id)
+                    ->max('created_at');
 
-            if ($latest !== null && $latest >= $threshold) {
-                continue;
+                if ($latest !== null && $latest >= $threshold) {
+                    continue;
+                }
+
+                $this->emit(
+                    signal: "balance_stale_account_{$account->id}",
+                    severity: 'high',
+                    title: "Account balance history stale (#{$account->id})",
+                    detail: 'No `account_balance_history` row newer than '.self::BALANCE_STALENESS_MINUTES."min for account #{$account->id} ({$account->name}). PnL + sizing math reading stale numbers.",
+                );
+                $alerts++;
+            } catch (Throwable $e) {
+                Log::channel('jobs')->error('[SYSTEM-HEALTH] balance freshness probe threw — continuing', [
+                    'account_id' => $account->id,
+                    'exception' => $e::class,
+                    'message' => $e->getMessage(),
+                ]);
             }
-
-            $this->emit(
-                signal: "balance_stale_account_{$account->id}",
-                severity: 'high',
-                title: "Account balance history stale (#{$account->id})",
-                detail: "No `account_balance_history` row newer than ".self::BALANCE_STALENESS_MINUTES."min for account #{$account->id} ({$account->name}). PnL + sizing math reading stale numbers.",
-            );
-            $alerts++;
         }
 
         return $alerts;
@@ -301,7 +321,7 @@ final class CheckSystemHealthCommand extends BaseCommand
             signal: 'daemon_heartbeat_stale',
             severity: 'high',
             title: 'User-data daemon heartbeat stale',
-            detail: "Daemon heartbeat flag has not been touched in {$age}s (threshold: ".self::DAEMON_HEARTBEAT_STALENESS_SECONDS."s). Event loop is likely wedged even though supervisorctl reports RUNNING.",
+            detail: "Daemon heartbeat flag has not been touched in {$age}s (threshold: ".self::DAEMON_HEARTBEAT_STALENESS_SECONDS.'s). Event loop is likely wedged even though supervisorctl reports RUNNING.',
         );
 
         return 1;
@@ -338,7 +358,7 @@ final class CheckSystemHealthCommand extends BaseCommand
             signal: 'dispatcher_tick_stale',
             severity: 'high',
             title: 'Step dispatcher tick stale',
-            detail: "Newest `steps_dispatcher.last_selected_at` is {$age}s old (threshold: ".self::DISPATCHER_TICK_STALENESS_SECONDS."s). The `steps:dispatch` cron is not firing — workers will starve.",
+            detail: "Newest `steps_dispatcher.last_selected_at` is {$age}s old (threshold: ".self::DISPATCHER_TICK_STALENESS_SECONDS.'s). The `steps:dispatch` cron is not firing — workers will starve.',
         );
 
         return 1;
@@ -373,7 +393,7 @@ final class CheckSystemHealthCommand extends BaseCommand
             signal: 'scheduler_dead',
             severity: 'high',
             title: 'Scheduler liveness signal stale',
-            detail: "No keepalive cron run in the last {$age}s (threshold: ".self::SCHEDULER_LIVENESS_SECONDS."s). `schedule:work` is likely dead — the entire cron chain is silent.",
+            detail: "No keepalive cron run in the last {$age}s (threshold: ".self::SCHEDULER_LIVENESS_SECONDS.'s). `schedule:work` is likely dead — the entire cron chain is silent.',
         );
 
         return 1;
@@ -397,7 +417,7 @@ final class CheckSystemHealthCommand extends BaseCommand
             signal: 'failed_jobs_overflow',
             severity: 'high',
             title: 'failed_jobs queue overflow',
-            detail: "`failed_jobs` table has {$count} rows (threshold: ".self::FAILED_JOBS_THRESHOLD."). Workers are dying or jobs are throwing un-handled exceptions.",
+            detail: "`failed_jobs` table has {$count} rows (threshold: ".self::FAILED_JOBS_THRESHOLD.'). Workers are dying or jobs are throwing un-handled exceptions.',
         );
 
         return 1;
@@ -475,7 +495,7 @@ final class CheckSystemHealthCommand extends BaseCommand
             signal: 'horizon_queue_depth',
             severity: 'medium',
             title: 'Horizon queue depth high',
-            detail: "Pending queue depth across canonical queues = {$depth} (threshold: ".self::HORIZON_QUEUE_DEPTH_THRESHOLD."). Workers are not keeping up — investigate stuck jobs or insufficient processes.",
+            detail: "Pending queue depth across canonical queues = {$depth} (threshold: ".self::HORIZON_QUEUE_DEPTH_THRESHOLD.'). Workers are not keeping up — investigate stuck jobs or insufficient processes.',
         );
 
         return 1;
@@ -525,12 +545,11 @@ final class CheckSystemHealthCommand extends BaseCommand
             signal: 'disk_pressure_low',
             severity: 'high',
             title: 'Disk pressure on root filesystem',
-            detail: "Root filesystem free = {$freeGib} GiB / {$totalGib} GiB ({$freePercentStr}% free, threshold: ".self::DISK_FREE_PERCENT_MIN."%). Logs and supervisor stdout writes will start failing before any other capacity signal. Investigate `du -sh /var/log /home/waygou/ingestion.kraite.com/storage/logs` and rotate / prune.",
+            detail: "Root filesystem free = {$freeGib} GiB / {$totalGib} GiB ({$freePercentStr}% free, threshold: ".self::DISK_FREE_PERCENT_MIN.'%). Logs and supervisor stdout writes will start failing before any other capacity signal. Investigate `du -sh /var/log /home/waygou/ingestion.kraite.com/storage/logs` and rotate / prune.',
         );
 
         return 1;
     }
-
 
     /**
      * #11 — Orphan reconciliation per Binance + Bitget account.
@@ -634,12 +653,12 @@ final class CheckSystemHealthCommand extends BaseCommand
         $exchangePositionKeys = [];
         foreach ($exchangePositions as $key => $p) {
             $amt = (string) ($p['positionAmt'] ?? '0');
-            if (\Kraite\Core\Support\Math::equal($amt, '0')) {
+            if (Math::equal($amt, '0')) {
                 continue;
             }
             [$symbol, $side] = array_pad(explode(':', (string) $key), 2, 'BOTH');
             if ($side === 'BOTH') {
-                $side = \Kraite\Core\Support\Math::gt($amt, '0') ? 'LONG' : 'SHORT';
+                $side = Math::gt($amt, '0') ? 'LONG' : 'SHORT';
             }
             $exchangePositionKeys[] = "{$symbol}:{$side}";
         }
@@ -683,7 +702,7 @@ final class CheckSystemHealthCommand extends BaseCommand
             ->whereIn('status', ['new', 'opening', 'cancelling', 'syncing'])
             ->isNotEmpty();
 
-        $report = \Kraite\Core\Support\Health\OrphanReconciler::reconcile(
+        $report = OrphanReconciler::reconcile(
             exchangeOpenOrderIds: $exchangeOpenOrderIds,
             exchangePositionKeys: $exchangePositionKeys,
             kraiteOpenOrderIds: $kraiteOpenOrderIds,
@@ -780,7 +799,7 @@ final class CheckSystemHealthCommand extends BaseCommand
                 severity: 'high',
                 title: "Orphan exchange position {$key} on {$account->name}",
                 detail: $closed
-                    ? "Auto-closed via reduce-only MARKET (allow_other_positions=false)."
+                    ? 'Auto-closed via reduce-only MARKET (allow_other_positions=false).'
                     : "Auto-close FAILED: {$error}. Operator must intervene manually.",
             );
             $alerts++;
@@ -796,7 +815,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      */
     private function cancelOrphanOrder(Account $account, string $orderId, string $symbol, bool $isAlgo): void
     {
-        $properties = new \Kraite\Core\Support\ValueObjects\ApiProperties;
+        $properties = new ApiProperties;
         $properties->set('account', $account);
 
         if ($isAlgo) {
@@ -840,7 +859,7 @@ final class CheckSystemHealthCommand extends BaseCommand
         // Hedge mode encodes intent via `positionSide`; one-way mode
         // needs `reduceOnly=true` so the order doesn't accidentally
         // open a reverse position when the slot is already flat.
-        $properties = new \Kraite\Core\Support\ValueObjects\ApiProperties;
+        $properties = new ApiProperties;
         $properties->set('account', $account);
         $properties->set('options.symbol', $symbol);
         $properties->set('options.type', 'MARKET');
@@ -869,7 +888,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      * field is present and non-empty).
      */
     private function resolvePositionQuantity(
-        \Illuminate\Support\Collection $exchangePositions,
+        Collection $exchangePositions,
         string $symbol,
         ?string $direction,
         bool $isHedgeMode,
@@ -890,11 +909,11 @@ final class CheckSystemHealthCommand extends BaseCommand
         // from-zero when negative. Keeps decimal precision intact for
         // the placeOrder `quantity` field — `(float)` would round long
         // tails on tokens with high precision (PEPE-class et al).
-        $abs = \Kraite\Core\Support\Math::lt($amt, '0')
-            ? \Kraite\Core\Support\Math::sub('0', $amt)
+        $abs = Math::lt($amt, '0')
+            ? Math::sub('0', $amt)
             : $amt;
 
-        return \Kraite\Core\Support\Math::gt($abs, '0') ? $abs : '0';
+        return Math::gt($abs, '0') ? $abs : '0';
     }
 
     /**
@@ -902,13 +921,13 @@ final class CheckSystemHealthCommand extends BaseCommand
      * so the cleanup layer knows which API primitive to call without
      * a second exchange round-trip.
      *
-     * @param  \Illuminate\Support\Collection<int, array<string, mixed>>  $openOrders
-     * @param  \Illuminate\Support\Collection<int, array<string, mixed>>  $algoOrders
+     * @param  Collection<int, array<string, mixed>>  $openOrders
+     * @param  Collection<int, array<string, mixed>>  $algoOrders
      * @return array<string, array{symbol: string, is_algo: bool}>
      */
     private function mapExchangeOrderMeta(
-        \Illuminate\Support\Collection $openOrders,
-        \Illuminate\Support\Collection $algoOrders,
+        Collection $openOrders,
+        Collection $algoOrders,
     ): array {
         $map = [];
 
@@ -943,9 +962,9 @@ final class CheckSystemHealthCommand extends BaseCommand
      * every symbol in the universe, just the ones the bot is actually
      * touching today.
      */
-    private function eligibleExchangeSymbolsQuery(): \Illuminate\Database\Eloquent\Builder
+    private function eligibleExchangeSymbolsQuery(): Builder
     {
-        $openedStatuses = (new \Kraite\Core\Models\Position)->openedStatuses();
+        $openedStatuses = (new Position)->openedStatuses();
 
         return ExchangeSymbol::query()
             ->where(function ($q) use ($openedStatuses): void {

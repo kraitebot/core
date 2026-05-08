@@ -190,6 +190,17 @@ return [
     'token_discovery' => [
         'sr_safe_zone' => (float) env('TOKEN_DISCOVERY_SR_SAFE_ZONE', 0.20),
         'correlation_type' => env('TOKEN_DISCOVERY_CORRELATION_TYPE', 'rolling'),
+
+        // Stale-mark-price freshness gate. A candidate symbol whose
+        // sidecar `mark_price_synced_at` is older than this threshold
+        // is dropped from the assignment pool BEFORE scoring — so a
+        // daemon stall produces zero opens across every account in
+        // the same tick instead of a wave of stale-priced bad picks.
+        // Null sidecar (legacy column / brand-new symbol / test
+        // fixture) is allowed through; the throwing computations in
+        // HasTradingComputations catch the null-everything case
+        // downstream as defence in depth. Set to 0 to disable.
+        'mark_price_max_age_seconds' => (int) env('TOKEN_DISCOVERY_MARK_PRICE_MAX_AGE_SECONDS', 30),
     ],
 
     /*
