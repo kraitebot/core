@@ -24,6 +24,7 @@ use Kraite\Core\Commands\Cronjobs\CreatePositionsCommand;
 use Kraite\Core\Commands\Cronjobs\DetectMarketShockCommand;
 use Kraite\Core\Commands\Cronjobs\DisableVolatileTokensCommand;
 use Kraite\Core\Commands\Cronjobs\FetchKlinesCommand;
+use Kraite\Core\Commands\Cronjobs\FlushDispatcherSaturationCommand;
 use Kraite\Core\Commands\Cronjobs\OptimizeBreadcrumbTablesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeCandlesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeFailedBacktestedKlinesCommand;
@@ -101,6 +102,7 @@ final class CoreServiceProvider extends ServiceProvider
             PurgeModelLogsCommand::class,
             PurgeOldDataCommand::class,
             OptimizeBreadcrumbTablesCommand::class,
+            FlushDispatcherSaturationCommand::class,
             RefreshExchangeSymbolsCommand::class,
             StoreAccountsBalancesCommand::class,
             StreamBinancePricesCommand::class,

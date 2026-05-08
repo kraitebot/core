@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.33.0 - 2026-05-08
+
+### Features
+
+- [NEW FEATURE] **Dispatcher saturation tracking.** New `steps_dispatcher_saturation` table (per-group, per-minute aggregate) plus `kraite:cron-flush-dispatcher-saturation` command that pulls the per-tick Redis counters written by step-dispatcher 1.11.14 into the persistent table. Reads the *previous* completed minute so it never races with in-flight ticks; consumed Redis keys are deleted after flush (their natural 90s TTL is the backstop). Saturation % = `ticks_capped_with_leftover / ticks_observed × 100`. New `Kraite\Core\Models\StepsDispatcherSaturation` model with a `saturation_pct` accessor. Dashboard surface to be wired in admin.
+
 ## 1.32.0 - 2026-05-08
 
 ### Fixes
