@@ -12,10 +12,19 @@ use Kraite\Core\Models\Account;
 
 /**
  * Cross-account ("fleet") financial calculator. Treats every live
- * account as a single aggregated equity ledger — sum of wallets in,
- * sum of deltas out — so public-facing metrics (marketing site hero,
- * sparkline, "% in profit", projections) cannot drift from the
- * per-account math used elsewhere.
+ * account as a single aggregated equity ledger so public-facing
+ * metrics (marketing site hero, sparkline, "% in profit",
+ * projections) cannot drift from the per-account math used elsewhere.
+ *
+ * Realized metrics (delta, ROI, daily revenue, daily %, scenarios,
+ * sparkline, days-in-profit, share-in-profit) are sourced from
+ * closed-position trade PnL, NOT raw wallet snapshots. That makes
+ * every realized number immune to deposits, withdrawals, funding
+ * fees, and any other non-trading wallet movement.
+ *
+ * Wallet snapshots stay available as the anchor inputs for forward
+ * projections — that math needs the live wallet to compound from
+ * "today's actual money", not an idealised trade-only number.
  *
  * Default fleet = active + tradeable accounts. Pass an explicit
  * collection to compute over an alternate set (e.g. an admin scope
@@ -49,7 +58,8 @@ final class FleetFinancials
 
     /**
      * Sum of every account's most recent `total_wallet_balance`. The
-     * "live" anchor used by the projection compound chain.
+     * "live" anchor used by the projection compound chain. Wallet
+     * anchor only — realized metrics are trade-PnL driven.
      */
     public function totalCurrentWallet(): ?string
     {
@@ -73,9 +83,9 @@ final class FleetFinancials
     }
 
     /**
-     * Fleet "started window at" wallet — sum of every account's first
-     * snapshot inside the window. Accounts with no snapshot in the
-     * window contribute zero (they didn't exist yet for this window).
+     * Fleet "started window at" wallet — sum of every account's
+     * first snapshot inside the window. Denominator anchor for ROI
+     * and daily % calculations.
      */
     public function totalStartWallet(Window $window): ?string
     {
@@ -95,31 +105,31 @@ final class FleetFinancials
     }
 
     /**
-     * Fleet realized delta = `endWallet − startWallet` summed across
-     * accounts. Returns null when the fleet has no anchors at all.
+     * Fleet realized delta — sum of trade PnL across every cleanly-
+     * closed position in the window for accounts in the fleet.
+     * Returns null when zero clean closes occurred (caller decides
+     * whether to render "0" or "—").
      */
     public function realizedDelta(Window $window): ?string
     {
-        $sum = '0';
-        $found = false;
+        $perDay = $this->dailyTradePnl($window);
 
-        foreach ($this->accounts as $account) {
-            $delta = (new AccountFinancials($account))->realizedDelta($window);
-            if ($delta === null) {
-                continue;
-            }
-            $sum = bcadd($sum, $delta, self::SCALE);
-            $found = true;
+        if ($perDay === []) {
+            return null;
         }
 
-        return $found ? $sum : null;
+        $sum = '0';
+        foreach ($perDay as $delta) {
+            $sum = bcadd($sum, $delta, self::SCALE);
+        }
+
+        return $sum;
     }
 
     /**
-     * Fleet realized ROI in the window as a percentage. Aggregated
-     * (sum/sum), not median or mean of per-account ROIs — large
-     * accounts naturally weight the result, which is what the
-     * marketing site wants to advertise.
+     * Fleet realized ROI — trade-only PnL divided by the fleet's
+     * start-of-window wallet anchor. Aggregated (sum/sum), not
+     * median or mean of per-account ROIs.
      */
     public function realizedRoiPct(Window $window): ?float
     {
@@ -134,69 +144,37 @@ final class FleetFinancials
     }
 
     /**
-     * Per-day fleet revenue map for the window. Each entry is the
-     * sum of every account's daily wallet delta for that date.
-     * Days where no account had snapshots are absent from the map.
+     * Per-day fleet trade revenue map for the window. Each entry is
+     * the sum of every account's trade PnL on that calendar day.
+     * Days with no clean closes are absent from the map.
      *
-     * @return array<string, string> YYYY-MM-DD → bcmath-scaled fleet delta.
+     * @return array<string, string> YYYY-MM-DD → bcmath-scaled fleet trade PnL.
      */
     public function dailyRevenues(Window $window): array
     {
-        $combined = [];
-
-        foreach ($this->accounts as $account) {
-            $rev = (new AccountFinancials($account))->dailyRevenues($window);
-            foreach ($rev as $day => $delta) {
-                $combined[$day] = isset($combined[$day])
-                    ? bcadd($combined[$day], $delta, self::SCALE)
-                    : $delta;
-            }
-        }
-
-        ksort($combined);
-
-        return $combined;
+        return $this->dailyTradePnl($window);
     }
 
     /**
-     * Per-day fleet pct map — `fleetDelta / fleetStartOfDayWallet`.
-     * Aggregated across accounts: numerator = summed deltas, denom =
-     * summed first-of-day wallets. Days missing a denominator are
-     * skipped.
+     * Per-day fleet pct map — `fleetTradePnl / fleetStartOfWindowWallet`.
+     * Constant denominator (start-of-window wallet) means the daily
+     * percentages stay comparable across the window without being
+     * skewed by a deposit / withdrawal mid-window.
      *
      * @return array<string, string> YYYY-MM-DD → decimal pct.
      */
     public function dailyPercentages(Window $window): array
     {
-        $deltas = [];
-        $starts = [];
+        $start = $this->totalStartWallet($window);
 
-        foreach ($this->accounts as $account) {
-            $rows = $this->dailyAggregatesFor($account->id, $window);
-            foreach ($rows as $row) {
-                $first = (string) $row->first_wallet;
-                $last = (string) $row->last_wallet;
-                if (! is_numeric($first) || ! is_numeric($last)) {
-                    continue;
-                }
-                $deltas[$row->d] = isset($deltas[$row->d])
-                    ? bcadd($deltas[$row->d], bcsub($last, $first, self::SCALE), self::SCALE)
-                    : bcsub($last, $first, self::SCALE);
-                $starts[$row->d] = isset($starts[$row->d])
-                    ? bcadd($starts[$row->d], $first, self::SCALE)
-                    : $first;
-            }
+        if ($start === null || bccomp($start, '0', self::SCALE) <= 0) {
+            return [];
         }
 
         $out = [];
-        foreach ($deltas as $day => $delta) {
-            if (! isset($starts[$day]) || bccomp($starts[$day], '0', self::SCALE) <= 0) {
-                continue;
-            }
-            $out[$day] = bcdiv($delta, $starts[$day], self::SCALE);
+        foreach ($this->dailyTradePnl($window) as $day => $delta) {
+            $out[$day] = bcdiv($delta, $start, self::SCALE);
         }
-
-        ksort($out);
 
         return $out;
     }
@@ -244,11 +222,11 @@ final class FleetFinancials
     /**
      * Fleet-level realized + projected. Compounds today's aggregated
      * fleet wallet forward at the chosen scenario's daily pct from
-     * now until window's end, returns combined gain in the requested
-     * format. Default window = current calendar month.
+     * now until window's end. Scenario percentages are now trade-PnL
+     * derived, so the projection extrapolates trader-driven returns
+     * instead of cash-flow-contaminated wallet drift.
      *
-     * Marketing-site hero call:
-     *   $fleet->projected(ProjectionScenario::Neutral, null, ProjectionFormat::Percentage);
+     * Default window = current calendar month.
      */
     public function projected(
         ProjectionScenario $scenario,
@@ -269,9 +247,54 @@ final class FleetFinancials
     }
 
     /**
-     * Share of accounts whose realized delta over the window is > 0.
-     * Returns a float percentage (0–100), or null when the fleet is
-     * empty / has no anchored accounts.
+     * Count of green vs observed days inside the window — derived
+     * from cleanly-closed-position trade PnL. A day is "observed"
+     * when at least one fleet position closed cleanly with a
+     * recorded `profit_percentage`; "green" when the sum of those
+     * percentages is strictly > 0. Cancelled / failed positions
+     * are excluded — only `status='closed'` rows count.
+     *
+     * @return array{green: int, observed: int}
+     */
+    public function daysInProfit(Window $window): array
+    {
+        $accountIds = $this->ids();
+
+        if ($accountIds === []) {
+            return ['green' => 0, 'observed' => 0];
+        }
+
+        $rows = DB::table('positions')
+            ->select(DB::raw('DATE(closed_at) AS d'))
+            ->selectRaw('SUM(profit_percentage) AS day_pct')
+            ->whereIn('account_id', $accountIds)
+            ->where('status', 'closed')
+            ->whereNotNull('closed_at')
+            ->whereNotNull('profit_percentage')
+            ->whereBetween('closed_at', [
+                $window->start->toDateTimeString(),
+                $window->end->toDateTimeString(),
+            ])
+            ->groupBy(DB::raw('DATE(closed_at)'))
+            ->get();
+
+        $green = 0;
+        $observed = 0;
+        foreach ($rows as $row) {
+            $observed++;
+            if ((float) $row->day_pct > 0) {
+                $green++;
+            }
+        }
+
+        return ['green' => $green, 'observed' => $observed];
+    }
+
+    /**
+     * Share of accounts whose realized trade PnL over the window is
+     * > 0. Returns a float percentage (0–100), or null when the
+     * fleet is empty / no account had any clean closes in the
+     * window.
      */
     public function shareInProfit(Window $window): ?float
     {
@@ -297,15 +320,16 @@ final class FleetFinancials
     }
 
     /**
-     * 14-day-style sparkline, fleet-aggregated. Each bar = sum of
-     * every account's wallet delta for that day. Days with no fleet
-     * activity render as `pct = 0` so the bar count stays stable.
+     * Fixed-bar daily-percentage series for the marketing-site
+     * sparkline. Each bar = trade-PnL of that day / start-of-window
+     * wallet. Days with no clean closes render as `pct = 0` so the
+     * bar count stays stable across windows.
      *
      * @return array<int, array{d: string, pct: float}>
      */
     public function dailySparkline(Window $window): array
     {
-        $revenues = $this->dailyRevenues($window);
+        $revenues = $this->dailyTradePnl($window);
         $startWallet = $this->totalStartWallet($window);
 
         $cursor = $window->start->startOfDay();
@@ -328,25 +352,47 @@ final class FleetFinancials
     }
 
     /**
-     * Same daily aggregate query used by AccountFinancials. Inlined
-     * here so the fleet variant can build per-day sums without
-     * instantiating one AccountFinancials per call.
+     * Per-day fleet trade PnL aggregate sourced from `positions`.
+     * Single SQL pass across all accounts in the fleet — avoids
+     * the N+1 shape of calling AccountFinancials::dailyTradePnl()
+     * for each account. Filters to clean closes only (status =
+     * 'closed') so cancelled / failed positions can never paint a
+     * misleading day.
      *
-     * @return iterable<object{d: string, first_wallet: string, last_wallet: string}>
+     * @return array<string, string> YYYY-MM-DD → bcmath-scaled fleet PnL.
      */
-    private function dailyAggregatesFor(int $accountId, Window $window): iterable
+    private function dailyTradePnl(Window $window): array
     {
-        return DB::table('account_balance_history')
-            ->select(DB::raw('DATE(created_at) AS d'))
-            ->selectRaw('SUBSTRING_INDEX(GROUP_CONCAT(total_wallet_balance ORDER BY id ASC SEPARATOR ","), ",", 1) AS first_wallet')
-            ->selectRaw('SUBSTRING_INDEX(GROUP_CONCAT(total_wallet_balance ORDER BY id DESC SEPARATOR ","), ",", 1) AS last_wallet')
-            ->where('account_id', $accountId)
-            ->whereBetween('created_at', [
+        $accountIds = $this->ids();
+
+        if ($accountIds === []) {
+            return [];
+        }
+
+        $rows = DB::table('positions')
+            ->select(DB::raw('DATE(closed_at) AS d'))
+            ->selectRaw('SUM(profit_percentage / 100 * margin) AS pnl')
+            ->whereIn('account_id', $accountIds)
+            ->where('status', 'closed')
+            ->whereNotNull('closed_at')
+            ->whereNotNull('profit_percentage')
+            ->whereNotNull('margin')
+            ->whereBetween('closed_at', [
                 $window->start->toDateTimeString(),
                 $window->end->toDateTimeString(),
             ])
-            ->groupBy(DB::raw('DATE(created_at)'))
+            ->groupBy(DB::raw('DATE(closed_at)'))
             ->orderBy('d')
             ->get();
+
+        $out = [];
+        foreach ($rows as $row) {
+            if (! is_numeric($row->pnl)) {
+                continue;
+            }
+            $out[$row->d] = bcadd('0', (string) $row->pnl, self::SCALE);
+        }
+
+        return $out;
     }
 }

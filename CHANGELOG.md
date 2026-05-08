@@ -2,7 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## 1.34.0 - 2026-05-08
+## 1.34.3 - 2026-05-08
+
+### Improvements
+
+- [IMPROVED] **`AccountFinancials` and `FleetFinancials` realized metrics now sourced from closed-position trade PnL, not raw wallet snapshots.** Every "how is account / fleet doing in window Y" number — `realizedDelta`, `realizedRoiPct`, `dailyRevenues`, `dailyPercentages`, `scenarios`, `daysInProfit`, `shareInProfit`, `dailySparkline`, and the projection that consumes them — is immune to deposits, withdrawals, funding fees, exchange-side rebates, and any other non-trading wallet movement. Per-position absolute PnL = `profit_percentage / 100 × margin`; rows are filtered to `status='closed'` AND `closed_at` inside the window AND non-null `profit_percentage`/`margin` so cancelled / failed / still-active positions never paint a misleading day. Wallet snapshots stay as the projection anchor (today's actual money to compound forward) and as the denominator for ROI / daily-pct math, but they no longer drive realized numerator. Verified against prod: account #1 last-7d wallet drift was +17.16 USDT vs trade-only PnL +33.66 USDT — the ~16 USDT delta is exactly the cash-flow contamination this rewrite removes.
+
+## 1.34.2 - 2026-05-08
 
 ### Features
 
