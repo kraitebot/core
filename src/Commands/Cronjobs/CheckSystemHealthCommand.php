@@ -51,12 +51,16 @@ final class CheckSystemHealthCommand extends BaseCommand
 
     /**
      * Indicators run hourly via `kraite:cron-conclude-symbols-direction`
-     * at :30 + a few minutes of processing. 90min gives a full hour of
-     * cadence + 30min buffer for processing time and the rare double
-     * skip. Lower thresholds produce alerts every cycle even on a
-     * healthy system.
+     * at :30. The chain spawns ~600 entry steps and runs serially per
+     * symbol with TAAPI throttle backpressure, so a healthy pass takes
+     * 50–65 min start-to-last-symbol. 120 min absorbs the slow-pass
+     * days (post supervisor restarts, TAAPI rate-limit pressure,
+     * larger-than-usual symbol set) where the LAST symbol in the
+     * batch crosses 90 min before the next :30 cron tick refreshes
+     * it. Two consecutive missed cycles (120 min = >2× cadence)
+     * still trips on a genuinely broken cron.
      */
-    private const INDICATOR_STALENESS_MINUTES = 90;
+    private const INDICATOR_STALENESS_MINUTES = 120;
 
     /**
      * Balance cron runs every 5 minutes. The threshold sits at 15 min
