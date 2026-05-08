@@ -58,7 +58,16 @@ final class CheckSystemHealthCommand extends BaseCommand
      */
     private const INDICATOR_STALENESS_MINUTES = 90;
 
-    private const BALANCE_STALENESS_MINUTES = 10;
+    /**
+     * Balance cron runs every 5 minutes. The threshold sits at 15 min
+     * to absorb a single missed cycle without firing — supervisor
+     * restarts (per-prefix cooldown rollout 2026-05-08, OPTIMIZE TABLE
+     * pauses, scheduler reboots) routinely eat one 5-min slot, and a
+     * 10-min threshold tripped on every such gap. 15 min still catches
+     * a genuinely broken cron (two consecutive misses = real outage)
+     * while ignoring single-cycle transients.
+     */
+    private const BALANCE_STALENESS_MINUTES = 15;
 
     private const DAEMON_HEARTBEAT_STALENESS_SECONDS = 120;
 
