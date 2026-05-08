@@ -249,25 +249,27 @@ final class FleetFinancials
     /**
      * Count of green vs observed days inside the window — derived
      * from cleanly-closed-position trade PnL. A day is "observed"
-     * when at least one fleet position closed cleanly with a
-     * recorded `profit_percentage`; "green" when the sum of those
+     * when at least one position closed cleanly with a recorded
+     * `profit_percentage`; "green" when the sum of those
      * percentages is strictly > 0. Cancelled / failed positions
      * are excluded — only `status='closed'` rows count.
+     *
+     * Scope is intentionally **every account in the database**, not
+     * just the active+tradeable fleet. Marketing-site stat: "the
+     * trading system has had N green days in this window." Paused
+     * or deactivated accounts whose closed trades happened inside
+     * the window still contributed to the system's track record on
+     * those days, so excluding them would understate history.
+     * Matches `winRate()` scope by design — both stats sit on the
+     * same surface and must reconcile.
      *
      * @return array{green: int, observed: int}
      */
     public function daysInProfit(Window $window): array
     {
-        $accountIds = $this->ids();
-
-        if ($accountIds === []) {
-            return ['green' => 0, 'observed' => 0];
-        }
-
         $rows = DB::table('positions')
             ->select(DB::raw('DATE(closed_at) AS d'))
             ->selectRaw('SUM(profit_percentage) AS day_pct')
-            ->whereIn('account_id', $accountIds)
             ->where('status', 'closed')
             ->whereNotNull('closed_at')
             ->whereNotNull('profit_percentage')
@@ -288,6 +290,56 @@ final class FleetFinancials
         }
 
         return ['green' => $green, 'observed' => $observed];
+    }
+
+    /**
+     * Per-trade win-rate inside the window. Counts every cleanly-
+     * closed position in the database whose `closed_at` falls in
+     * the window — no account-membership filter, so paused or
+     * deactivated accounts whose trades closed inside the window
+     * still contribute to the system's historical track record.
+     *
+     * Break-even trades (`profit_percentage = 0`) are EXCLUDED
+     * entirely — they don't appear in the numerator or the
+     * denominator. A 0% trade is neither a win nor a loss; it
+     * leaves the win-rate untouched. Wins = strictly positive
+     * `profit_percentage`. Total = wins + losses (no break-evens).
+     *
+     * Returns `win_rate_pct = null` when there are zero
+     * non-break-even closes in the window so callers (UI) can
+     * hide the strip rather than rendering a fake "0%".
+     *
+     * Sanity invariant vs `daysInProfit($window)`:
+     *   `winRate.count >= daysInProfit.observed` (one position per
+     *   day = equality; multiple positions per day = strict greater).
+     *
+     * @return array{count: int, win_rate_pct: ?float}
+     */
+    public function winRate(Window $window): array
+    {
+        $row = DB::table('positions')
+            ->where('status', 'closed')
+            ->whereNotNull('closed_at')
+            ->whereNotNull('profit_percentage')
+            ->where('profit_percentage', '!=', 0)
+            ->whereBetween('closed_at', [
+                $window->start->toDateTimeString(),
+                $window->end->toDateTimeString(),
+            ])
+            ->selectRaw('COUNT(*) AS total')
+            ->selectRaw('SUM(CASE WHEN profit_percentage > 0 THEN 1 ELSE 0 END) AS winners')
+            ->first();
+
+        $total = $row ? (int) $row->total : 0;
+
+        if ($total === 0) {
+            return ['count' => 0, 'win_rate_pct' => null];
+        }
+
+        return [
+            'count' => $total,
+            'win_rate_pct' => ((int) $row->winners / $total) * 100.0,
+        ];
     }
 
     /**

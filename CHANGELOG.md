@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.34.4 - 2026-05-08
+
+### Features
+
+- [NEW FEATURE] **`FleetFinancials::winRate(Window): array{count, win_rate_pct}`** — single-round-trip per-trade win-rate aggregate sourced from `positions`. Filters: `status='closed'` AND `closed_at` in window AND non-null `profit_percentage` AND `profit_percentage != 0`. Wins = `profit_percentage > 0`; break-even trades are excluded entirely (neither numerator nor denominator) so a 0% trade leaves the win-rate untouched. Returns `win_rate_pct = null` when the window has zero non-break-even closes (UI hides the strip). Replaces the hand-rolled `closedPositionsStats()` query that used to live in `kraite.com/PublicStatsController`.
+
+### Improvements
+
+- [IMPROVED] **`FleetFinancials::daysInProfit(Window)` widened to all-account scope.** Drops the previous `whereIn('account_id', $fleet->ids())` filter so the marketing-site green/red-day count covers every cleanly-closed position in the database, not just active+tradeable accounts. Brings it onto the same scope as the new `winRate()` so the two strips on the marketing site reconcile (sanity invariant: `winRate.count >= daysInProfit.observed`).
+
 ## 1.34.3 - 2026-05-08
 
 ### Improvements
