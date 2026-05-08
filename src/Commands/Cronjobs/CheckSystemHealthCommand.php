@@ -15,6 +15,7 @@ use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Health\OrphanReconciler;
+use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
@@ -80,6 +81,24 @@ final class CheckSystemHealthCommand extends BaseCommand
 
     protected $description = 'Run ten staleness / connectivity checks across the bot\'s critical data paths and alert per failed signal.';
 
+    /**
+     * Checks that depend on the steps-dispatcher actively draining
+     * Pending steps. When `MaintenanceMode::pauseStepsDispatch()` is
+     * armed (intentional ops window), these signals trivially go
+     * stale because the upstream cron path writes via Step::create →
+     * dispatcher promotion → worker execution. Pausing the
+     * dispatcher freezes that pipeline by design, so the operator
+     * does NOT want a Pushover storm five minutes into a planned
+     * pause. Daemon-driven signals (mark price, daemon heartbeat,
+     * scheduler liveness) keep firing — they don't depend on the
+     * dispatcher and a real outage on those paths is still
+     * actionable mid-pause.
+     */
+    private const DISPATCHER_DEPENDENT_CHECKS = [
+        'checkIndicatorFreshness',
+        'checkAccountBalanceFreshness',
+    ];
+
     public function handle(): int
     {
         $checks = [
@@ -106,9 +125,23 @@ final class CheckSystemHealthCommand extends BaseCommand
             'checkDiskPressure',
         ];
 
+        // The two dispatcher-dependent checks (indicator + balance
+        // freshness) read tables populated by DEFAULT-prefix crons —
+        // klines, balance snapshots, indicator conclusion. They go
+        // stale when the default dispatcher is paused, regardless of
+        // whether the trading dispatcher is also paused. So gate on
+        // the default prefix specifically; an all-scope pause also
+        // returns true here because `isStepsDispatchPaused` ORs the
+        // all-scope flag onto every per-prefix check.
+        $dispatchPaused = MaintenanceMode::isStepsDispatchPaused('');
+
         $alertCount = 0;
 
         foreach ($checks as $check) {
+            if ($dispatchPaused && in_array($check, self::DISPATCHER_DEPENDENT_CHECKS, true)) {
+                continue;
+            }
+
             try {
                 $alertCount += $this->{$check}();
             } catch (Throwable $exception) {

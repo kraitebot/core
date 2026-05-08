@@ -20,6 +20,7 @@ use StepDispatcher\Models\Step;
 use StepDispatcher\States\Dispatched;
 use StepDispatcher\States\Pending;
 use StepDispatcher\States\Running;
+use StepDispatcher\Support\Steps;
 
 /**
  * Two detection routes handle a user-side modification of our orders on
@@ -190,34 +191,42 @@ final class OrderObserver
         // and skips. Atomic across every worker, every server, every
         // connection. Lock is released on commit/rollback (worker
         // crash safe).
-        DB::transaction(function () use ($model, $position): void {
-            Position::query()->whereKey($position->id)->lockForUpdate()->first();
+        //
+        // Outer Steps::usingPrefix scopes BOTH the dedupe SELECT and
+        // the close-step INSERT to `trading_steps`. Without this, the
+        // dedupe queries the default table and false-negatives every
+        // time (no rows in `steps` for this position) — so duplicate
+        // close workflows would race past the guard.
+        Steps::usingPrefix('trading', function () use ($model, $position): void {
+            DB::transaction(function () use ($model, $position): void {
+                Position::query()->whereKey($position->id)->lockForUpdate()->first();
 
-            $alreadyPending = Step::query()
-                ->where('class', ClosePositionJob::class)
-                ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
-                ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-                ->exists();
+                $alreadyPending = Step::query()
+                    ->where('class', ClosePositionJob::class)
+                    ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
+                    ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+                    ->exists();
 
-            if ($alreadyPending) {
-                return;
-            }
+                if ($alreadyPending) {
+                    return;
+                }
 
-            $model->updateSaving(['reference_status' => 'FILLED']);
+                $model->updateSaving(['reference_status' => 'FILLED']);
 
-            // Set status to 'closing' immediately so SyncPositionOrdersJob
-            // doesn't override it to 'active' before ClosePositionJob runs
-            $position->updateToClosing();
+                // Set status to 'closing' immediately so SyncPositionOrdersJob
+                // doesn't override it to 'active' before ClosePositionJob runs
+                $position->updateToClosing();
 
-            Step::create([
-                'class' => ClosePositionJob::class,
-                'queue' => 'positions',
-                'priority' => 'high',
-                'arguments' => [
-                    'positionId' => $position->id,
-                    'message' => "{$model->type} order #{$model->id} filled — closing position",
-                ],
-            ]);
+                Step::create([
+                    'class' => ClosePositionJob::class,
+                    'queue' => 'positions',
+                    'priority' => 'high',
+                    'arguments' => [
+                        'positionId' => $position->id,
+                        'message' => "{$model->type} order #{$model->id} filled — closing position",
+                    ],
+                ]);
+            });
         });
     }
 
@@ -246,31 +255,33 @@ final class OrderObserver
         // blocks until commit, then sees the freshly-inserted Step
         // and skips. Atomic across every worker, every server, every
         // connection. No Redis, no schema change, no cache.
-        DB::transaction(function () use ($model, $position): void {
-            Position::query()->whereKey($position->id)->lockForUpdate()->first();
+        Steps::usingPrefix('trading', function () use ($model, $position): void {
+            DB::transaction(function () use ($model, $position): void {
+                Position::query()->whereKey($position->id)->lockForUpdate()->first();
 
-            $alreadyPending = Step::query()
-                ->where('class', PreparePositionReplacementJob::class)
-                ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
-                ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-                ->exists();
+                $alreadyPending = Step::query()
+                    ->where('class', PreparePositionReplacementJob::class)
+                    ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
+                    ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+                    ->exists();
 
-            if ($alreadyPending) {
-                return;
-            }
+                if ($alreadyPending) {
+                    return;
+                }
 
-            $action = $model->status === 'EXPIRED' ? 'expired' : 'cancelled';
+                $action = $model->status === 'EXPIRED' ? 'expired' : 'cancelled';
 
-            Step::create([
-                'class' => PreparePositionReplacementJob::class,
-                'queue' => 'positions',
-                'priority' => 'high',
-                'arguments' => [
-                    'positionId' => $position->id,
-                    'triggerStatus' => $model->status,
-                    'message' => "{$model->type} order #{$model->id} {$action} — preparing replacement",
-                ],
-            ]);
+                Step::create([
+                    'class' => PreparePositionReplacementJob::class,
+                    'queue' => 'positions',
+                    'priority' => 'high',
+                    'arguments' => [
+                        'positionId' => $position->id,
+                        'triggerStatus' => $model->status,
+                        'message' => "{$model->type} order #{$model->id} {$action} — preparing replacement",
+                    ],
+                ]);
+            });
         });
     }
 
@@ -307,30 +318,32 @@ final class OrderObserver
         // transaction serialises every WAP dispatch attempt for
         // that position; the reference_status bump and the Step
         // INSERT happen atomically with the dedupe check.
-        DB::transaction(function () use ($model, $position): void {
-            Position::query()->whereKey($position->id)->lockForUpdate()->first();
+        Steps::usingPrefix('trading', function () use ($model, $position): void {
+            DB::transaction(function () use ($model, $position): void {
+                Position::query()->whereKey($position->id)->lockForUpdate()->first();
 
-            $alreadyPending = Step::query()
-                ->where('class', ApplyWapJob::class)
-                ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
-                ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-                ->exists();
+                $alreadyPending = Step::query()
+                    ->where('class', ApplyWapJob::class)
+                    ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
+                    ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+                    ->exists();
 
-            if ($alreadyPending) {
-                return;
-            }
+                if ($alreadyPending) {
+                    return;
+                }
 
-            $model->updateSaving(['reference_status' => 'FILLED']);
+                $model->updateSaving(['reference_status' => 'FILLED']);
 
-            Step::create([
-                'class' => ApplyWapJob::class,
-                'queue' => 'positions',
-                'priority' => 'high',
-                'arguments' => [
-                    'positionId' => $position->id,
-                    'message' => "LIMIT order #{$model->id} filled — applying WAP",
-                ],
-            ]);
+                Step::create([
+                    'class' => ApplyWapJob::class,
+                    'queue' => 'positions',
+                    'priority' => 'high',
+                    'arguments' => [
+                        'positionId' => $position->id,
+                        'message' => "LIMIT order #{$model->id} filled — applying WAP",
+                    ],
+                ]);
+            });
         });
     }
 
@@ -364,26 +377,28 @@ final class OrderObserver
             return;
         }
 
-        DB::transaction(function () use ($position): void {
-            Position::query()->whereKey($position->id)->lockForUpdate()->first();
+        Steps::usingPrefix('trading', function () use ($position): void {
+            DB::transaction(function () use ($position): void {
+                Position::query()->whereKey($position->id)->lockForUpdate()->first();
 
-            $alreadyPending = Step::query()
-                ->where('class', SyncPositionQuantityFromExchangeJob::class)
-                ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
-                ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-                ->exists();
+                $alreadyPending = Step::query()
+                    ->where('class', SyncPositionQuantityFromExchangeJob::class)
+                    ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
+                    ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+                    ->exists();
 
-            if ($alreadyPending) {
-                return;
-            }
+                if ($alreadyPending) {
+                    return;
+                }
 
-            Step::create([
-                'class' => SyncPositionQuantityFromExchangeJob::class,
-                'queue' => 'positions',
-                'arguments' => [
-                    'positionId' => $position->id,
-                ],
-            ]);
+                Step::create([
+                    'class' => SyncPositionQuantityFromExchangeJob::class,
+                    'queue' => 'positions',
+                    'arguments' => [
+                        'positionId' => $position->id,
+                    ],
+                ]);
+            });
         });
     }
 
@@ -444,40 +459,47 @@ final class OrderObserver
             return;
         }
 
-        // Deduplicate: skip if PrepareOrderCorrectionJob already pending for this order.
-        $alreadyPending = Step::query()
-            ->where('class', PrepareOrderCorrectionJob::class)
-            ->whereRaw("JSON_EXTRACT(arguments, '$.orderId') = ?", [$model->id])
-            ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-            ->exists();
+        // Wrap the dedupe SELECT and the correction-job INSERT in the
+        // trading prefix so both target `trading_steps`. Without the
+        // wrap the dedupe queries the default `steps` table, never
+        // finds a pending correction (because trading dispatched it),
+        // and re-fires every observer cycle until the drift is healed.
+        Steps::usingPrefix('trading', function () use ($model, $position, $hasPriceDrift, $hasQuantityDrift): void {
+            // Deduplicate: skip if PrepareOrderCorrectionJob already pending for this order.
+            $alreadyPending = Step::query()
+                ->where('class', PrepareOrderCorrectionJob::class)
+                ->whereRaw("JSON_EXTRACT(arguments, '$.orderId') = ?", [$model->id])
+                ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+                ->exists();
 
-        if ($alreadyPending) {
-            return;
-        }
+            if ($alreadyPending) {
+                return;
+            }
 
-        $driftType = match (true) {
-            $hasPriceDrift && $hasQuantityDrift => 'price and quantity',
-            $hasPriceDrift => 'price',
-            default => 'quantity',
-        };
+            $driftType = match (true) {
+                $hasPriceDrift && $hasQuantityDrift => 'price and quantity',
+                $hasPriceDrift => 'price',
+                default => 'quantity',
+            };
 
-        // Resolve to the exchange-specific override when one exists (e.g.
-        // Bitget uses modify-tpsl-order for algo correction instead of the
-        // default cancel+recreate). Falls back to the base class when no
-        // override is registered, preserving existing Binance behaviour.
-        $resolvedClass = JobProxy::with($position->account)
-            ->resolve(PrepareOrderCorrectionJob::class);
+            // Resolve to the exchange-specific override when one exists (e.g.
+            // Bitget uses modify-tpsl-order for algo correction instead of the
+            // default cancel+recreate). Falls back to the base class when no
+            // override is registered, preserving existing Binance behaviour.
+            $resolvedClass = JobProxy::with($position->account)
+                ->resolve(PrepareOrderCorrectionJob::class);
 
-        Step::create([
-            'class' => $resolvedClass,
-            'queue' => 'positions',
-            'priority' => 'high',
-            'arguments' => [
-                'positionId' => $position->id,
-                'orderId' => $model->id,
-                'message' => "{$model->type} order #{$model->id} modified ({$driftType}) — correcting",
-            ],
-        ]);
+            Step::create([
+                'class' => $resolvedClass,
+                'queue' => 'positions',
+                'priority' => 'high',
+                'arguments' => [
+                    'positionId' => $position->id,
+                    'orderId' => $model->id,
+                    'message' => "{$model->type} order #{$model->id} modified ({$driftType}) — correcting",
+                ],
+            ]);
+        });
     }
 
     /**

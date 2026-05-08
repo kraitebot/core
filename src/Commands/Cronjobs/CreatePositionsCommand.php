@@ -14,6 +14,7 @@ use Kraite\Core\Support\Proxies\JobProxy;
 use Kraite\Core\Trading\Kraite;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Support\BaseCommand;
+use StepDispatcher\Support\Steps;
 use Throwable;
 
 final class CreatePositionsCommand extends BaseCommand
@@ -75,39 +76,48 @@ final class CreatePositionsCommand extends BaseCommand
 
         $this->verboseInfo("Found {$accounts->count()} tradeable account(s).");
 
-        foreach ($accounts as $account) {
-            // Per-account try/catch — keeps one account's failure (a
-            // hung API client throwing inside the orphan check, a DB
-            // deadlock on the open-positions count, a malformed
-            // exchange_symbol relation, anything) from killing the
-            // entire cron tick. Without this guard, account #47
-            // throwing meant accounts 48..N skipped the rest of this
-            // 3-minute cycle. With 200+ accounts on the box, that
-            // blast radius is unacceptable.
-            try {
-                // Self-heal first — orphan 'new' positions (their previous
-                // DispatchPositionJob step was swept during operator
-                // cleanup, supervisor restart, or any cleanup that lost a
-                // step row while leaving the position behind) get re-
-                // dispatched before we contemplate opening new slots.
-                // Runs unconditionally — recovering a stranded orphan
-                // doesn't compete for slot capacity, the slot is already
-                // taken.
-                $this->recoverOrphanPositionsForAccount($account);
+        // Both the orphan-recovery dedupe SELECT and every
+        // PreparePositionsOpeningJob INSERT must hit `trading_steps`.
+        // The dispatch chain that follows (Prepare → Verify → Query →
+        // Determine → Set → DispatchPosition → ...) inherits the
+        // ambient prefix on every worker via BaseStepJob::handle(),
+        // so the entire opening lifecycle stays inside the trading
+        // table set end-to-end.
+        Steps::usingPrefix('trading', function () use ($accounts): void {
+            foreach ($accounts as $account) {
+                // Per-account try/catch — keeps one account's failure (a
+                // hung API client throwing inside the orphan check, a DB
+                // deadlock on the open-positions count, a malformed
+                // exchange_symbol relation, anything) from killing the
+                // entire cron tick. Without this guard, account #47
+                // throwing meant accounts 48..N skipped the rest of this
+                // 3-minute cycle. With 200+ accounts on the box, that
+                // blast radius is unacceptable.
+                try {
+                    // Self-heal first — orphan 'new' positions (their previous
+                    // DispatchPositionJob step was swept during operator
+                    // cleanup, supervisor restart, or any cleanup that lost a
+                    // step row while leaving the position behind) get re-
+                    // dispatched before we contemplate opening new slots.
+                    // Runs unconditionally — recovering a stranded orphan
+                    // doesn't compete for slot capacity, the slot is already
+                    // taken.
+                    $this->recoverOrphanPositionsForAccount($account);
 
-                $this->attemptOpeningPositionsForAccount($account);
-            } catch (Throwable $e) {
-                Log::channel('jobs')->error('[CREATE-POSITIONS] per-account iteration threw — continuing with the rest of the accounts', [
-                    'account_id' => $account->id,
-                    'account_name' => $account->name,
-                    'exception' => $e::class,
-                    'message' => $e->getMessage(),
-                ]);
+                    $this->attemptOpeningPositionsForAccount($account);
+                } catch (Throwable $e) {
+                    Log::channel('jobs')->error('[CREATE-POSITIONS] per-account iteration threw — continuing with the rest of the accounts', [
+                        'account_id' => $account->id,
+                        'account_name' => $account->name,
+                        'exception' => $e::class,
+                        'message' => $e->getMessage(),
+                    ]);
 
-                $exceptionClass = $e::class;
-                $this->verboseWarn("    → Account #{$account->id} threw {$exceptionClass} — skipped, rest of accounts continue.");
+                    $exceptionClass = $e::class;
+                    $this->verboseWarn("    → Account #{$account->id} threw {$exceptionClass} — skipped, rest of accounts continue.");
+                }
             }
-        }
+        });
 
         return self::SUCCESS;
     }

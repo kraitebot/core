@@ -8,6 +8,7 @@ use Illuminate\Support\Str;
 use Kraite\Core\Jobs\Atomic\Position\PurgePositionTrailJob;
 use Kraite\Core\Models\Position;
 use StepDispatcher\Models\Step;
+use StepDispatcher\Support\Steps;
 
 final class PositionObserver
 {
@@ -34,12 +35,19 @@ final class PositionObserver
             return;
         }
 
-        Step::create([
-            'class' => PurgePositionTrailJob::class,
-            'queue' => 'cronjobs',
-            'arguments' => [
-                'positionId' => $model->id,
-            ],
-        ]);
+        // The position lifecycle ran through `trading_steps`, so the
+        // janitor that purges its breadcrumb trail must also run under
+        // the trading prefix — otherwise its `DELETE FROM steps WHERE
+        // workflow_id=…` query targets the wrong table and the trail
+        // is never reclaimed.
+        Steps::usingPrefix('trading', function () use ($model): void {
+            Step::create([
+                'class' => PurgePositionTrailJob::class,
+                'queue' => 'cronjobs',
+                'arguments' => [
+                    'positionId' => $model->id,
+                ],
+            ]);
+        });
     }
 }

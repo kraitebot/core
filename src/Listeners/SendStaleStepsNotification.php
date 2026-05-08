@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Kraite\Core\Listeners;
 
 use Kraite\Core\Models\Kraite;
+use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\NotificationService;
 use StepDispatcher\Events\StaleStepsDetected;
+use StepDispatcher\Support\RuntimeContext;
 
 /**
  * Kraite-side adapter for StepDispatcher's StaleStepsDetected event.
@@ -41,6 +43,24 @@ final class SendStaleStepsNotification
         // last terminal update, and threshold so the operator can jump
         // straight to the wedged group in the admin UI.
         if ($event->reason === 'group_no_progress') {
+            // Suppress while steps:dispatch is intentionally paused for
+            // THIS dispatcher's prefix. The watchdog runs as the
+            // `steps:recover-stale --prefix=…` cron, so the active
+            // RuntimeContext at this point reflects which dispatcher
+            // emitted the event (trailing-underscore form: '' for the
+            // default dispatcher, 'trading_' for trading). Reading the
+            // pause state for THAT prefix means pausing default does
+            // NOT silence trading wedge alerts and vice versa — only
+            // the prefix actually frozen drops its noise.
+            //
+            // The all-scope pause (`pauseStepsDispatch(null)`) still
+            // gates both — `isStepsDispatchPaused()` returns true when
+            // either the all-scope OR the per-prefix flag is set.
+            $watchdogPrefix = app(RuntimeContext::class)->current();
+            if (MaintenanceMode::isStepsDispatchPaused($watchdogPrefix)) {
+                return;
+            }
+
             $context = $event->context;
 
             $referenceData = [

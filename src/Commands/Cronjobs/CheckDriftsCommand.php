@@ -16,9 +16,11 @@ use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Drift\DriftChecker;
 use Kraite\Core\Support\Drift\OrderDriftReport;
 use Kraite\Core\Support\Drift\PositionDriftReport;
+use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\NotificationService;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Support\BaseCommand;
+use StepDispatcher\Support\Steps;
 
 /**
  * CheckDriftsCommand
@@ -113,6 +115,26 @@ final class CheckDriftsCommand extends BaseCommand
 
     public function handle(): int
     {
+        // Drift audit heals every detected mismatch by dispatching a
+        // step under the trading prefix (PrepareSyncOrdersJob,
+        // PrepareCancelOrphanOrdersJob, …). While the trading
+        // dispatcher is paused those heals queue but never drain —
+        // every subsequent 5-minute pass re-detects the same drift,
+        // fires the same Pushover, AND (Scope 3) could flip
+        // `allow_opening_positions=false` on a stale view of the
+        // world. Skip the entire pass while trading is paused (the
+        // all-scope pause also flips this true via
+        // `isStepsDispatchPaused('trading')`); the reactive sync-
+        // orders cron + drift checker resume normally the moment
+        // trading resumes. Pausing only the default dispatcher does
+        // NOT skip drift — drift heals run on trading, so the audit
+        // remains safe.
+        if (MaintenanceMode::isStepsDispatchPaused('trading')) {
+            $this->verboseInfo('Drift audit skipped — trading steps:dispatch is paused.');
+
+            return self::SUCCESS;
+        }
+
         $cutoff = Carbon::now()->subMinutes(self::QUIET_WINDOW_MINUTES);
 
         $accountId = $this->option('account_id');
@@ -300,11 +322,13 @@ final class CheckDriftsCommand extends BaseCommand
      */
     private function dispatchSyncOrders(int $positionId): void
     {
-        Step::create([
-            'class' => PrepareSyncOrdersJob::class,
-            'queue' => 'positions',
-            'arguments' => ['positionId' => $positionId],
-        ]);
+        Steps::usingPrefix('trading', function () use ($positionId): void {
+            Step::create([
+                'class' => PrepareSyncOrdersJob::class,
+                'queue' => 'positions',
+                'arguments' => ['positionId' => $positionId],
+            ]);
+        });
 
         $this->verboseComment("  Position #{$positionId}: dispatched PrepareSyncOrdersJob");
     }
@@ -319,11 +343,13 @@ final class CheckDriftsCommand extends BaseCommand
      */
     private function dispatchCancelOrphanLifecycle(int $positionId): void
     {
-        Step::create([
-            'class' => PrepareCancelOrphanOrdersJob::class,
-            'queue' => 'positions',
-            'arguments' => ['positionId' => $positionId],
-        ]);
+        Steps::usingPrefix('trading', function () use ($positionId): void {
+            Step::create([
+                'class' => PrepareCancelOrphanOrdersJob::class,
+                'queue' => 'positions',
+                'arguments' => ['positionId' => $positionId],
+            ]);
+        });
 
         $this->verboseComment("  Position #{$positionId}: dispatched PrepareCancelOrphanOrdersJob");
     }

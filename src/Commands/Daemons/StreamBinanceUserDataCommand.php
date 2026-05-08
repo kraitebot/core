@@ -17,6 +17,7 @@ use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use React\EventLoop\Loop;
 use StepDispatcher\Models\Step;
+use StepDispatcher\Support\Steps;
 use Throwable;
 
 /**
@@ -360,17 +361,25 @@ final class StreamBinanceUserDataCommand extends Command
         // operator can replay it after the underlying issue is fixed.
         // Disk write is the simplest dead-letter store available — no
         // dependencies on the DB or queue that just failed.
+        //
+        // Tight per-event prefix push: this daemon is a long-running
+        // ReactPHP loop, so wrapping the entire process lifetime would
+        // leak the prefix across non-trading work that might also run
+        // here in future. Push only for the duration of the Step::create
+        // and let the closure pop on return / throw.
         try {
-            Step::create([
-                'class' => ProcessUserDataEventJob::class,
-                'queue' => self::PROCESS_QUEUE,
-                'arguments' => [
-                    'accountId' => $account->id,
-                    'apiSystemId' => (int) $account->api_system_id,
-                    'apiSystemCanonical' => 'binance',
-                    'payload' => $payload,
-                ],
-            ]);
+            Steps::usingPrefix('trading', function () use ($account, $payload): void {
+                Step::create([
+                    'class' => ProcessUserDataEventJob::class,
+                    'queue' => self::PROCESS_QUEUE,
+                    'arguments' => [
+                        'accountId' => $account->id,
+                        'apiSystemId' => (int) $account->api_system_id,
+                        'apiSystemCanonical' => 'binance',
+                        'payload' => $payload,
+                    ],
+                ]);
+            });
         } catch (Throwable $exception) {
             $this->stashFrameToDisk($account, $payload, $exception);
         }

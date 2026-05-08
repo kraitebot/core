@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.34.0 - 2026-05-08
+
+### Features
+
+- [NEW FEATURE] **Trade-critical workflows split onto the `trading_*` dispatcher prefix.** Every entry point that creates trade-critical steps now wraps the `Step::create()` site in `Steps::usingPrefix('trading', …)` so opens, sync orders, close, drift heals, WAP, order corrections, and user-data-stream events all land on the `trading_steps_*` table set. Calculation churn (klines, indicators, BSCS, balance snapshots, leverage brackets, market regime) keeps running on the default `steps_*` set. Two dispatcher fleets in parallel against one MySQL DB; isolated saturation, retention, and cooldown per fleet.
+  - `SyncOrdersCommand` (cron `kraite:cron-sync-orders`) — full per-position dispatch loop wrapped
+  - `CreatePositionsCommand` (cron `kraite:cron-create-positions`) — full account loop wrapped (orphan recovery + slot opening)
+  - `CheckDriftsCommand` (cron `kraite:cron-check-drifts`) — both heal dispatch sites (`PrepareSyncOrdersJob`, `PrepareCancelOrphanOrdersJob`)
+  - `StreamBinanceUserDataCommand` daemon — per-event `ProcessUserDataEventJob` create wrapped tightly (NOT lifetime — the long-running ReactPHP loop pushes only for the duration of each frame)
+  - `OrderObserver` — five sites (close, replacement, WAP, partial-fill quantity sync, order correction); each wrap spans BOTH the dedupe SELECT and the INSERT so step-level dedupe queries the trading table
+  - `PositionObserver::updated` — `PurgePositionTrailJob` on close
+  - `Concerns\Order\HandlesChanges` trait — three-step WAP block (status → WAP → status); whole block lands in trading so the dispatcher's index-ordered execution stays consistent for the block_uuid
+- [NEW FEATURE] **Per-prefix `MaintenanceMode`.** `pauseStepsDispatch($reason, $ttl, ?string $prefix = null)` accepts a third argument: `null` = all-scope (backward compat — existing `OptimizeBreadcrumbTablesCommand` no-arg call still freezes everything); `''` = default dispatcher only; `'trading'` = trading dispatcher only. `isStepsDispatchPaused(?string $prefix = null)` returns true when EITHER the all-scope flag OR the matching per-prefix flag is set, so the all-scope acts as a global override. Real ops cases unlocked: drain default backlog while trading keeps managing live positions; pause trading for an exchange API maintenance window without freezing klines/indicators.
+
+### Improvements
+
+- [IMPROVED] **Notification noise gated under prefix-aware pauses.** `SendStaleStepsNotification` listener reads `RuntimeContext::current()` to determine the watchdog's prefix and skips the `group_no_progress` Pushover when THAT prefix is paused (the other two reasons keep firing — they're real worker-died signals). `CheckSystemHealthCommand` skips the indicator + balance freshness checks under default-prefix pause. `CheckDriftsCommand` skips the entire run under trading-prefix pause (Scope 3's `allow_opening_positions=false` flip on a stale view was the worst-case hazard).
+
 ## 1.33.0 - 2026-05-08
 
 ### Features

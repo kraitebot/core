@@ -11,6 +11,7 @@ use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Support\BaseCommand;
+use StepDispatcher\Support\Steps;
 use Throwable;
 
 /**
@@ -88,44 +89,57 @@ final class SyncOrdersCommand extends BaseCommand
 
         $syncedCount = 0;
 
-        foreach ($openPositions as $position) {
-            // Per-position try/catch — at 200+ open positions, one
-            // transient Step::create failure (DB deadlock, Redis blip,
-            // observer chain throwing on a corrupt position row) would
-            // otherwise abort the whole sync tick and leave the
-            // remaining positions un-synced for a full minute. Per-row
-            // isolation: the bad row logs, the rest dispatches.
-            try {
-                // Don't pre-set child_block_uuid here. The orchestrator's
-                // compute() decides whether to spawn children (early-return
-                // when position isn't 'active' produces no children) and
-                // calls $this->step->makeItAParent() inline at the moment
-                // it actually dispatches its child lifecycle. Pre-setting
-                // would commit the step to parent-mode before compute()
-                // runs, which leaves a zombie when the early-return path
-                // fires. See ~/steps-dispatcher/issue.md.
-                Step::create([
-                    'class' => PrepareSyncOrdersJob::class,
-                    'queue' => 'positions',
-                    'relatable_type' => Position::class,
-                    'relatable_id' => $position->id,
-                    'arguments' => [
-                        'positionId' => $position->id,
-                    ],
-                ]);
+        // Route every Step::create issued by this cron tick into the
+        // `trading_*` table set. The closure pushes `trading_` onto
+        // RuntimeContext on entry and pops it on exit (incl. throw),
+        // so the entry-step row lands in `trading_steps` AND its
+        // serialised job payload carries `stepPrefix='trading_'`.
+        // When the Horizon worker picks it up, BaseStepJob::handle()
+        // re-pushes that prefix before compute() runs, so any child
+        // Step::create the orchestrator spawns also lands in trading_*.
+        // Result: the entire sync chain — Prepare, Verify, Query,
+        // QueryOrder, BuildClose, etc. — stays inside the prefixed
+        // dispatcher end-to-end, isolated from the default workload.
+        Steps::usingPrefix('trading', function () use ($openPositions, &$syncedCount): void {
+            foreach ($openPositions as $position) {
+                // Per-position try/catch — at 200+ open positions, one
+                // transient Step::create failure (DB deadlock, Redis blip,
+                // observer chain throwing on a corrupt position row) would
+                // otherwise abort the whole sync tick and leave the
+                // remaining positions un-synced for a full minute. Per-row
+                // isolation: the bad row logs, the rest dispatches.
+                try {
+                    // Don't pre-set child_block_uuid here. The orchestrator's
+                    // compute() decides whether to spawn children (early-return
+                    // when position isn't 'active' produces no children) and
+                    // calls $this->step->makeItAParent() inline at the moment
+                    // it actually dispatches its child lifecycle. Pre-setting
+                    // would commit the step to parent-mode before compute()
+                    // runs, which leaves a zombie when the early-return path
+                    // fires. See ~/steps-dispatcher/issue.md.
+                    Step::create([
+                        'class' => PrepareSyncOrdersJob::class,
+                        'queue' => 'positions',
+                        'relatable_type' => Position::class,
+                        'relatable_id' => $position->id,
+                        'arguments' => [
+                            'positionId' => $position->id,
+                        ],
+                    ]);
 
-                $this->verboseComment("  Position #{$position->id}: Dispatched sync");
-                $syncedCount++;
-            } catch (Throwable $e) {
-                Log::channel('jobs')->error('[SYNC-ORDERS] per-position dispatch threw — continuing with the rest', [
-                    'position_id' => $position->id,
-                    'exception' => $e::class,
-                    'message' => $e->getMessage(),
-                ]);
+                    $this->verboseComment("  Position #{$position->id}: Dispatched sync");
+                    $syncedCount++;
+                } catch (Throwable $e) {
+                    Log::channel('jobs')->error('[SYNC-ORDERS] per-position dispatch threw — continuing with the rest', [
+                        'position_id' => $position->id,
+                        'exception' => $e::class,
+                        'message' => $e->getMessage(),
+                    ]);
 
-                $this->verboseWarn("  Position #{$position->id}: dispatch threw, skipped (rest continue)");
+                    $this->verboseWarn("  Position #{$position->id}: dispatch threw, skipped (rest continue)");
+                }
             }
-        }
+        });
 
         $this->verboseInfo("Total: Dispatched sync for {$syncedCount} position(s)");
 
