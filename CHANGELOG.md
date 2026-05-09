@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.35.0 - 2026-05-09
+
+### Features
+- [NEW FEATURE] Migration to drop `waitlist_subscribers` table — waitlist now uses the `users` table directly
+- [NEW FEATURE] Migration to update admin user credentials (email → `bruno@kraite.com`)
+
+### Improvements
+- [IMPROVED] `composer.json` dependencies pinned to semver with `dev-master` branch-alias support
+
 ## 1.34.8 - 2026-05-09
 
 ### Fixes
