@@ -12,10 +12,10 @@
         "php": "^8.4",
         "angle/chrono": "^1.0",
         "binance/binance-connector-php": "^1.6",
-        "brunocfalcao/laravel-helpers": "dev-master",
+        "brunocfalcao/laravel-helpers": "^1.0",
         "laravel-notification-channels/pushover": "^4.0",
         "laravel/framework": "^12.0",
-        "brunocfalcao/step-dispatcher": "dev-master",
+        "brunocfalcao/step-dispatcher": "^1.12",
         "predis/predis": "^2.2",
         "ratchet/pawl": "^0.4.1",
         "spatie/laravel-model-states": "2.11.3"
