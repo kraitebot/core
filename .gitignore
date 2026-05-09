@@ -22,3 +22,4 @@ yarn-error.log
 *.bat
 *.sql
 !/database/dumps/*.sql
+.env.testing
