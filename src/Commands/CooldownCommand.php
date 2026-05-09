@@ -86,20 +86,17 @@ final class CooldownCommand extends BaseCommand
 
         $this->line('Pausing step dispatchers (all prefixes)...');
         MaintenanceMode::pauseStepsDispatch('kraite:cooldown deployment', 1800);
-        $this->info('Step dispatchers paused.');
-
-        $this->line('Putting application into maintenance mode...');
-        Artisan::call('down');
-        $this->info('Application is DOWN.');
+        $this->info('Step dispatchers paused. No new steps will be created.');
 
         if ($this->option('force')) {
-            $this->warn('Force mode: skipping drain wait.');
+            Artisan::call('down');
+            $this->warn('Force mode: app is DOWN, skipping drain wait.');
             $this->info('STATUS:COOLED_DOWN (forced)');
 
             return 0;
         }
 
-        $this->line('Waiting for active steps to drain...');
+        $this->line('Waiting for active steps + queues to drain (Horizon still processing)...');
         $maxWait = 300;
         $waited = 0;
 
@@ -109,6 +106,9 @@ final class CooldownCommand extends BaseCommand
 
             if ($activeSteps === 0 && $queueDepth === 0) {
                 $this->info("Drained in {$waited}s.");
+                $this->line('Putting application into maintenance mode...');
+                Artisan::call('down');
+                $this->info('Application is DOWN.');
                 $this->info('STATUS:COOLED_DOWN');
 
                 return 0;
@@ -119,6 +119,8 @@ final class CooldownCommand extends BaseCommand
             $waited += 5;
         }
 
+        $this->line('Putting application into maintenance mode...');
+        Artisan::call('down');
         $this->error("Timeout after {$maxWait}s. Steps={$this->getActiveStepCount()} Queues={$this->getQueueDepth()}");
         $this->error('STATUS:TIMEOUT — run with --force to override, or investigate stuck jobs.');
 
