@@ -40,6 +40,9 @@
         ]
     },
     "extra": {
+        "branch-alias": {
+            "dev-master": "1.x-dev"
+        },
         "laravel": {
             "providers": [
                 "Kraite\\Core\\CoreServiceProvider"
