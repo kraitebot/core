@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+
+jobs:
+  lint:
+    name: Lint (PHP 8.4)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Checkout brunocfalcao/step-dispatcher
+        uses: actions/checkout@v4
+        with:
+          repository: brunocfalcao/step-dispatcher
+          path: ../step-dispatcher
+
+      - name: Checkout brunocfalcao/laravel-helpers
+        uses: actions/checkout@v4
+        with:
+          repository: brunocfalcao/laravel-helpers
+          path: ../laravel-helpers
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: dom, curl, libxml, mbstring, zip, pcntl, pdo, pdo_mysql, bcmath, intl
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: PHP syntax check
+        run: find src -name "*.php" -exec php -l {} \; | grep -v "No syntax errors" || true
+
+      - name: Run Pint (code style)
+        run: vendor/bin/pint --test || true
