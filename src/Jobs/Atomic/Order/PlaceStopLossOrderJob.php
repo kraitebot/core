@@ -74,8 +74,11 @@ final class PlaceStopLossOrderJob extends BaseApiableJob
             return false;
         }
 
-        // Must have at least one limit order to anchor from
-        if ($this->position->lastLimitOrder() === null) {
+        // Must have a resolvable anchor price. In martingale mode the deepest
+        // LIMIT rung is the worst-case fill we hedge against; in simple-trade
+        // mode (total_limit_orders === 0) the MARKET fill is the only fill,
+        // so `opening_price` is the canonical anchor instead.
+        if ($this->resolveAnchorPrice() === null) {
             return false;
         }
 
@@ -88,6 +91,37 @@ final class PlaceStopLossOrderJob extends BaseApiableJob
         }
 
         return true;
+    }
+
+    /**
+     * Resolve the anchor price for the stop-loss calculation.
+     *
+     *   total_limit_orders === 0  → opening_price (MARKET fill, simple-trade mode)
+     *   total_limit_orders >= 1   → lastLimitOrder()->price (deepest DCA rung)
+     *
+     * Returns null when the relevant anchor isn't available yet — the caller
+     * (`startOrFail`) treats that as "not ready" rather than throwing on a
+     * downstream null deref inside `computeApiable`.
+     */
+    public function resolveAnchorPrice(): ?string
+    {
+        if ((int) $this->position->total_limit_orders === 0) {
+            $opening = $this->position->opening_price;
+
+            if ($opening === null || $opening === '') {
+                return null;
+            }
+
+            return (string) $opening;
+        }
+
+        $lastLimitOrder = $this->position->lastLimitOrder();
+
+        if ($lastLimitOrder === null) {
+            return null;
+        }
+
+        return (string) $lastLimitOrder->price;
     }
 
     /**
@@ -126,9 +160,10 @@ final class PlaceStopLossOrderJob extends BaseApiableJob
         // Side is opposite to close position
         $side = $direction === 'LONG' ? 'SELL' : 'BUY';
 
-        // Get the last limit order (L4 - highest quantity) as anchor
-        $lastLimitOrder = $this->position->lastLimitOrder();
-        $anchorPrice = $lastLimitOrder->price;
+        // Anchor source depends on mode: martingale uses the deepest LIMIT
+        // rung's scheduled price (worst-case projected fill); simple-trade
+        // uses the MARKET fill price (the only fill in that mode).
+        $anchorPrice = $this->resolveAnchorPrice();
 
         // Calculate stop-loss order data
         $stopLossData = Kraite::calculateStopLossOrder(

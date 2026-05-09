@@ -215,11 +215,20 @@ trait MapsPlaceAlgoOrder
      */
     private function mapAlgoStatus(string $algoStatus): string
     {
+        // TRIGGERED is intentionally surfaced as its own status, NOT folded
+        // into FILLED. The algo order represents the trigger record (price
+        // condition fired); the actual execution is a separate reduce-only
+        // MARKET that Binance auto-places. Conflating both into FILLED
+        // erases the audit trail — once CancelAlgoOpenOrdersJob writes a
+        // CANCELLED back over a "FILLED" algo, the original triggered
+        // truth is indistinguishable from a routine cancel. Keeping
+        // TRIGGERED distinct lets observer pins, close-trigger logic, and
+        // analytics queries reason about SL-fire as a first-class event.
         return match ($algoStatus) {
             'NEW' => 'NEW',
             'EXECUTING' => 'NEW',
             'PARTIALLY_TRIGGERED' => 'PARTIALLY_FILLED',
-            'TRIGGERED' => 'FILLED',
+            'TRIGGERED' => 'TRIGGERED',
             'CANCELLED', 'CANCELED' => 'CANCELLED',
             'EXPIRED' => 'CANCELLED',
             'FAILED' => 'REJECTED',

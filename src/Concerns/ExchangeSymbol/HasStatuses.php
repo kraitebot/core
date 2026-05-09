@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Concerns\ExchangeSymbol;
 
-use Illuminate\Support\Carbon;
+use Carbon\CarbonInterface;
 
 trait HasStatuses
 {
@@ -44,7 +44,7 @@ trait HasStatuses
      *    date: we fall back to `updated_at` (the moment our orphan
      *    sweep flipped the flag — best proxy we have).
      */
-    public function delistedAt(): ?Carbon
+    public function delistedAt(): ?CarbonInterface
     {
         if ($this->delivery_at !== null && $this->delivery_at->isPast()) {
             return $this->delivery_at;

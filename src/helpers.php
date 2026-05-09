@@ -37,7 +37,18 @@ function cleanLogsFolder(): void
 
 function get_market_order_amount_divider($totalLimitOrders)
 {
-    return 2 ** ($totalLimitOrders + 1);
+    // Simple-trade mode (N=0): no martingale ladder ever forms, so the
+    // MARKET entry must commit the entire margin × leverage budget.
+    // The historic 2^(N+1) curve was tuned for ladder reservations and
+    // would otherwise leave half the capital sitting idle for rungs that
+    // never get placed.
+    $n = (int) $totalLimitOrders;
+
+    if ($n <= 0) {
+        return 1;
+    }
+
+    return 2 ** ($n + 1);
 }
 
 function remove_trailing_zeros($number): string

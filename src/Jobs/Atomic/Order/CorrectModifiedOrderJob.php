@@ -8,6 +8,7 @@ use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\Math;
 use Throwable;
 
 /**
@@ -79,12 +80,18 @@ class CorrectModifiedOrderJob extends BaseApiableJob
             return false;
         }
 
-        // Must actually be modified (price or quantity differs from reference)
+        // Match the OrderObserver's drift comparison (Math::equal).
+        // The Order::price accessor strips trailing zeros while
+        // reference_price returns the raw DECIMAL(20,8) string, so a
+        // strict `!==` produces false-drift on numerically equal pairs
+        // ('1.4769' vs '1.47690000').
         $hasPriceDrift = $this->order->reference_price !== null
-            && $this->order->price !== $this->order->reference_price;
+            && $this->order->price !== null
+            && ! Math::equal($this->order->price, $this->order->reference_price);
 
         $hasQuantityDrift = $this->order->reference_quantity !== null
-            && $this->order->quantity !== $this->order->reference_quantity;
+            && $this->order->quantity !== null
+            && ! Math::equal($this->order->quantity, $this->order->reference_quantity);
 
         if (! $hasPriceDrift && ! $hasQuantityDrift) {
             return false;
@@ -135,16 +142,17 @@ class CorrectModifiedOrderJob extends BaseApiableJob
             return false;
         }
 
-        // Price should match reference
-        if ($this->order->reference_price !== null) {
-            if ($this->order->price !== $this->order->reference_price) {
+        // Price should match reference (precision-aware — accessor-stripped
+        // values like '0.10' must compare equal to raw '0.10000000').
+        if ($this->order->reference_price !== null && $this->order->price !== null) {
+            if (! Math::equal($this->order->price, $this->order->reference_price)) {
                 return false;
             }
         }
 
-        // Quantity should match reference
-        if ($this->order->reference_quantity !== null) {
-            if ($this->order->quantity !== $this->order->reference_quantity) {
+        // Quantity should match reference (same precision-aware rationale).
+        if ($this->order->reference_quantity !== null && $this->order->quantity !== null) {
+            if (! Math::equal($this->order->quantity, $this->order->reference_quantity)) {
                 return false;
             }
         }

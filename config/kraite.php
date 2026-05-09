@@ -90,8 +90,8 @@ return [
     */
     'position_creation' => [
         // 'symbol_override' => [
-        //     'account_id' => 1,
-        //     'symbol' => 'APEUSDT', // exchange-native pair string (Binance/Bitget concat, KuCoin slash, etc.)
+        //     'account_id' => 5,
+        //     'symbol' => 'APEUSDT',
         // ],
     ],
 

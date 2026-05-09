@@ -11,6 +11,7 @@ use Kraite\Core\Jobs\Atomic\Order\RecreateCancelledOrderJob;
 use Kraite\Core\Jobs\Atomic\Order\SyncPositionOrdersJob;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\JobProxy;
 use StepDispatcher\Models\Step;
 
@@ -213,11 +214,19 @@ final class PrepareOrderCorrectionJob extends BaseQueueableJob
      */
     private function orderIsModified(): bool
     {
+        // Match the OrderObserver's drift comparison (Math::equal).
+        // The Order::price accessor strips trailing zeros while
+        // reference_price returns the raw DECIMAL(20,8) string, so a
+        // strict `!==` produces false-drift on numerically equal pairs
+        // ('1.4769' vs '1.47690000'). Math::equal collapses both into
+        // a precision-aware comparison aligned with the observer.
         $hasPriceDrift = $this->order->reference_price !== null
-            && $this->order->price !== $this->order->reference_price;
+            && $this->order->price !== null
+            && ! Math::equal($this->order->price, $this->order->reference_price);
 
         $hasQuantityDrift = $this->order->reference_quantity !== null
-            && $this->order->quantity !== $this->order->reference_quantity;
+            && $this->order->quantity !== null
+            && ! Math::equal($this->order->quantity, $this->order->reference_quantity);
 
         return $hasPriceDrift || $hasQuantityDrift;
     }

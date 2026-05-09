@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.34.8 - 2026-05-09
+
+### Fixes
+
+- [BUG FIX] **`Math::multiply()` typo in `VerifyPositionResidualAmountJob`.** Method does not exist on `Math` (it is `Math::mul`). Latent because the branch only runs when `Math::lt($positionAmt, '0')` is true — i.e. one-way mode SHORT residuals; never fired in production logs. Replaced with `Math::sub('0', $positionAmt)` for clearer sign-negation intent.
+- [BUG FIX] **Drift detector strict `!==` replaced with `Math::equal()` in `PrepareOrderCorrectionJob::orderIsModified()` (base class) and `CorrectModifiedOrderJob::startOrFail()` + `doubleCheck()`.** `Order::price` accessor strips trailing zeros (`'1.4769'`) while `reference_price` returns the raw DECIMAL(20,8) string (`'1.47690000'`); strict `!==` produces false-drift on numerically equal pairs, which would re-fire `apiModify` on no-op corrections. Masked in production by the upstream `OrderObserver::checkForOrderModification` already using `Math::equal`, so the broken gate never saw equal pairs in the happy path. Bitget variant of `PrepareOrderCorrectionJob` already used the correct pattern; base now matches.
+- [BUG FIX] **`ExchangeSymbol::delistedAt()` return type widened from `?\Illuminate\Support\Carbon` to `?\Carbon\CarbonInterface`.** Project's date factory returns `CarbonImmutable`, which does NOT extend `Illuminate\Support\Carbon` — every call on a delisted symbol would TypeError. Latent because the trait method has zero callers in production code today; kept for the audit-trail use case the docblock describes.
+- [BUG FIX] **`Concerns/Order/HasStatuses` dead methods removed.** `updateToCancelled()` and `updateToFailed()` wrote to `error_message`, which is not a column on the `orders` table (lives on positions only). Both methods had zero callers across the codebase. Trait emptied; if order-level error annotation is needed later, add the column first.
+- [BUG FIX] **TRIGGERED algo-status faithfulness.** Binance algo SL fires surface as `algoStatus=TRIGGERED` on the exchange; the canonical mapping in `MapsPlaceAlgoOrder::mapAlgoStatus` previously folded TRIGGERED into FILLED, erasing the distinction between an SL-fired event and a routine cancel/fill on the audit trail. Now mapped faithfully (`'TRIGGERED' => 'TRIGGERED'`). Companion changes: `OrderObserver::updating()` pin prevents downstream code paths from clobbering TRIGGERED back to CANCELLED on subsequent syncs; close-trigger types include TRIGGERED alongside FILLED; `dispatchClosePosition` writes `reference_status = $model->status` (was hardcoded `'FILLED'`, which infinite-recursed observer fires when status was TRIGGERED because the upstream early-return `status === reference_status` check kept failing); `CancelAlgoOpenOrdersJob::INACTIVE_STATUSES` now includes `'TRIGGERED'` so a finished algo on the exchange is treated as inactive on the local cancel-cascade.
+- [BUG FIX] **Stop-loss placement no longer requires a LIMIT order to anchor against.** `PlaceStopLossOrderJob::resolveAnchorPrice()` (and Bitget's `PlacePositionTpslJob` mirror) now falls back to `position->opening_price` when `total_limit_orders === 0`, so simple-trade mode (1 MARKET + 1 TP + 1 SL, no DCA ladder) ships a working SL. Previously `lastLimitOrder()` returned null and the placement step refused to fire, leaving the position unprotected on the exchange.
+
+### Improvements
+
+- [IMPROVED] **`get_market_order_amount_divider($totalLimitOrders)` returns `1` for `N <= 0`.** The historic `2^(N+1)` curve was tuned for ladder reservations and would otherwise leave half the capital sitting idle for rungs that never get placed in simple-trade mode.
+
+### Features
+
+- [NEW FEATURE] **Migration `2026_05_08_213000_install_trading_step_dispatcher_prefix.php`.** Idempotently calls `steps:install --prefix=trading` so test-DB `migrate:fresh` runs install the trading-prefix table set without depending on a separate manual install step.
+
 ## 1.34.4 - 2026-05-08
 
 ### Features

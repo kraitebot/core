@@ -83,6 +83,17 @@ final class OrderObserver
 
     public function updating(Order $model): void
     {
+        // TRIGGERED is the canonical truth that an algo order's trigger
+        // condition fired on the exchange. Once recorded, no caller may
+        // overwrite it — sync-orders' empty-openAlgoOrders fallback returns
+        // CANCELLED, the close-flow's algo-cancel API returns CANCELLED on
+        // an already-finished order, and any future reconciler that
+        // re-stamps from a stale snapshot would erase the audit trail.
+        // Pinning here is one chokepoint that protects every write path.
+        if ($model->getOriginal('status') === 'TRIGGERED' && $model->status !== 'TRIGGERED') {
+            $model->status = 'TRIGGERED';
+        }
+
         // Only stamp filled_at on the *first* transition into FILLED. Without
         // the null guard every subsequent save (e.g. a later sync tick that
         // re-writes status=FILLED, or the close workflow's re-sync) would
@@ -135,10 +146,17 @@ final class OrderObserver
             return;
         }
 
-        // PROFIT/STOP orders: FILLED triggers close, CANCELLED/EXPIRED triggers replacement
+        // PROFIT/STOP orders: FILLED or TRIGGERED triggers close, CANCELLED/EXPIRED triggers replacement.
+        //
+        // TRIGGERED is added alongside FILLED here because Binance's algo SL
+        // surfaces an SL-fire event with `algoStatus=TRIGGERED` (mapped
+        // faithfully — see MapsPlaceAlgoOrder::mapAlgoStatus). The
+        // exchange-side outcome is identical to a fill from the position's
+        // perspective: the algo is finished and a reduce-only MARKET has
+        // already been auto-placed. The close lifecycle must run.
         if (in_array($model->type, self::CLOSE_TRIGGER_TYPES, true)) {
             match ($model->status) {
-                'FILLED' => $this->dispatchClosePosition($model, $position),
+                'FILLED', 'TRIGGERED' => $this->dispatchClosePosition($model, $position),
                 'EXPIRED', 'CANCELLED' => $this->dispatchPositionReplacement($model, $position),
                 default => null,
             };
@@ -211,7 +229,18 @@ final class OrderObserver
                     return;
                 }
 
-                $model->updateSaving(['reference_status' => 'FILLED']);
+                // Mirror the live status onto reference_status so that the
+                // upstream `$model->status === $model->reference_status`
+                // early-return short-circuits any second observer fire on
+                // this same row. Hardcoding 'FILLED' here was safe while
+                // STOP-MARKET close was triggered exclusively on FILLED,
+                // but TRIGGERED is now a first-class close trigger too —
+                // without using the live status, the row's reference
+                // would lag behind on a TRIGGERED close and the observer
+                // would re-enter dispatchClosePosition infinitely
+                // (status='TRIGGERED' vs reference='FILLED'), blowing
+                // the stack and crashing the worker mid-event.
+                $model->updateSaving(['reference_status' => $model->status]);
 
                 // Set status to 'closing' immediately so SyncPositionOrdersJob
                 // doesn't override it to 'active' before ClosePositionJob runs

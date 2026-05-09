@@ -21,7 +21,14 @@ use Throwable;
  */
 final class CancelAlgoOpenOrdersJob extends BaseApiableJob
 {
-    private const array INACTIVE_STATUSES = ['FILLED', 'CANCELLED', 'EXPIRED'];
+    // TRIGGERED is included alongside the regular terminal states so the
+    // close-flow's cancel-all step never sends an algo-cancel API call to
+    // an order that has already finished server-side. The Binance algo
+    // cancel endpoint, called against a finished order, returns a
+    // CANCELLED-shaped response that the mapper then writes back over the
+    // local TRIGGERED truth — destroying the audit trail. Skipping
+    // TRIGGERED rows here is the single cleanest guard.
+    private const array INACTIVE_STATUSES = ['FILLED', 'CANCELLED', 'EXPIRED', 'TRIGGERED'];
 
     public Position $position;
 

@@ -88,8 +88,12 @@ final class PlacePositionTpslJob extends BaseApiableJob
             return false;
         }
 
-        // Must have at least one limit order to anchor SL from
-        if ($this->position->lastLimitOrder() === null) {
+        // Must have a resolvable anchor price for the SL calculation. In
+        // martingale mode the deepest LIMIT rung is the worst-case fill we
+        // hedge against; in simple-trade mode (total_limit_orders === 0)
+        // the MARKET fill is the only fill, so `opening_price` is the
+        // canonical anchor instead.
+        if ($this->resolveAnchorPrice() === null) {
             return false;
         }
 
@@ -102,6 +106,37 @@ final class PlacePositionTpslJob extends BaseApiableJob
         }
 
         return true;
+    }
+
+    /**
+     * Resolve the anchor price for the stop-loss calculation.
+     *
+     *   total_limit_orders === 0  → opening_price (MARKET fill, simple-trade mode)
+     *   total_limit_orders >= 1   → lastLimitOrder()->price (deepest DCA rung)
+     *
+     * Mirrors the Binance PlaceStopLossOrderJob's anchor resolution. Bitget
+     * places TP+SL atomically through `place-pos-tpsl`, so the SL anchor
+     * computed here drives the same shared placement call.
+     */
+    public function resolveAnchorPrice(): ?string
+    {
+        if ((int) $this->position->total_limit_orders === 0) {
+            $opening = $this->position->opening_price;
+
+            if ($opening === null || $opening === '') {
+                return null;
+            }
+
+            return (string) $opening;
+        }
+
+        $lastLimitOrder = $this->position->lastLimitOrder();
+
+        if ($lastLimitOrder === null) {
+            return null;
+        }
+
+        return (string) $lastLimitOrder->price;
     }
 
     /**
@@ -175,9 +210,10 @@ final class PlacePositionTpslJob extends BaseApiableJob
         );
         $this->tpPrice = $profitData['price'];
 
-        // Calculate stop-loss price (anchor from last limit order)
-        $lastLimitOrder = $this->position->lastLimitOrder();
-        $anchorPrice = $lastLimitOrder->price;
+        // Anchor source depends on mode: martingale uses the deepest LIMIT
+        // rung's scheduled price (worst-case projected fill); simple-trade
+        // uses the MARKET fill price (the only fill in that mode).
+        $anchorPrice = $this->resolveAnchorPrice();
 
         $stopLossData = Kraite::calculateStopLossOrder(
             direction: $direction,

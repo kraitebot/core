@@ -62,9 +62,12 @@ final class VerifyPositionResidualAmountJob extends BaseQueueableJob
                     ?? $positionData['available']
                     ?? '0');
 
-                // Get absolute value without float casting
+                // Get absolute value without float casting. One-way mode
+                // SHORTs report negative positionAmt; flip via Math::sub
+                // (Math::mul against '-1' is equivalent but sub is clearer
+                // for sign negation).
                 $absAmount = Math::lt($positionAmt, '0')
-                    ? Math::multiply($positionAmt, '-1')
+                    ? Math::sub('0', $positionAmt)
                     : $positionAmt;
 
                 if (Math::gt($absAmount, '0')) {
