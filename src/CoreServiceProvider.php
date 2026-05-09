@@ -37,8 +37,10 @@ use Kraite\Core\Commands\Cronjobs\StoreAccountsBalancesCommand;
 use Kraite\Core\Commands\Cronjobs\SyncOrdersCommand;
 use Kraite\Core\Commands\Daemons\StreamBinancePricesCommand;
 use Kraite\Core\Commands\Daemons\StreamBinanceUserDataCommand;
+use Kraite\Core\Commands\CooldownCommand;
 use Kraite\Core\Commands\Ingestion\IsEligibleCommand;
 use Kraite\Core\Commands\RecoverPositionsCommand;
+use Kraite\Core\Commands\WarmupCommand;
 use Kraite\Core\Commands\SafeToRestartCommand;
 use Kraite\Core\Commands\Tests\TestNotificationCommand;
 use Kraite\Core\Commands\Tests\ThrottlerStressTestCommand;
@@ -114,6 +116,8 @@ final class CoreServiceProvider extends ServiceProvider
             IsEligibleCommand::class,
             TestNotificationCommand::class,
             ThrottlerStressTestCommand::class,
+            CooldownCommand::class,
+            WarmupCommand::class,
         ]);
 
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');

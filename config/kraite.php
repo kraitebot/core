@@ -699,4 +699,6 @@ return [
     'billing' => [
         'enforce_minimum_for_renewal' => (bool) env('BILLING_ENFORCE_MINIMUM_FOR_RENEWAL', true),
     ],
+
+    'server_role' => env('SERVER_ROLE', 'web'),
 ];
