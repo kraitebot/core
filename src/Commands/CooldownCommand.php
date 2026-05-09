@@ -85,7 +85,7 @@ final class CooldownCommand extends BaseCommand
         $this->info('Cooling down INGESTION server...');
 
         $this->line('Pausing step dispatchers (all prefixes)...');
-        MaintenanceMode::pauseStepsDispatch(null, minutes: 30);
+        MaintenanceMode::pauseStepsDispatch('kraite:cooldown deployment', 1800);
         $this->info('Step dispatchers paused.');
 
         $this->line('Putting application into maintenance mode...');
