@@ -6,15 +6,15 @@ namespace Kraite\Core\Support\Billing;
 
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
+use Kraite\Core\Models\Kraite;
 use RuntimeException;
 
 /**
  * Thin HTTP wrapper for the NOWPayments REST API.
  *
- * Only the endpoints we actually consume are exposed. Auth uses
- * the merchant API key in the `x-api-key` header. All endpoints
- * settle into a single merchant USDT wallet — the gateway handles
- * coin conversion on the user's side.
+ * Credentials are stored on the Kraite singleton (encrypted in DB),
+ * consistent with all other third-party API keys. The `fromConfig()`
+ * factory reads them at runtime.
  *
  * @see https://documenter.getpostman.com/view/7907941/S1a32n38
  */
@@ -27,16 +27,23 @@ final class NowPaymentsClient
 
     public static function fromConfig(): self
     {
-        $apiKey = (string) config('services.nowpayments.api_key', '');
-        $baseUrl = (string) config('services.nowpayments.base_url', 'https://api.nowpayments.io/v1');
+        $engine = Kraite::first();
+        $apiKey = (string) ($engine?->nowpayments_api_key ?? '');
 
         if ($apiKey === '') {
             throw new RuntimeException(
-                'NOWPAYMENTS_API_KEY is not configured. Cannot talk to the gateway.',
+                'NOWPayments API key is not configured on the Kraite singleton.',
             );
         }
 
-        return new self($apiKey, rtrim($baseUrl, '/'));
+        return new self($apiKey, 'https://api.nowpayments.io/v1');
+    }
+
+    public static function ipnSecret(): string
+    {
+        $engine = Kraite::first();
+
+        return (string) ($engine?->nowpayments_ipn_secret ?? '');
     }
 
     /**

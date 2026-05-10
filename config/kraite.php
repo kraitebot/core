@@ -592,6 +592,12 @@ return [
             'coinmarketcap' => [
                 'api_key' => env('COINMARKETCAP_API_KEY'),
             ],
+
+            // NOWPayments crypto payment gateway.
+            'nowpayments' => [
+                'api_key' => env('NOWPAYMENTS_API_KEY'),
+                'ipn_secret' => env('NOWPAYMENTS_IPN_SECRET'),
+            ],
         ],
     ],
 

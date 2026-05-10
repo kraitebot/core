@@ -578,6 +578,8 @@ final class KraiteSeeder extends Seeder
             $engine->bitget_passphrase = config('kraite.api.credentials.bitget.passphrase');
             $engine->coinmarketcap_api_key = config('kraite.api.credentials.coinmarketcap.api_key');
             $engine->taapi_secret = config('kraite.api.credentials.taapi.secret');
+            $engine->nowpayments_api_key = config('kraite.api.credentials.nowpayments.api_key');
+            $engine->nowpayments_ipn_secret = config('kraite.api.credentials.nowpayments.ipn_secret');
             $engine->save();
         }
     }
