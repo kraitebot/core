@@ -13,6 +13,11 @@ return [
         ? '/home/waygou/ingestion.kraite.com'
         : base_path('../ingestion.kraite.com')),
 
+    'ingestion_ssh_host' => env('KRAITE_INGESTION_SSH_HOST'),
+    'ingestion_ssh_user' => env('KRAITE_INGESTION_SSH_USER', 'waygou'),
+    'ingestion_ssh_key' => env('KRAITE_INGESTION_SSH_KEY'),
+    'ingestion_remote_path' => env('KRAITE_INGESTION_REMOTE_PATH', '/home/waygou/ingestion.kraite.com'),
+
     'admin_user_name' => env('ADMIN_USER_NAME'),
     'admin_user_email' => env('ADMIN_USER_EMAIL'),
     'admin_user_password' => env('ADMIN_USER_PASSWORD', 'password'),
