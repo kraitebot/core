@@ -7,6 +7,7 @@ namespace Kraite\Core\Observers;
 use Illuminate\Support\Once;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
+use Kraite\Core\Models\ExchangeSymbolPrice;
 use Kraite\Core\Models\TokenMapper;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\TradingMapperProxy;
@@ -63,6 +64,13 @@ final class ExchangeSymbolObserver
         }
 
         $model->api_statuses = $apiStatuses;
+    }
+
+    public function created(ExchangeSymbol $model): void
+    {
+        ExchangeSymbolPrice::firstOrCreate(
+            ['exchange_symbol_id' => $model->id],
+        );
     }
 
     /**
