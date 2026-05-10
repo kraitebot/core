@@ -59,7 +59,16 @@ final class UpsertExchangeSymbolsFromExchangeJob extends BaseApiableJob
         // - Non-trading status symbols
         $apiResponse = $this->apiSystem->apiQueryMarketData();
 
-        $totalFromApi = count($apiResponse->result);
+        $results = $apiResponse->result;
+
+        if (app()->environment('local')) {
+            $allowed = config('kraite.local_symbols', []);
+            $results = array_filter($results, function (array $symbolData) use ($allowed): bool {
+                return in_array($symbolData['baseAsset'] ?? '', $allowed, true);
+            });
+        }
+
+        $totalFromApi = count($results);
 
         // Pre-load all symbols indexed by token for efficient lookup
         $symbolsByToken = Symbol::pluck('id', 'token');
@@ -83,7 +92,7 @@ final class UpsertExchangeSymbolsFromExchangeJob extends BaseApiableJob
         // Atomicity is not load-bearing here: a partial completion (worker
         // dies mid-loop) is recovered by the next hourly run, which is
         // idempotent on every row via updateOrCreate.
-        foreach ($apiResponse->result as $symbolData) {
+        foreach ($results as $symbolData) {
             $token = $symbolData['baseAsset'] ?? null;
             $quote = $symbolData['quoteAsset'] ?? null;
             $asset = $symbolData['pair'] ?? null; // Raw exchange pair (e.g., PF_XBTUSD, BTCUSDT)
@@ -164,7 +173,7 @@ final class UpsertExchangeSymbolsFromExchangeJob extends BaseApiableJob
         // exchange listing without any advance-notice delivery date (the
         // announced case is handled by ExchangeSymbolObserver + each
         // TradingMapper::isNowDelisted()).
-        $markedForDelistingCount = $this->flagMissingSymbolsForDelisting($apiResponse->result);
+        $markedForDelistingCount = $this->flagMissingSymbolsForDelisting($results);
 
         return [
             'exchange' => $this->apiSystem->canonical,

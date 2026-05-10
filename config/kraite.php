@@ -705,4 +705,25 @@ return [
     ],
 
     'server_role' => env('SERVER_ROLE', 'web'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Local Development — Restricted Symbol Set
+    |--------------------------------------------------------------------------
+    |
+    |   When APP_ENV=local, only these tokens are upserted by
+    |   refresh-exchange-symbols. Keeps API calls and DB volume
+    |   manageable on a dev machine. BTC is mandatory for
+    |   correlation calculations.
+    |
+    |   Production (APP_ENV=production) ignores this — full
+    |   symbol universe is fetched.
+    */
+    'local_symbols' => [
+        'BTC', 'ETH', 'SOL', 'BNB', 'XRP',
+        'DOGE', 'ADA', 'AVAX', 'DOT', 'LINK',
+        'AAVE', 'UNI', 'ATOM', 'APT', 'NEAR',
+        'WIF', 'PEPE', '1000SHIB', 'FLOKI', 'BONK',
+        'CHZ',
+    ],
 ];
