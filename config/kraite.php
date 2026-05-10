@@ -9,6 +9,8 @@ return [
     | Admin User
     |--------------------------------------------------------------------------
     */
+    'php_binary' => env('PHP_CLI_BINARY', 'php'),
+
     'ingestion_path' => env('KRAITE_INGESTION_PATH', is_dir('/home/waygou/ingestion.kraite.com')
         ? '/home/waygou/ingestion.kraite.com'
         : base_path('../ingestion.kraite.com')),
