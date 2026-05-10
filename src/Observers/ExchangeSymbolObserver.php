@@ -73,10 +73,6 @@ final class ExchangeSymbolObserver
         );
     }
 
-    public function deleting(ExchangeSymbol $model): void
-    {
-        ExchangeSymbolPrice::where('exchange_symbol_id', $model->id)->delete();
-    }
 
     /**
      * Handle overlap logic before saving (create or update).
