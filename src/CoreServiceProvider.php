@@ -38,6 +38,7 @@ use Kraite\Core\Commands\Cronjobs\SyncOrdersCommand;
 use Kraite\Core\Commands\Daemons\StreamBinancePricesCommand;
 use Kraite\Core\Commands\Daemons\StreamBinanceUserDataCommand;
 use Kraite\Core\Commands\CooldownCommand;
+use Kraite\Core\Commands\DispatchDaemonCommand;
 use Kraite\Core\Commands\Ingestion\IsEligibleCommand;
 use Kraite\Core\Commands\RecoverPositionsCommand;
 use Kraite\Core\Commands\WarmupCommand;
@@ -117,6 +118,7 @@ final class CoreServiceProvider extends ServiceProvider
             TestNotificationCommand::class,
             ThrottlerStressTestCommand::class,
             CooldownCommand::class,
+            DispatchDaemonCommand::class,
             WarmupCommand::class,
         ]);
 
