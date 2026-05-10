@@ -161,6 +161,19 @@ final class CoreServiceProvider extends ServiceProvider
         Symbol::observe(SymbolObserver::class);
         User::observe(UserObserver::class);
 
+        // Override Resend API key from Kraite singleton (encrypted DB source of truth).
+        $this->app->booted(function (): void {
+            try {
+                $engine = Kraite::first();
+
+                if ($engine?->resend_api_key) {
+                    config(['services.resend.key' => $engine->resend_api_key]);
+                }
+            } catch (\Throwable) {
+                // Table may not exist during migrations or testing bootstrap.
+            }
+        });
+
         // Register slow query listener
         $this->registerSlowQueryListener();
 

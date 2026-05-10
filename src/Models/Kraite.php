@@ -81,6 +81,7 @@ final class Kraite extends BaseModel
         'taapi_secret' => 'encrypted',
         'nowpayments_api_key' => 'encrypted',
         'nowpayments_ipn_secret' => 'encrypted',
+        'resend_api_key' => 'encrypted',
         'admin_pushover_user_key' => 'encrypted',
         'admin_pushover_application_key' => 'encrypted',
 

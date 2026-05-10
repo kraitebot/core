@@ -43,7 +43,6 @@ final class ForbiddenHostnameObserver
             $hostname = gethostname();
             $apiSystem = $record->apiSystem;
 
-            // Map type to notification canonical
             $canonical = match ($record->type) {
                 ForbiddenHostname::TYPE_IP_NOT_WHITELISTED => 'server_ip_not_whitelisted',
                 ForbiddenHostname::TYPE_IP_RATE_LIMITED => 'server_ip_rate_limited',
@@ -52,20 +51,8 @@ final class ForbiddenHostnameObserver
                 default => 'server_ip_forbidden',
             };
 
-            // Determine who to notify based on type
-            // Admin: system-wide issues (IP banned, IP rate limited)
-            // User: account-specific issues (IP not whitelisted, account blocked)
-            $notifyAdmin = in_array($record->type, [
-                ForbiddenHostname::TYPE_IP_BANNED,
-                ForbiddenHostname::TYPE_IP_RATE_LIMITED,
-            ], strict: true);
+            $user = $this->resolveNotificationRecipient($record);
 
-            // Get the user to notify
-            $user = $notifyAdmin
-                ? Kraite::admin()
-                : $record->account?->user;
-
-            // If no user to notify, skip notification
             if (! $user) {
                 return;
             }
@@ -84,22 +71,43 @@ final class ForbiddenHostnameObserver
                     'error_message' => $record->error_message,
                 ],
                 relatable: $apiSystem,
+                duration: 3600,
                 cacheKeys: [
                     'type' => $record->type,
                     'api_system' => $apiSystem?->canonical,
                     'ip_address' => $record->ip_address,
-                    'account_id' => $record->account_id ?? 0,
+                    'account_id' => $record->account_id ?? 'system',
                 ]
             );
         } catch (Throwable $e) {
-            // Don't break the calling code path (a forbidden-host event must
-            // still record), but surface the failure — silent swallow hid a
-            // Redis outage during a real ban event in production.
             Log::error('[ForbiddenHostnameObserver] Failed to dispatch notification', [
                 'forbidden_hostname_id' => $record->id,
                 'type' => $record->type,
                 'message' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Resolve who to notify:
+     * - IP banned / rate limited → admin (system-wide)
+     * - IP not whitelisted with account_id → account owner (user forgot)
+     * - IP not whitelisted without account_id → admin (system key issue)
+     * - Account blocked → account owner
+     */
+    private function resolveNotificationRecipient(ForbiddenHostname $record): ?\Kraite\Core\Models\User
+    {
+        if (in_array($record->type, [
+            ForbiddenHostname::TYPE_IP_BANNED,
+            ForbiddenHostname::TYPE_IP_RATE_LIMITED,
+        ], strict: true)) {
+            return Kraite::admin();
+        }
+
+        if ($record->account_id !== null) {
+            return $record->account?->user;
+        }
+
+        return Kraite::admin();
     }
 }
