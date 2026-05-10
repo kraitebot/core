@@ -9,6 +9,10 @@ return [
     | Admin User
     |--------------------------------------------------------------------------
     */
+    'ingestion_path' => env('KRAITE_INGESTION_PATH', is_dir('/home/waygou/ingestion.kraite.com')
+        ? '/home/waygou/ingestion.kraite.com'
+        : base_path('../ingestion.kraite.com')),
+
     'admin_user_name' => env('ADMIN_USER_NAME'),
     'admin_user_email' => env('ADMIN_USER_EMAIL'),
     'admin_user_password' => env('ADMIN_USER_PASSWORD', 'password'),

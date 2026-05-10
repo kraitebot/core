@@ -343,7 +343,7 @@ final class KraiteSeeder extends Seeder
      */
     public function seedApiSystems(): array
     {
-        $binance = ApiSystem::firstOrCreate(
+        $binance = ApiSystem::updateOrCreate(
             ['canonical' => 'binance'],
             [
                 'name' => 'Binance',
@@ -352,7 +352,7 @@ final class KraiteSeeder extends Seeder
             ]
         );
 
-        $bybit = ApiSystem::firstOrCreate(
+        $bybit = ApiSystem::updateOrCreate(
             ['canonical' => 'bybit'],
             [
                 'name' => 'Bybit',
@@ -361,7 +361,7 @@ final class KraiteSeeder extends Seeder
             ]
         );
 
-        $kucoin = ApiSystem::firstOrCreate(
+        $kucoin = ApiSystem::updateOrCreate(
             ['canonical' => 'kucoin'],
             [
                 'name' => 'KuCoin',
@@ -370,7 +370,7 @@ final class KraiteSeeder extends Seeder
             ]
         );
 
-        $bitget = ApiSystem::firstOrCreate(
+        $bitget = ApiSystem::updateOrCreate(
             ['canonical' => 'bitget'],
             [
                 'name' => 'BitGet',
@@ -379,7 +379,7 @@ final class KraiteSeeder extends Seeder
             ]
         );
 
-        $coinmarketcap = ApiSystem::firstOrCreate(
+        $coinmarketcap = ApiSystem::updateOrCreate(
             ['canonical' => 'coinmarketcap'],
             [
                 'name' => 'CoinmarketCap',
@@ -387,7 +387,7 @@ final class KraiteSeeder extends Seeder
             ]
         );
 
-        $alternativeMe = ApiSystem::firstOrCreate(
+        $alternativeMe = ApiSystem::updateOrCreate(
             ['canonical' => 'alternativeme'],
             [
                 'name' => 'AlternativeMe',
@@ -395,7 +395,7 @@ final class KraiteSeeder extends Seeder
             ]
         );
 
-        $taapi = ApiSystem::firstOrCreate(
+        $taapi = ApiSystem::updateOrCreate(
             ['canonical' => 'taapi'],
             [
                 'name' => 'Taapi',
