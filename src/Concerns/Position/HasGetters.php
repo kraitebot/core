@@ -189,7 +189,7 @@ trait HasGetters
      * never have to null-check the formatted string. Output is the
      * api-formatted string (per-symbol price precision).
      */
-    public function pnl(): ?string
+    public function unrealizedPnl(): ?string
     {
         if ($this->quantity === null || bccomp((string) $this->quantity, '0', scale: 8) === 0) {
             return '0';

@@ -180,4 +180,62 @@ trait InteractsWithApis
             result: $this->apiMapper()->resolveQueryFillsResponse($this->apiResponse)
         );
     }
+
+    /**
+     * Query income history from Binance (REALIZED_PNL, COMMISSION, FUNDING_FEE).
+     */
+    public function apiQueryIncome(string $symbol, string $incomeType, int $startTime, int $endTime): ApiResponse
+    {
+        $this->apiProperties = new ApiProperties;
+        $this->apiProperties->set('account', $this);
+        $this->apiProperties->set('options.symbol', $symbol);
+        $this->apiProperties->set('options.incomeType', $incomeType);
+        $this->apiProperties->set('options.startTime', $startTime);
+        $this->apiProperties->set('options.endTime', $endTime);
+        $this->apiProperties->set('options.limit', 1000);
+        $this->apiProperties->set('options.timestamp', now()->getTimestampMs());
+
+        $this->apiResponse = $this->withApi()->income($this->apiProperties);
+
+        $decoded = $this->apiResponse instanceof Response
+            ? json_decode((string) $this->apiResponse->getBody(), true)
+            : (is_array($this->apiResponse) ? $this->apiResponse : []);
+
+        return new ApiResponse(
+            response: $this->apiResponse instanceof Response ? $this->apiResponse : null,
+            result: $decoded
+        );
+    }
+
+    /**
+     * Query historical closed positions from Bitget with exchange-computed PnL.
+     */
+    public function apiQueryHistoryPositions(string $productType, ?string $symbol = null, ?int $startTime = null, ?int $endTime = null): ApiResponse
+    {
+        $this->apiProperties = new ApiProperties;
+        $this->apiProperties->set('account', $this);
+        $this->apiProperties->set('options.productType', $productType);
+
+        if ($symbol !== null) {
+            $this->apiProperties->set('options.symbol', $symbol);
+        }
+        if ($startTime !== null) {
+            $this->apiProperties->set('options.startTime', (string) $startTime);
+        }
+        if ($endTime !== null) {
+            $this->apiProperties->set('options.endTime', (string) $endTime);
+        }
+        $this->apiProperties->set('options.limit', '100');
+
+        $this->apiResponse = $this->withApi()->historyPosition($this->apiProperties);
+
+        $decoded = $this->apiResponse instanceof Response
+            ? json_decode((string) $this->apiResponse->getBody(), true)
+            : (is_array($this->apiResponse) ? $this->apiResponse : []);
+
+        return new ApiResponse(
+            response: $this->apiResponse instanceof Response ? $this->apiResponse : null,
+            result: $decoded
+        );
+    }
 }

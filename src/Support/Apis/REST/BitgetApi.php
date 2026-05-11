@@ -626,4 +626,25 @@ final class BitgetApi
 
         return $this->client->signRequest($apiRequest);
     }
+
+    /**
+     * Get historical (closed) positions with exchange-computed PnL.
+     * Returns up to 3 months of data.
+     */
+    public function historyPosition(?ApiProperties $properties = null)
+    {
+        $properties ??= new ApiProperties;
+
+        $this->validate($properties, [
+            'options.productType' => 'required|string',
+        ]);
+
+        $apiRequest = ApiRequest::make(
+            'GET',
+            '/api/v2/mix/position/history-position',
+            $properties
+        );
+
+        return $this->client->signRequest($apiRequest);
+    }
 }

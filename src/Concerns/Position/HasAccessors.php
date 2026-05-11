@@ -120,13 +120,13 @@ trait HasAccessors
     }
 
     /**
-     * $position->pnl
-     * Source: pnl() domain method.
+     * $position->unrealized_pnl
+     * Source: unrealizedPnl() domain method.
      * Returns string numeric (e.g. "0") always.
      */
-    public function getPnlAttribute(): ?string
+    public function getUnrealizedPnlAttribute(): ?string
     {
-        return (string) ($this->pnl() ?? '0');
+        return (string) ($this->unrealizedPnl() ?? '0');
     }
 
     /**

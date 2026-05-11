@@ -733,10 +733,22 @@ return [
     |   symbol universe is fetched.
     */
     'local_symbols' => [
+        // Original 21
         'BTC', 'ETH', 'SOL', 'BNB', 'XRP',
         'DOGE', 'ADA', 'AVAX', 'DOT', 'LINK',
         'AAVE', 'UNI', 'ATOM', 'APT', 'NEAR',
         'WIF', 'PEPE', '1000SHIB', 'FLOKI', 'BONK',
         'CHZ',
+        // Additional 50
+        'LTC', 'ETC', 'FIL', 'ARB', 'OP',
+        'MATIC', 'SAND', 'MANA', 'GRT', 'FTM',
+        'ALGO', 'ICP', 'TRX', 'HBAR', 'VET',
+        'IMX', 'INJ', 'SEI', 'SUI', 'TIA',
+        'JUP', 'RENDER', 'FET', 'ONDO', 'PENDLE',
+        'STX', 'MKR', 'LDO', 'CRV', 'COMP',
+        'SNX', 'RUNE', 'THETA', 'GALA', 'AXS',
+        'ENS', 'DYDX', 'BLUR', 'JTO', 'PYTH',
+        'W', 'ENA', 'ETHFI', 'STRK', 'ZRO',
+        'TAO', 'KAS', 'ORDI', '1000SATS', 'WLD',
     ],
 ];

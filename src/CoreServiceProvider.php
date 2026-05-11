@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
 use Kraite\Core\Commands\Backtest\BacktestTokenCommand;
+use Kraite\Core\Commands\CooldownCommand;
 use Kraite\Core\Commands\Cronjobs\AnalyseBscsCommand;
 use Kraite\Core\Commands\Cronjobs\CheckBinanceListenKeysStaleCommand;
 use Kraite\Core\Commands\Cronjobs\CheckDriftsCommand;
@@ -35,17 +36,17 @@ use Kraite\Core\Commands\Cronjobs\RefreshExchangeSymbolsCommand;
 use Kraite\Core\Commands\Cronjobs\RenewSubscriptionsCommand;
 use Kraite\Core\Commands\Cronjobs\StoreAccountsBalancesCommand;
 use Kraite\Core\Commands\Cronjobs\SyncOrdersCommand;
+use Kraite\Core\Commands\Cronjobs\UpsertPnlsCommand;
 use Kraite\Core\Commands\Daemons\StreamBinancePricesCommand;
 use Kraite\Core\Commands\Daemons\StreamBinanceUserDataCommand;
-use Kraite\Core\Commands\CooldownCommand;
 use Kraite\Core\Commands\DispatchDaemonCommand;
 use Kraite\Core\Commands\Ingestion\IsEligibleCommand;
 use Kraite\Core\Commands\RecoverPositionsCommand;
-use Kraite\Core\Commands\WarmupCommand;
 use Kraite\Core\Commands\SafeToRestartCommand;
 use Kraite\Core\Commands\Tests\TestNotificationCommand;
 use Kraite\Core\Commands\Tests\ThrottlerStressTestCommand;
 use Kraite\Core\Commands\UpdateRecvwindowSafetyDurationCommand;
+use Kraite\Core\Commands\WarmupCommand;
 use Kraite\Core\Listeners\NotificationLogListener;
 use Kraite\Core\Listeners\SendStaleStepsNotification;
 use Kraite\Core\Models\Account;
@@ -81,6 +82,7 @@ use Kraite\Core\Observers\UserObserver;
 use Kraite\Core\Support\NotificationService;
 use Schema;
 use StepDispatcher\Events\StaleStepsDetected;
+use Throwable;
 
 final class CoreServiceProvider extends ServiceProvider
 {
@@ -111,6 +113,7 @@ final class CoreServiceProvider extends ServiceProvider
             StreamBinancePricesCommand::class,
             StreamBinanceUserDataCommand::class,
             SyncOrdersCommand::class,
+            UpsertPnlsCommand::class,
             RefreshBinanceListenKeysCommand::class,
             CheckBinanceListenKeysStaleCommand::class,
             CheckSystemHealthCommand::class,
@@ -169,7 +172,7 @@ final class CoreServiceProvider extends ServiceProvider
                 if ($engine?->resend_api_key) {
                     config(['services.resend.key' => $engine->resend_api_key]);
                 }
-            } catch (\Throwable) {
+            } catch (Throwable) {
                 // Table may not exist during migrations or testing bootstrap.
             }
         });
