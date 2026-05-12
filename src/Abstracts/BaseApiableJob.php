@@ -303,7 +303,14 @@ abstract class BaseApiableJob extends BaseQueueableJob
 
     /**
      * Override to provide API-specific diagnostic information for retry failures.
-     * Checks if the current hostname is forbidden for this account/API system.
+     *
+     * Mirrors compute()'s ban-resolution scope: includes account-scoped AND
+     * system-wide active bans for the current API system. Branches the message
+     * by ban type so operators reading max-retry logs see the actual cause
+     * (whitelist gap, rate-limit window, system-wide ban, account block) rather
+     * than a hardcoded "not whitelisted" string that's wrong for 3 of 4 types.
+     *
+     * @return array<int, string>
      */
     protected function getRetryDiagnostics(): array
     {
@@ -314,20 +321,69 @@ abstract class BaseApiableJob extends BaseQueueableJob
                 $this->assignExceptionHandler();
             }
 
-            $ipAddress = \Kraite\Core\Models\Kraite::ip();
-            $forbiddenHostname = ForbiddenHostname::query()
-                ->where('account_id', $this->exceptionHandler->account->id)
-                ->where('ip_address', $ipAddress)
-                ->first();
+            $apiSystemCanonical = $this->exceptionHandler->getApiSystem();
+            $apiSystem = \Kraite\Core\Models\ApiSystem::where('canonical', $apiSystemCanonical)->first();
 
-            if ($forbiddenHostname) {
-                $apiSystemName = $this->exceptionHandler->account->apiSystem->name ?? 'exchange';
-                $diagnostics[] = "Server IP {$ipAddress} is not whitelisted on {$apiSystemName}. Please add this IP to your API key whitelist.";
+            if (! $apiSystem) {
+                return $diagnostics;
+            }
+
+            $exchangeName = $apiSystem->name ?? $apiSystemCanonical;
+            $ipAddress = \Kraite\Core\Models\Kraite::ip();
+            $accountId = $this->exceptionHandler->account?->id;
+
+            $bans = ForbiddenHostname::query()
+                ->where('api_system_id', $apiSystem->id)
+                ->where('ip_address', $ipAddress)
+                ->where(static function ($query) use ($accountId): void {
+                    if ($accountId === null) {
+                        $query->whereNull('account_id');
+
+                        return;
+                    }
+
+                    $query->where('account_id', $accountId)->orWhereNull('account_id');
+                })
+                ->where(static function ($query): void {
+                    $query->whereNull('forbidden_until')
+                        ->orWhere('forbidden_until', '>', now());
+                })
+                ->get();
+
+            foreach ($bans as $ban) {
+                $diagnostics[] = $this->buildBanDiagnostic($ban, $exchangeName, $ipAddress);
             }
         } catch (Throwable $e) {
             // Silently skip diagnostics if anything fails
         }
 
         return $diagnostics;
+    }
+
+    /**
+     * Format a single ForbiddenHostname row as a triage-friendly string.
+     */
+    private function buildBanDiagnostic(ForbiddenHostname $ban, string $exchangeName, string $ipAddress): string
+    {
+        $scope = $ban->account_id === null ? 'system-wide' : "account #{$ban->account_id}";
+        $until = $ban->forbidden_until?->toDateTimeString();
+        $untilSuffix = $until !== null ? " until {$until}" : '';
+
+        return match ($ban->type) {
+            ForbiddenHostname::TYPE_IP_NOT_WHITELISTED =>
+                "IP {$ipAddress} is not whitelisted on {$exchangeName} ({$scope}). Add this IP to the API key whitelist.",
+
+            ForbiddenHostname::TYPE_IP_RATE_LIMITED =>
+                "IP {$ipAddress} is rate-limited on {$exchangeName} ({$scope}){$untilSuffix}. Auto-recovers when the window expires.",
+
+            ForbiddenHostname::TYPE_IP_BANNED =>
+                "IP {$ipAddress} is banned on {$exchangeName} ({$scope}){$untilSuffix}. Contact {$exchangeName} support if persistent.",
+
+            ForbiddenHostname::TYPE_ACCOUNT_BLOCKED =>
+                "Account #{$ban->account_id} is blocked on {$exchangeName}. Check API key validity and permissions.",
+
+            default =>
+                "Forbidden hostname on {$exchangeName} ({$scope}, type={$ban->type}, ip={$ipAddress}){$untilSuffix}.",
+        };
     }
 }

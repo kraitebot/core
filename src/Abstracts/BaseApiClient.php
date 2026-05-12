@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Sleep;
 use Kraite\Core\Models\ApiRequestLog;
 use Kraite\Core\Models\ApiSystem;
+use Kraite\Core\Models\ForbiddenHostname;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Support\HeaderSanitizer;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use Kraite\Core\Support\ValueObjects\ApiRequest;
@@ -204,6 +206,55 @@ abstract class BaseApiClient
 
         if ($this->exceptionHandler) {
             $this->exceptionHandler->recordResponseHeaders($response);
+        }
+
+        $this->selfHealUserFixableBans($logData);
+    }
+
+    /**
+     * Self-heal user-fixable ForbiddenHostname rows.
+     *
+     * A successful authenticated response from this account+IP+exchange
+     * is positive proof that the credential/whitelist problem the row
+     * was reporting is no longer real. The pre-flight gate in
+     * BaseApiableJob keys off `forbidden_until IS NULL OR > now()`, so
+     * any user-fixable row left behind after the user fixes their API
+     * key whitelist would block every subsequent step indefinitely —
+     * the exact failure mode that knocked out account #1 on 2026-05-12.
+     *
+     * Scope is intentionally narrow:
+     *  - Only types the user can self-resolve (`ip_not_whitelisted`,
+     *    `account_blocked`). `ip_rate_limited` auto-recovers via
+     *    `forbidden_until`; `ip_banned` is exchange-side and a single
+     *    successful call says nothing about a global IP ban.
+     *  - Only the exact (account_id, api_system_id, ip_address) tuple
+     *    that just succeeded — the success cannot vouch for sibling
+     *    accounts or other servers.
+     */
+    private function selfHealUserFixableBans(array $logData): void
+    {
+        $accountId = $logData['account_id'] ?? null;
+
+        if ($accountId === null) {
+            return;
+        }
+
+        if ($this->apiSystem === null) {
+            return;
+        }
+
+        $bans = ForbiddenHostname::query()
+            ->where('account_id', $accountId)
+            ->where('api_system_id', $this->apiSystem->id)
+            ->where('ip_address', Kraite::ip())
+            ->whereIn('type', [
+                ForbiddenHostname::TYPE_IP_NOT_WHITELISTED,
+                ForbiddenHostname::TYPE_ACCOUNT_BLOCKED,
+            ])
+            ->get();
+
+        foreach ($bans as $ban) {
+            $ban->delete();
         }
     }
 

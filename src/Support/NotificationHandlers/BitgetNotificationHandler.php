@@ -10,25 +10,24 @@ namespace Kraite\Core\Support\NotificationHandlers;
  * Maps Bitget API error codes to notification canonicals.
  *
  * HTTP Code Mappings:
- * - 400 with vendor codes: Various IP/auth errors → server_ip_forbidden
- * - 401: Authentication failed → server_ip_forbidden
- * - 403: IP banned/permission issues → server_ip_forbidden
+ * - 403: IP banned/permission issues → server_ip_forbidden (broad — kept,
+ *   not covered by any exception-path is* method)
  * - 429: Too many requests → server_rate_limit_exceeded
  *
- * Vendor Code Mappings (HTTP 400 responses):
- * - 40009: Sign signature error → server_ip_forbidden
- * - 40014: Invalid API key → server_ip_forbidden
- * - 40017: Parameter verification failed → server_ip_forbidden
- * - 40018: Invalid passphrase/IP → server_ip_forbidden
- * - 40037: API key does not exist → server_ip_forbidden
+ * NOTE: 401 and the 400/vendor-code set (40009/40014/40017/40018/40037) are
+ * intentionally NOT mapped here. Both are classified by `isAccountBlocked`
+ * in the exception path (HTTP 401 directly, vendor codes via response-body
+ * inspection), which writes a `ForbiddenHostname` row and triggers
+ * `server_account_blocked` via `ForbiddenHostnameObserver`. The broad
+ * `server_ip_forbidden` was duplicating those.
+ *
+ * 403 stays here because the Bitget exception handler does NOT classify it
+ * as account/IP-specific — without this entry, an unclassified 403 would
+ * produce no operator notification at all.
  */
 final class BitgetNotificationHandler extends BaseNotificationHandler
 {
-    public array $serverForbiddenHttpCodes = [
-        401,
-        403,
-        400 => [40018, 40009, 40014, 40017, 40037],
-    ];
+    public array $serverForbiddenHttpCodes = [403];
 
     public array $serverRateLimitedHttpCodes = [429];
 }

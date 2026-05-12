@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
+use Kraite\Core\Commands\BackfillOriginalPricesCommand;
 use Kraite\Core\Commands\Backtest\BacktestTokenCommand;
 use Kraite\Core\Commands\CooldownCommand;
 use Kraite\Core\Commands\Cronjobs\AnalyseBscsCommand;
@@ -91,6 +92,7 @@ final class CoreServiceProvider extends ServiceProvider
         $this->commands([
             SafeToRestartCommand::class,
             RecoverPositionsCommand::class,
+            BackfillOriginalPricesCommand::class,
             UpdateRecvwindowSafetyDurationCommand::class,
             BacktestTokenCommand::class,
             AnalyseBscsCommand::class,
@@ -175,6 +177,24 @@ final class CoreServiceProvider extends ServiceProvider
             } catch (Throwable) {
                 // Table may not exist during migrations or testing bootstrap.
             }
+        });
+
+        // Derive mail.from.name from mail.from.address local part.
+        // Rule: support@kraite.com → "Support from Kraite",
+        //       no-reply@kraite.com → "No-Reply from Kraite".
+        $this->app->booted(function (): void {
+            $address = config('mail.from.address');
+
+            if (! is_string($address) || ! str_contains($address, '@')) {
+                return;
+            }
+
+            [$local, $domain] = explode('@', $address, 2);
+
+            $localTitled = implode('-', array_map(ucfirst(...), explode('-', $local)));
+            $domainRoot = ucfirst(explode('.', $domain)[0]);
+
+            config(['mail.from.name' => "{$localTitled} from {$domainRoot}"]);
         });
 
         // Register slow query listener
@@ -290,7 +310,16 @@ final class CoreServiceProvider extends ServiceProvider
             'bindings' => $bindings,
         ]);
 
-        // Send notification to admin about slow query
+        // Send notification to admin about slow query.
+        //
+        // Throttled per-connection via cache-based SETNX (cache_key=["connection"]
+        // on the notification row). DB::listen fires on every query — without
+        // a cache key, two workers hitting a slow query in the same window
+        // would race past the DB exists() check and both emit. Keying on
+        // connection means one alert per connection per cache_duration window
+        // (default 5 min): broad enough to surface a systemic slow-query
+        // problem, narrow enough that a slow read-replica query doesn't
+        // silence a slow primary.
         NotificationService::send(
             user: Kraite::admin(),
             canonical: 'slow_query_detected',
@@ -299,7 +328,8 @@ final class CoreServiceProvider extends ServiceProvider
                 'time_ms' => (int) $query->time,
                 'connection' => $query->connectionName,
                 'threshold_ms' => $threshold,
-            ]
+            ],
+            cacheKeys: ['connection' => $query->connectionName]
         );
     }
 }

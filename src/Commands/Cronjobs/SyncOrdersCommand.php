@@ -33,6 +33,7 @@ final class SyncOrdersCommand extends BaseCommand
      */
     protected $signature = 'kraite:cron-sync-orders
                             {--order_id= : Sync a single order by ID}
+                            {--force : Required in production environments to authorize bypass-safety operations (--order_id direct sync)}
                             {--clean : Truncate steps and related tables before running (preserves positions and orders)}
                             {--output : Display command output (silent by default)}';
 
@@ -49,6 +50,24 @@ final class SyncOrdersCommand extends BaseCommand
     public function handle(): int
     {
         if ($this->option('clean')) {
+            // Environment gate — same shape as CreatePositionsCommand's
+            // --clean. Truncates steps + audit/snapshot tables and wipes
+            // log directories. Running on production destroys workflow
+            // state and audit trail while the exchange may still hold
+            // live positions/orders. Refused outright in any non-local /
+            // non-testing environment; if a production reset is ever
+            // genuinely needed, that's a separate explicitly-named,
+            // audit-logged command, not a flag on the every-five-minute
+            // sync cron.
+            if (! app()->environment(['local', 'testing'])) {
+                $this->error(sprintf(
+                    '[SYNC-ORDERS] --clean refused: current environment is "%s". This flag only runs in local or testing.',
+                    app()->environment()
+                ));
+
+                return self::FAILURE;
+            }
+
             $this->verboseInfo('Truncating steps and related tables (preserving positions and orders)...');
 
             DB::statement('SET FOREIGN_KEY_CHECKS=0;');
@@ -147,10 +166,33 @@ final class SyncOrdersCommand extends BaseCommand
     }
 
     /**
-     * Sync a single order by ID (direct call, no Step dispatch).
+     * Sync a single order by ID — direct apiSync(), no Step dispatch.
+     *
+     * Bypass-safety contract: this path skips BaseApiableJob throttling,
+     * the API exception handler, forbidden-host checks, retry handling,
+     * and trading-step audit logging. It is an emergency / manual operator
+     * tool, not an operational pipeline. Used carelessly during exchange
+     * instability it can hit rate limits, surface raw exceptions to the
+     * operator console, and leave no audit trail of the manual sync.
+     *
+     * Production gate: in non-local/testing environments the operator must
+     * pass --force explicitly. This is intentional friction so the command
+     * cannot be invoked by an automation script without a deliberate
+     * authorization flag — same shape as --clean's environment gate.
      */
     private function syncSingleOrder(int $orderId): int
     {
+        if (! app()->environment(['local', 'testing']) && ! $this->option('force')) {
+            $this->error(sprintf(
+                '[SYNC-ORDERS] --order_id refused: current environment is "%s". This direct-sync path bypasses throttling, the exception handler, forbidden-host checks, retries, and audit logging. Re-run with --force to authorize.',
+                app()->environment()
+            ));
+
+            return self::FAILURE;
+        }
+
+        $this->warn('[SYNC-ORDERS] direct mode active: bypassing throttling, exception handler, forbidden-host checks, retries, and audit logging.');
+
         /** @var Order|null $order */
         $order = Order::find($orderId);
 

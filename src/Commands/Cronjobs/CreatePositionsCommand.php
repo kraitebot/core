@@ -41,6 +41,24 @@ final class CreatePositionsCommand extends BaseCommand
     public function handle(): int
     {
         if ($this->option('clean')) {
+            // Environment gate — `--clean` truncates 8 tables (orders,
+            // positions, steps, api logs, snapshots, audit logs) and wipes
+            // log directories. Running it on production destroys the local
+            // source of truth while exchange positions and orders may still
+            // be live, leaving the system unable to reconcile. The gate
+            // refuses any non-local/non-testing environment outright; if a
+            // production reset is ever genuinely needed, that should be a
+            // separate, explicitly-named, audit-logged command — not a
+            // flag on the every-tick opening cron.
+            if (! app()->environment(['local', 'testing'])) {
+                $this->error(sprintf(
+                    '[CREATE-POSITIONS] --clean refused: current environment is "%s". This flag only runs in local or testing.',
+                    app()->environment()
+                ));
+
+                return self::FAILURE;
+            }
+
             $this->verboseInfo('Truncating positions, orders, steps, and related tables...');
 
             DB::statement('SET FOREIGN_KEY_CHECKS=0;');
@@ -72,7 +90,15 @@ final class CreatePositionsCommand extends BaseCommand
             ->where('is_active', true)
             ->where('can_trade', true)
             ->whereHas('user', static fn ($q) => $q->where('can_trade', true))
-            ->get();
+            ->get()
+            // Shuffle dispatch order so all accounts on the same exchange
+            // don't fire their balance/positions/orders prep queries in
+            // deterministic lockstep through the same throttler bucket.
+            // Without this, every cooldown-recovery tick produces a
+            // synchronized burst — the throttler rescheduleWithoutRetry's
+            // them, but the burst still pressures the API. Per-account
+            // first-call timing is now spread across the loop.
+            ->shuffle();
 
         $this->verboseInfo("Found {$accounts->count()} tradeable account(s).");
 

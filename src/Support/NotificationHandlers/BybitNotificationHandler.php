@@ -10,25 +10,22 @@ namespace Kraite\Core\Support\NotificationHandlers;
  * Maps Bybit API error codes to notification canonicals.
  *
  * HTTP Code Mappings:
- * - 401: Authentication failed → server_ip_forbidden
- * - 200 with 10003/10004/10005/10007/10009/10010: API key/IP issues → server_ip_forbidden
  * - 403: IP rate limit breached → server_rate_limit_exceeded
  * - 429: IP auto-banned → server_rate_limit_exceeded
  * - 200 with 10006/10018/170005/170222: Rate limit errors → server_rate_limit_exceeded
+ *
+ * NOTE: The previous "forbidden" set (401 + 200/10003-10010) is intentionally
+ * removed. Every code in that set is also classified by the exception path
+ * (`isAccountBlocked` covers 401 + 10003/10004/10005/10007;
+ * `ipNotWhitelistedHttpCodes` covers 10010; `ipBannedHttpCodes` covers
+ * 10009), which writes a `ForbiddenHostname` row and triggers the specific
+ * canonical via `ForbiddenHostnameObserver`. Emitting a broad
+ * `server_ip_forbidden` here as well produced double notifications for the
+ * same incident.
  */
 final class BybitNotificationHandler extends BaseNotificationHandler
 {
-    public array $serverForbiddenHttpCodes = [
-        401,
-        200 => [
-            10003,   // API key is invalid or domain mismatch
-            10004,   // Invalid signature
-            10005,   // Permission denied, check API key permissions
-            10007,   // User authentication failed
-            10009,   // IP banned by exchange (permanent)
-            10010,   // Unmatched IP, check API key's bound IP addresses
-        ],
-    ];
+    public array $serverForbiddenHttpCodes = [];
 
     public array $serverRateLimitedHttpCodes = [
         403,

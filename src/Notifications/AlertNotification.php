@@ -37,6 +37,7 @@ final class AlertNotification extends Notification
      * @param  string|null  $exchange  Exchange name for email subject (e.g., 'binance', 'bybit')
      * @param  string|null  $serverIp  Server IP address for email subject (e.g., '192.168.1.100')
      * @param  string|null  $telegramMessage  Override message for Telegram (defaults to $pushoverMessage if present, else $message — keeps the chat-friendly compact format aligned across the two terse channels)
+     * @param  object|null  $relatable  Relatable model for audit-trail context (extracted by NotificationLogListener into notification_logs.relatable_*). Travels on the per-send notification object — NOT as a dynamic property on the (possibly cached) notifiable — so consecutive admin sends with different relatables do not leak context across each other.
      */
     public function __construct(
         public string $message,
@@ -49,6 +50,7 @@ final class AlertNotification extends Notification
         public ?string $exchange = null,
         public ?string $serverIp = null,
         public ?string $telegramMessage = null,
+        public ?object $relatable = null,
     ) {}
 
     /**

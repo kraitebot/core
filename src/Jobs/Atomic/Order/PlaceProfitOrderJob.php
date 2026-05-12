@@ -57,6 +57,13 @@ class PlaceProfitOrderJob extends BaseApiableJob
 
     /**
      * Verify position is ready for profit order.
+     *
+     * On retry, restore $this->profitOrder from DB if a prior attempt already
+     * placed it. Without this, a worker death between exchange-accept and
+     * local reference-field commit would cause the next attempt to create a
+     * fresh Order row and re-call apiPlace() — placing a duplicate TP on the
+     * exchange. Same idempotency shape as PlaceMarketOrderJob and
+     * PlaceLimitOrderJob.
      */
     public function startOrFail(): bool
     {
@@ -80,11 +87,43 @@ class PlaceProfitOrderJob extends BaseApiableJob
             return false;
         }
 
+        // Idempotency: restore the existing active TP order if a prior
+        // attempt placed one. CANCELLED/EXPIRED/REJECTED rows are excluded
+        // because they represent prior attempts no longer on the book — a
+        // fresh placement is required in that case.
+        $existing = $this->position->orders()
+            ->where('type', 'PROFIT-LIMIT')
+            ->whereIn('status', ['NEW', 'PARTIALLY_FILLED', 'FILLED'])
+            ->latest('id')
+            ->first();
+
+        if ($existing !== null) {
+            $this->profitOrder = $existing;
+        }
+
         return true;
     }
 
     public function computeApiable()
     {
+        // Retry path: a prior attempt already placed the TP. Skip
+        // re-placement; doubleCheck() + complete() will run against the
+        // existing order and finalise normally. Same shape as
+        // PlaceMarketOrderJob.
+        if ($this->profitOrder !== null && $this->profitOrder->exchange_order_id !== null) {
+            return [
+                'position_id' => $this->position->id,
+                'order_id' => $this->profitOrder->id,
+                'trading_pair' => $this->position->exchangeSymbol->parsed_trading_pair,
+                'direction' => $this->position->direction,
+                'side' => $this->profitOrder->side,
+                'price' => $this->profitOrder->price,
+                'quantity' => $this->profitOrder->quantity,
+                'exchange_order_id' => $this->profitOrder->exchange_order_id,
+                'message' => 'Profit order already placed on prior attempt — skipping re-placement',
+            ];
+        }
+
         $exchangeSymbol = $this->position->exchangeSymbol;
         $direction = $this->position->direction;
         $canonical = $this->position->account->apiSystem->canonical;

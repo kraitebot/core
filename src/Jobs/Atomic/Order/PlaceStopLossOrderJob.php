@@ -61,6 +61,13 @@ final class PlaceStopLossOrderJob extends BaseApiableJob
 
     /**
      * Verify position is ready for stop-loss order.
+     *
+     * On retry, restore $this->stopLossOrder from DB if a prior attempt already
+     * placed it. Without this, a worker death between exchange-accept and
+     * local reference-field commit would cause the next attempt to create a
+     * fresh Order row and re-call apiPlace() — placing a duplicate SL on the
+     * exchange. Same idempotency shape as PlaceMarketOrderJob and
+     * PlaceLimitOrderJob.
      */
     public function startOrFail(): bool
     {
@@ -88,6 +95,20 @@ final class PlaceStopLossOrderJob extends BaseApiableJob
         // existed (or for half-baked deploys).
         if ($this->resolveStopLossPercentage() === null) {
             return false;
+        }
+
+        // Idempotency: restore the existing active SL order if a prior
+        // attempt placed one. CANCELLED/EXPIRED/REJECTED rows are excluded
+        // because they represent prior attempts no longer on the book — a
+        // fresh placement is required in that case.
+        $existing = $this->position->orders()
+            ->where('type', 'STOP-MARKET')
+            ->whereIn('status', ['NEW', 'PARTIALLY_FILLED', 'FILLED'])
+            ->latest('id')
+            ->first();
+
+        if ($existing !== null) {
+            $this->stopLossOrder = $existing;
         }
 
         return true;
@@ -153,6 +174,24 @@ final class PlaceStopLossOrderJob extends BaseApiableJob
 
     public function computeApiable()
     {
+        // Retry path: a prior attempt already placed the SL. Skip
+        // re-placement; doubleCheck() + complete() will run against the
+        // existing order and finalise normally. Same shape as
+        // PlaceMarketOrderJob.
+        if ($this->stopLossOrder !== null && $this->stopLossOrder->exchange_order_id !== null) {
+            return [
+                'position_id' => $this->position->id,
+                'order_id' => $this->stopLossOrder->id,
+                'trading_pair' => $this->position->exchangeSymbol->parsed_trading_pair,
+                'direction' => $this->position->direction,
+                'side' => $this->stopLossOrder->side,
+                'price' => $this->stopLossOrder->price,
+                'quantity' => $this->stopLossOrder->quantity,
+                'exchange_order_id' => $this->stopLossOrder->exchange_order_id,
+                'message' => 'Stop-loss already placed on prior attempt — skipping re-placement',
+            ];
+        }
+
         $exchangeSymbol = $this->position->exchangeSymbol;
         $direction = $this->position->direction;
         $stopPercent = $this->resolveStopLossPercentage();

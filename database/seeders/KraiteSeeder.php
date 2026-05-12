@@ -709,7 +709,7 @@ final class KraiteSeeder extends Seeder
                 'default_severity' => 'high',
                 'verified' => 1,
                 'cache_duration' => 300,
-                'cache_key' => null,
+                'cache_key' => ['connection'],
             ],
             // Stale dispatched steps (with self-healing)
             [

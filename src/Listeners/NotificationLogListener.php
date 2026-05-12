@@ -6,6 +6,7 @@ namespace Kraite\Core\Listeners;
 
 use Illuminate\Notifications\Events\NotificationFailed;
 use Illuminate\Notifications\Events\NotificationSent;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Kraite\Core\Enums\NotificationLogStatus;
 use Kraite\Core\Models\Account;
@@ -69,66 +70,93 @@ final class NotificationLogListener
     /**
      * Create a notification log entry from an event.
      *
+     * Failure-containment contract: this listener fires synchronously inside
+     * Laravel's notification event dispatch. A throw here propagates back up
+     * past `$user->notify()` in NotificationService, where it would be caught
+     * by the outer try/catch — but with two bad consequences:
+     *   1. NotificationService::send() returns false to the caller even though
+     *      the channel actually delivered successfully.
+     *   2. The log message would read "notify() failed" — misleading, since
+     *      the failure was the audit-log write, not the channel.
+     * So we contain any exception locally, log a warning with full context,
+     * and never let it bubble. Losing an audit row is bad; misclassifying a
+     * delivered notification as failed is worse.
+     *
      * @param  NotificationSent|NotificationFailed  $event
      */
     private function createLog($event, string $status, ?string $errorMessage = null): void
     {
-        $notifiable = $event->notifiable;
-        $notification = $event->notification;
-        $channel = $event->channel;
+        try {
+            $notifiable = $event->notifiable;
+            $notification = $event->notification;
+            $channel = $event->channel;
 
-        // Extract canonical from notification object
-        $canonical = $this->extractCanonical($notification);
+            // Extract canonical from notification object
+            $canonical = $this->extractCanonical($notification);
 
-        // Extract user ID (null for admin virtual user)
-        /** @var object $notifiable */
-        $userId = $this->extractUserId($notifiable);
+            // Extract user ID (null for admin virtual user)
+            /** @var object $notifiable */
+            $userId = $this->extractUserId($notifiable);
 
-        // Determine relatable context model (NOT the user)
-        [$relatableType, $relatableId] = $this->extractRelatable($notifiable);
+            // Determine relatable context model (NOT the user). The notification
+            // itself is the canonical source — it travels per-send and so is
+            // safe even when the notifiable is a process-cached singleton
+            // (Kraite::admin()). Notifiable fallbacks below cover Account-as-
+            // notifiable and any legacy callers that haven't moved off the
+            // dynamic-property pattern yet.
+            [$relatableType, $relatableId] = $this->extractRelatable($notifiable, $notification);
 
-        // Determine recipient based on channel
-        $recipient = $this->extractRecipient($notifiable, $channel);
+            // Determine recipient based on channel
+            $recipient = $this->extractRecipient($notifiable, $channel);
 
-        // Extract response data (for sent events)
-        $gatewayResponse = null;
-        $httpHeadersReceived = null;
-        $httpHeadersSent = null;
-        $messageId = null;
-        $rawEmailContent = null;
-        if ($event instanceof NotificationSent && $event->response) {
-            $gatewayResponse = $this->extractGatewayResponse($event->response);
-            $httpHeadersReceived = $this->extractHttpHeaders($event->response);
-            $httpHeadersSent = $this->extractHttpHeadersSent($event->response);
-            $messageId = $this->extractMessageId($gatewayResponse, $channel);
-            $rawEmailContent = $this->extractRawEmailContent($event->response, $channel);
+            // Extract response data (for sent events)
+            $gatewayResponse = null;
+            $httpHeadersReceived = null;
+            $httpHeadersSent = null;
+            $messageId = null;
+            $rawEmailContent = null;
+            if ($event instanceof NotificationSent && $event->response) {
+                $gatewayResponse = $this->extractGatewayResponse($event->response);
+                $httpHeadersReceived = $this->extractHttpHeaders($event->response);
+                $httpHeadersSent = $this->extractHttpHeadersSent($event->response);
+                $messageId = $this->extractMessageId($gatewayResponse, $channel);
+                $rawEmailContent = $this->extractRawEmailContent($event->response, $channel);
+            }
+
+            // Build content dump for legal audit
+            $contentDump = $this->buildContentDump($notification, $notifiable);
+
+            // Lookup notification definition by canonical
+            $notificationId = Notification::where('canonical', $canonical)->value('id');
+
+            // Create log entry
+            NotificationLog::create([
+                'notification_id' => $notificationId,
+                'canonical' => $canonical,
+                'user_id' => $userId,
+                'relatable_type' => $relatableType,
+                'relatable_id' => $relatableId,
+                'channel' => $this->normalizeChannel($channel),
+                'recipient' => $recipient,
+                'message_id' => $messageId,
+                'sent_at' => now(),
+                'status' => $status,
+                'http_headers_sent' => $httpHeadersSent,
+                'http_headers_received' => $httpHeadersReceived,
+                'gateway_response' => $gatewayResponse,
+                'content_dump' => $contentDump,
+                'raw_email_content' => $rawEmailContent,
+                'error_message' => $errorMessage,
+            ]);
+        } catch (Throwable $e) {
+            Log::warning('[NotificationLogListener] createLog failed; swallowed to protect the notification send path', [
+                'channel' => $event->channel ?? null,
+                'notification_class' => isset($event->notification) ? $event->notification::class : null,
+                'event_status' => $status,
+                'audit_exception_class' => $e::class,
+                'audit_exception_message' => $e->getMessage(),
+            ]);
         }
-
-        // Build content dump for legal audit
-        $contentDump = $this->buildContentDump($notification, $notifiable);
-
-        // Lookup notification definition by canonical
-        $notificationId = Notification::where('canonical', $canonical)->value('id');
-
-        // Create log entry
-        NotificationLog::create([
-            'notification_id' => $notificationId,
-            'canonical' => $canonical,
-            'user_id' => $userId,
-            'relatable_type' => $relatableType,
-            'relatable_id' => $relatableId,
-            'channel' => $this->normalizeChannel($channel),
-            'recipient' => $recipient,
-            'message_id' => $messageId,
-            'sent_at' => now(),
-            'status' => $status,
-            'http_headers_sent' => $httpHeadersSent,
-            'http_headers_received' => $httpHeadersReceived,
-            'gateway_response' => $gatewayResponse,
-            'content_dump' => $contentDump,
-            'raw_email_content' => $rawEmailContent,
-            'error_message' => $errorMessage,
-        ]);
     }
 
     /**
@@ -172,50 +200,62 @@ final class NotificationLogListener
     /**
      * Extract relatable context model (Account, ApiSystem, ExchangeSymbol, etc.) - NOT the user.
      *
+     * Resolution order:
+     *   1. Notification's own `relatable` property — the canonical, per-send
+     *      source set by NotificationService. Safe regardless of notifiable
+     *      caching.
+     *   2. Account-as-notifiable — Account itself is the relatable.
+     *   3. Notifiable's dynamic `relatable` property — legacy fallback for
+     *      callers that haven't migrated to the notification-side property.
+     *
      * @return array{string|null, int|null}
      */
-    private function extractRelatable(object $notifiable): array
+    private function extractRelatable(object $notifiable, ?object $notification = null): array
     {
-        // If notifiable is Account, use it as relatable
+        // 1. Notification-side relatable (preferred, per-send, leak-proof)
+        if ($notification !== null
+            && property_exists($notification, 'relatable')
+            && is_object($notification->relatable)
+        ) {
+            return $this->resolveRelatableTuple($notification->relatable);
+        }
+
+        // 2. Account-as-notifiable: the Account is the relatable
         if ($notifiable instanceof Account) {
             return [Account::class, $notifiable->id];
         }
 
-        // If notifiable is User, DON'T use User as relatable - check for relatable property instead
-        // (User is stored in user_id column, relatable is for context models)
-        if ($notifiable instanceof User) {
-            // Check if User has a relatable property (dynamically added by NotificationService)
-            if (isset($notifiable->relatable) && is_object($notifiable->relatable)) {
-                $relatable = $notifiable->relatable;
-                if (method_exists($relatable, 'getMorphClass')) {
-                    return [$relatable->getMorphClass(), $relatable->getKey()];
-                }
-                if (property_exists($relatable, 'id')) {
-                    return [get_class($relatable), $relatable->id];
-                }
-            }
-
-            // User notifications without additional context have no relatable
-            return [null, null];
-        }
-
-        // Check if pseudo-notifiable has a relatable property (admin notifications with context)
+        // 3. Legacy fallback: dynamic `relatable` on the notifiable.
+        //    User and pseudo-notifiable share the same shape here.
         if (isset($notifiable->relatable) && is_object($notifiable->relatable)) {
-            $relatable = $notifiable->relatable;
-            if (method_exists($relatable, 'getMorphClass')) {
-                return [$relatable->getMorphClass(), $relatable->getKey()];
-            }
-            if (property_exists($relatable, 'id')) {
-                return [get_class($relatable), $relatable->id];
-            }
+            return $this->resolveRelatableTuple($notifiable->relatable);
         }
 
-        // Admin notifications without additional context have no relatable model
         return [null, null];
     }
 
     /**
-     * Extract recipient (email or Pushover key) based on channel.
+     * Resolve a relatable model into the (type, id) tuple stored on
+     * notification_logs. Prefer Eloquent's morph map when available; fall
+     * back to FQCN + ->id for plain objects.
+     *
+     * @return array{string|null, int|null}
+     */
+    private function resolveRelatableTuple(object $relatable): array
+    {
+        if (method_exists($relatable, 'getMorphClass')) {
+            return [$relatable->getMorphClass(), $relatable->getKey()];
+        }
+
+        if (property_exists($relatable, 'id')) {
+            return [get_class($relatable), $relatable->id];
+        }
+
+        return [null, null];
+    }
+
+    /**
+     * Extract recipient (email, Pushover key, or Telegram chat id) based on channel.
      */
     private function extractRecipient(object $notifiable, string $channel): string
     {
@@ -261,6 +301,28 @@ final class NotificationLogListener
             }
         }
 
+        if (Str::contains($channel, 'telegram') || Str::contains($channel, 'Telegram')) {
+            // For Telegram, the chat id is the recipient.
+            if (method_exists($notifiable, 'routeNotificationFor')) {
+                $chatId = $notifiable->routeNotificationFor('telegram', null);
+                if (is_string($chatId) && $chatId !== '') {
+                    return $chatId;
+                }
+                if (is_int($chatId)) {
+                    return (string) $chatId;
+                }
+            }
+            if (property_exists($notifiable, 'telegram_chat_id')) {
+                $value = $notifiable->telegram_chat_id ?? null;
+                if (is_string($value) && $value !== '') {
+                    return $value;
+                }
+                if (is_int($value)) {
+                    return (string) $value;
+                }
+            }
+        }
+
         return 'unknown';
     }
 
@@ -274,6 +336,9 @@ final class NotificationLogListener
         }
         if (Str::contains($channel, 'mail') || $channel === 'mail') {
             return 'mail';
+        }
+        if (Str::contains($channel, 'telegram') || Str::contains($channel, 'Telegram')) {
+            return 'telegram';
         }
 
         return $channel;

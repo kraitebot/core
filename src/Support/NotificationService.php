@@ -130,10 +130,29 @@ final class NotificationService
         // - >0: use custom duration
         $throttleDuration = $duration ?? $notification?->cache_duration;
 
-        // Build cache key string if cacheKeys data is provided
+        // Build cache key string if cacheKeys data is provided.
+        //
+        // Failure-containment contract: a caller-supplied $cacheKeys missing
+        // a required template key (seed/caller drift) MUST NOT propagate out
+        // of NotificationService — the call site is typically a hot-path
+        // observer or watchdog. Mirror the same try/catch shape used for
+        // NotificationMessageBuilder::build() and $user->notify() below:
+        // log a precise error with canonical / supplied keys / template,
+        // then return false so the originating job continues.
         $builtCacheKey = null;
         if ($cacheKeys && $notification && $notification->cache_key) {
-            $builtCacheKey = self::buildCacheKey($canonical, $cacheKeys, $notification->cache_key);
+            try {
+                $builtCacheKey = self::buildCacheKey($canonical, $cacheKeys, $notification->cache_key);
+            } catch (Throwable $e) {
+                Log::error('[NotificationService] Failed to build throttle key', [
+                    'canonical' => $canonical,
+                    'message' => $e->getMessage(),
+                    'cache_keys' => array_keys($cacheKeys),
+                    'template' => $notification->cache_key,
+                ]);
+
+                return false;
+            }
         }
 
         // Throttle check: only if throttleDuration is set and > 0
@@ -187,11 +206,6 @@ final class NotificationService
             return false;
         }
 
-        // Add relatable model to user for NotificationLogListener to extract
-        if ($relatable) {
-            $user->relatable = $relatable;
-        }
-
         // Build additional parameters with action URL if provided
         $additionalParameters = [];
         if ($messageData['actionUrl']) {
@@ -230,6 +244,7 @@ final class NotificationService
                     pushoverMessage: $messageData['pushoverMessage'],
                     additionalParameters: $additionalParameters,
                     telegramMessage: $messageData['telegramMessage'] ?? null,
+                    relatable: $relatable,
                 )
             );
         } catch (Throwable $e) {

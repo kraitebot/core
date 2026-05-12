@@ -48,6 +48,8 @@ final class Order extends BaseModel
         'quantity' => 'string',
         'reference_price' => 'string',
         'reference_quantity' => 'string',
+        'original_price' => 'string',
+        'original_quantity' => 'string',
         'is_algo' => 'boolean',
     ];
 
@@ -82,6 +84,16 @@ final class Order extends BaseModel
     }
 
     public function getQuantityAttribute($value): ?string
+    {
+        return $value === null ? null : $this->removeTrailingZeros($value);
+    }
+
+    public function getOriginalPriceAttribute($value): ?string
+    {
+        return $value === null ? null : $this->removeTrailingZeros($value);
+    }
+
+    public function getOriginalQuantityAttribute($value): ?string
     {
         return $value === null ? null : $this->removeTrailingZeros($value);
     }

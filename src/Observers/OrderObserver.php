@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Observers;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Jobs\Atomic\Position\SyncPositionQuantityFromExchangeJob;
@@ -78,6 +79,23 @@ final class OrderObserver
             }
         }
 
+        // Stamp the immutable forensic anchors on first persist. Every
+        // legitimate placement path (DispatchLimitOrders / PlaceMarket /
+        // PlaceProfitOrder / PlaceStopLossOrder / RecreateCancelledOrder)
+        // creates the row with `price` already populated, so the anchors
+        // mirror that value at the moment of birth and never move again.
+        // Callers that supply originals explicitly (backfill / recovery
+        // flows) win — `??=` keeps the explicit value.
+        //
+        // Read price / quantity through `getAttributes()` rather than the
+        // model accessors: the accessors strip trailing zeros and we want
+        // the forensic anchor to retain the exact DECIMAL(20,8) value as
+        // submitted, matching the on-disk DB representation and the
+        // reference_price convention.
+        $rawAttributes = $model->getAttributes();
+        $model->original_price ??= $rawAttributes['price'] ?? null;
+        $model->original_quantity ??= $rawAttributes['quantity'] ?? null;
+
         return $this->enforceOrderLimits($model);
     }
 
@@ -102,6 +120,18 @@ final class OrderObserver
         if ($model->status === 'FILLED' && $model->filled_at === null) {
             $model->filled_at = now();
         }
+
+        // Forensic anchors are write-once. Once `original_price` /
+        // `original_quantity` carry a value, no update path may
+        // change them — the Order row's "first-ever placement intent"
+        // is the only ground truth that survives a corrupted
+        // reference_price (the 2026-05-12 incident). The NULL → value
+        // transition is allowed exactly once, for the
+        // `kraite:backfill-original-prices` artisan command. Any
+        // value → value attempt is reverted silently and logged for
+        // audit; callers should never reach this branch.
+        $this->protectImmutableAnchor($model, 'original_price');
+        $this->protectImmutableAnchor($model, 'original_quantity');
     }
 
     /**
@@ -190,6 +220,28 @@ final class OrderObserver
         if ($model->type === 'LIMIT' && $model->status === 'PARTIALLY_FILLED') {
             $this->dispatchSyncPositionQuantity($position);
         }
+    }
+
+    private function protectImmutableAnchor(Order $model, string $column): void
+    {
+        if (! $model->isDirty($column)) {
+            return;
+        }
+
+        $persisted = $model->getRawOriginal($column);
+
+        if ($persisted === null) {
+            return;
+        }
+
+        Log::channel('jobs')->warning('[ORDER-OBSERVER] reverted attempt to mutate immutable anchor', [
+            'order_id' => $model->id,
+            'column' => $column,
+            'persisted' => $persisted,
+            'attempted' => $model->getAttributes()[$column] ?? null,
+        ]);
+
+        $model->{$column} = $persisted;
     }
 
     private function dispatchClosePosition(Order $model, mixed $position): void

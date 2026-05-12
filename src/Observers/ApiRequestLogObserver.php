@@ -6,6 +6,7 @@ namespace Kraite\Core\Observers;
 
 use DB;
 use Exception;
+use Illuminate\Support\Facades\Log;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\ApiRequestLog;
 use Kraite\Core\Models\ApiSystem;
@@ -18,18 +19,58 @@ final class ApiRequestLogObserver
 {
     /**
      * Handle the ApiRequestLog "saved" event.
-     * Sends notifications for API errors based on HTTP response codes.
+     *
+     * Three independent responsibilities run synchronously here. Each is
+     * wrapped in its own try/catch so a transient DB blip or unexpected
+     * shape in branch N cannot prevent branches N+1..M from running, AND
+     * cannot cascade out of the observer back into the model save (which
+     * Eloquent would re-raise into the calling job, misclassifying the
+     * failure). Failures are surfaced via Log::error so they remain
+     * visible in ops, but never block the save event itself.
+     *
+     * Mirrors the failure-containment shape used in
+     * NotificationService::sendToSpecificUser() and BaseQueueableJob::onExceptionLogged().
      */
     public function saved(ApiRequestLog $log): void
     {
         // Send notification if needed
-        $this->sendNotificationIfNeeded($log);
+        try {
+            $this->sendNotificationIfNeeded($log);
+        } catch (\Throwable $e) {
+            Log::error('[ApiRequestLogObserver] sendNotificationIfNeeded failed; swallowed to protect sibling branches and the calling job', [
+                'api_request_log_id' => $log->id ?? null,
+                'api_system_id' => $log->api_system_id ?? null,
+                'http_response_code' => $log->http_response_code ?? null,
+                'exception_class' => $e::class,
+                'exception_message' => $e->getMessage(),
+            ]);
+        }
 
         // Trigger exchange cooldown on server instability
-        $this->triggerExchangeCooldownIfNeeded($log);
+        try {
+            $this->triggerExchangeCooldownIfNeeded($log);
+        } catch (\Throwable $e) {
+            Log::error('[ApiRequestLogObserver] triggerExchangeCooldownIfNeeded failed; swallowed to protect sibling branches and the calling job', [
+                'api_request_log_id' => $log->id ?? null,
+                'api_system_id' => $log->api_system_id ?? null,
+                'http_response_code' => $log->http_response_code ?? null,
+                'exception_class' => $e::class,
+                'exception_message' => $e->getMessage(),
+            ]);
+        }
 
         // Auto-deactivate exchange symbols with no TAAPI data
-        $this->deactivateExchangeSymbolIfNoTaapiData($log);
+        try {
+            $this->deactivateExchangeSymbolIfNoTaapiData($log);
+        } catch (\Throwable $e) {
+            Log::error('[ApiRequestLogObserver] deactivateExchangeSymbolIfNoTaapiData failed; swallowed to protect sibling branches and the calling job', [
+                'api_request_log_id' => $log->id ?? null,
+                'api_system_id' => $log->api_system_id ?? null,
+                'http_response_code' => $log->http_response_code ?? null,
+                'exception_class' => $e::class,
+                'exception_message' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -157,10 +198,19 @@ final class ApiRequestLogObserver
             return;
         }
 
-        // Use transaction with pessimistic locking to prevent race conditions
-        // Send notification INSIDE transaction to ensure atomicity with deactivation check
-        DB::transaction(function () use ($exchangeSymbol, $log) {
-            // Lock the row for update - prevents concurrent deactivations
+        // Atomic state transition under pessimistic lock — only the winning
+        // worker flips the flags. Concurrent workers see `taapi_verified=false`
+        // after the lock releases and return without re-firing.
+        //
+        // Notification dedupe is independent: NotificationService keys on
+        // (exchange_symbol, exchange) via Cache::add() (atomic SETNX), so
+        // even if two workers somehow reached `sendDeactivationNotification`
+        // they would collapse to a single emission. That makes it safe — and
+        // strongly preferable — to send AFTER commit instead of inside the
+        // transaction. Mail/Pushover/Telegram channels have multi-second
+        // latency; holding `lockForUpdate()` across an HTTP roundtrip starves
+        // sibling workers that need the same row.
+        $deactivatedSymbol = DB::transaction(function () use ($exchangeSymbol, $log) {
             $lockedSymbol = ExchangeSymbol::where('id', $exchangeSymbol->id)
                 ->lockForUpdate()
                 ->first();
@@ -168,12 +218,12 @@ final class ApiRequestLogObserver
             // Skip if already stopped receiving indicator data (checked inside transaction after lock acquired)
             $taapiVerified = $lockedSymbol->api_statuses['taapi_verified'] ?? false;
             if (! $lockedSymbol || ! $taapiVerified) {
-                return;
+                return null;
             }
 
             // Check if this is a consistent pattern (last N requests all failed)
             if (! $this->hasConsistentFailurePattern($lockedSymbol, $log)) {
-                return;
+                return null;
             }
 
             // Deactivate the ExchangeSymbol and stop receiving indicator data
@@ -185,9 +235,13 @@ final class ApiRequestLogObserver
                 'api_statuses' => $apiStatuses,
             ]);
 
-            // Send notification INSIDE transaction (prevents duplicate notifications from concurrent requests)
-            $this->sendDeactivationNotification($lockedSymbol->fresh(), $log);
+            return $lockedSymbol->fresh();
         });
+
+        // Notify after commit so channel latency does not hold the row lock.
+        if ($deactivatedSymbol !== null) {
+            $this->sendDeactivationNotification($deactivatedSymbol, $log);
+        }
     }
 
     private function isPermanentNoDataError(ApiRequestLog $log): bool

@@ -9,11 +9,14 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
+use Kraite\Core\Jobs\Atomic\Order\SyncPositionOrdersJob as AtomicSyncPositionOrdersJob;
+use Kraite\Core\Jobs\Lifecycles\Order\PrepareSyncOrdersJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\BinanceListenKey;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
+use StepDispatcher\Models\Step;
 use Kraite\Core\Support\Health\OrphanReconciler;
 use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\Math;
@@ -87,6 +90,16 @@ final class CheckSystemHealthCommand extends BaseCommand
      */
     private const DISK_FREE_PERCENT_MIN = 15;
 
+    /**
+     * A position flipped to `syncing` by SyncPositionOrdersJob and not flipped
+     * back to `active` after this many minutes — with no live sync step still
+     * running for that position — is wedged. The reactive cron skips it
+     * (PrepareSyncOrdersJob early-returns when the position isn't `active`),
+     * the drift spotter skips it (also active-only), and the retry chain has
+     * already exhausted. Operator action is required to unstick it.
+     */
+    private const STALE_SYNCING_POSITION_MINUTES = 15;
+
     private const HORIZON_QUEUES = ['default', 'priority', 'positions', 'orders', 'cronjobs', 'indicators', 'user-data-stream'];
 
     protected $signature = 'kraite:cron-check-system-health
@@ -136,6 +149,7 @@ final class CheckSystemHealthCommand extends BaseCommand
             'checkHorizonQueueDepth',
             'checkOrphanReconciliation',
             'checkDiskPressure',
+            'checkStaleSyncingPositions',
         ];
 
         // The two dispatcher-dependent checks (indicator + balance
@@ -1020,6 +1034,80 @@ final class CheckSystemHealthCommand extends BaseCommand
                         ->whereColumn('positions.exchange_symbol_id', 'exchange_symbols.id')
                         ->whereIn('positions.status', $openedStatuses));
             });
+    }
+
+    /**
+     * Stale-`syncing` positions wedge detector.
+     *
+     * SyncPositionOrdersJob flips a position to `syncing` inside computeApiable
+     * and only flips it back to `active` in complete() on the success path.
+     * If every order's sync throws, the framework's exception/retry chain
+     * runs and intentionally leaves the position in `syncing` for visibility
+     * (see SyncPositionOrdersJob.php:65-72). When the retry chain exhausts
+     * (MaxRetriesReached → step Failed) the position stays in `syncing`
+     * indefinitely — the reactive cron's PrepareSyncOrdersJob early-returns
+     * because the position isn't `active`, and the 5-minute drift spotter
+     * also only audits `active` positions. The wedge has no automated
+     * recovery surface; operators have to notice and intervene manually.
+     *
+     * This check finds those wedged rows and alerts. We deliberately do NOT
+     * auto-flip back to `active` — if the underlying orders are genuinely
+     * broken, an auto-flip just re-wedges on the next sync. Surfacing the
+     * problem to ops is the right action; recovery is operator-driven.
+     *
+     * Filter: position.status = 'syncing' AND updated_at older than
+     * STALE_SYNCING_POSITION_MINUTES AND no live (non-terminal)
+     * PrepareSyncOrdersJob/SyncPositionOrdersJob step exists for that
+     * position. The "no live step" predicate distinguishes a long-running
+     * legitimate sync (still progressing) from a wedge with no in-flight
+     * worker.
+     */
+    private function checkStaleSyncingPositions(): int
+    {
+        $threshold = now()->subMinutes(self::STALE_SYNCING_POSITION_MINUTES);
+
+        $candidates = Position::query()
+            ->where('status', 'syncing')
+            ->where('updated_at', '<', $threshold)
+            ->get(['id', 'account_id', 'updated_at']);
+
+        if ($candidates->isEmpty()) {
+            return 0;
+        }
+
+        $terminalStates = Step::terminalStepStates();
+        $candidateClasses = [PrepareSyncOrdersJob::class, AtomicSyncPositionOrdersJob::class];
+
+        $alerts = 0;
+
+        foreach ($candidates as $position) {
+            $hasLiveStep = Step::query()
+                ->whereIn('class', $candidateClasses)
+                ->whereNotIn('state', $terminalStates)
+                ->where(static function ($query) use ($position): void {
+                    $query->where(static function ($qq) use ($position): void {
+                        $qq->where('relatable_type', Position::class)
+                            ->where('relatable_id', $position->id);
+                    })->orWhereJsonContains('arguments->positionId', $position->id);
+                })
+                ->exists();
+
+            if ($hasLiveStep) {
+                continue;
+            }
+
+            $age = (int) now()->diffInMinutes($position->updated_at, true);
+
+            $this->emit(
+                signal: "stale_syncing_position_{$position->id}",
+                severity: 'high',
+                title: "Position #{$position->id} wedged in 'syncing'",
+                detail: "Position #{$position->id} (account #{$position->account_id}) has been in 'syncing' for {$age}min (threshold: ".self::STALE_SYNCING_POSITION_MINUTES.'min) with no live PrepareSyncOrdersJob/SyncPositionOrdersJob step. The reactive sync cron and drift spotter both skip non-active positions, so this row will not auto-recover. Operator action required: investigate the failed sync chain and either flip the position back to active (if orders are healthy) or run a targeted recovery.',
+            );
+            $alerts++;
+        }
+
+        return $alerts;
     }
 
     /**

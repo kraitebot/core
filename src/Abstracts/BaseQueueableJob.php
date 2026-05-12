@@ -109,6 +109,14 @@ abstract class BaseQueueableJob extends BaseStepJob
     /**
      * Log exception to the relatable model via modelLog().
      * This is Kraite-specific behavior — the generic BaseStepJob has a no-op.
+     *
+     * Failure-containment contract: this method runs INSIDE the outer
+     * exception handler (handleException → onExceptionLogged → resolveException
+     * → reportAndFail). A throw from modelLog() here would hijack the outer
+     * flow, skip reportAndFail(), and leave the step in an incoherent state
+     * with the original exception's diagnostics shadowed by the audit-log
+     * failure. Any inner failure is swallowed and surfaced via Log::warning,
+     * mirroring the same pattern used in NotificationService::sendToSpecificUser.
      */
     protected function onExceptionLogged(Throwable $e): void
     {
@@ -125,17 +133,28 @@ abstract class BaseQueueableJob extends BaseStepJob
             return;
         }
 
-        $parser = ExceptionParser::with($e);
+        try {
+            $parser = ExceptionParser::with($e);
 
-        // Create ModelLog entry on the relatable model
-        $relatable->modelLog(
-            eventType: 'step_failed',
-            metadata: [
-                'exception_class' => get_class($e),
-                'exception_message' => $parser->friendlyMessage(),
-            ],
-            relatable: $this->step,
-            message: $parser->friendlyMessage()
-        );
+            // Create ModelLog entry on the relatable model
+            $relatable->modelLog(
+                eventType: 'step_failed',
+                metadata: [
+                    'exception_class' => get_class($e),
+                    'exception_message' => $parser->friendlyMessage(),
+                ],
+                relatable: $this->step,
+                message: $parser->friendlyMessage()
+            );
+        } catch (Throwable $logException) {
+            \Illuminate\Support\Facades\Log::warning('[BaseQueueableJob] onExceptionLogged failed; swallowed to protect the outer exception handler', [
+                'step_id' => $this->step->id ?? null,
+                'relatable_class' => get_class($relatable),
+                'original_exception_class' => get_class($e),
+                'original_exception_message' => $e->getMessage(),
+                'log_exception_class' => get_class($logException),
+                'log_exception_message' => $logException->getMessage(),
+            ]);
+        }
     }
 }

@@ -161,17 +161,31 @@ class CorrectModifiedOrderJob extends BaseApiableJob
     }
 
     /**
-     * Update reference fields to prevent re-triggering.
+     * No-op by design.
+     *
+     * The previous implementation snapped `reference_price = price`
+     * and `reference_quantity = quantity` "to prevent re-triggering
+     * the OrderObserver". That write became the corruption vector
+     * behind the 2026-05-12 incident on Karine's XRPUSDT order #25:
+     * when the correction failed to actually restore the order on
+     * the exchange (gate-blocked, IP-whitelist mid-flight, retry
+     * exhaustion), `price` was still the user's modified value at
+     * the moment `complete()` ran — the write silently rewrote the
+     * reference anchor, and the next user-side modification drifted
+     * against a corrupted reference.
+     *
+     * The write is also redundant: `doubleCheck()` calls
+     * `apiSync()` and asserts `Math::equal($order->price,
+     * $order->reference_price)` before returning true. If
+     * `doubleCheck()` returned true, `price` already equals
+     * `reference_price` by definition — the snap was a no-op on the
+     * happy path and a corruptor on every failure path.
+     *
+     * The immutable forensic anchor `original_price` /
+     * `original_quantity` (added 2026-05-13) is the ground truth
+     * from now on.
      */
-    public function complete(): void
-    {
-        // Update reference_* to match current values
-        // This ensures the OrderObserver won't detect drift again
-        $this->order->updateSaving([
-            'reference_price' => $this->order->price,
-            'reference_quantity' => $this->order->quantity,
-        ]);
-    }
+    public function complete(): void {}
 
     /**
      * Handle exceptions during order correction.
@@ -179,7 +193,7 @@ class CorrectModifiedOrderJob extends BaseApiableJob
     public function resolveException(Throwable $e): void
     {
         $this->position->updateSaving([
-            'error_message' => 'Order correction failed: ' . $e->getMessage(),
+            'error_message' => 'Order correction failed: '.$e->getMessage(),
         ]);
     }
 }
