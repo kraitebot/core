@@ -179,24 +179,6 @@ final class CoreServiceProvider extends ServiceProvider
             }
         });
 
-        // Derive mail.from.name from mail.from.address local part.
-        // Rule: support@kraite.com → "Support from Kraite",
-        //       no-reply@kraite.com → "No-Reply from Kraite".
-        $this->app->booted(function (): void {
-            $address = config('mail.from.address');
-
-            if (! is_string($address) || ! str_contains($address, '@')) {
-                return;
-            }
-
-            [$local, $domain] = explode('@', $address, 2);
-
-            $localTitled = implode('-', array_map(ucfirst(...), explode('-', $local)));
-            $domainRoot = ucfirst(explode('.', $domain)[0]);
-
-            config(['mail.from.name' => "{$localTitled} from {$domainRoot}"]);
-        });
-
         // Register slow query listener
         $this->registerSlowQueryListener();
 
