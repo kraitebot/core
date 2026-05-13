@@ -10,6 +10,9 @@ use Kraite\Core\Jobs\Lifecycles\Order\PrepareSyncOrdersJob;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use StepDispatcher\Models\Step;
+use StepDispatcher\States\Dispatched;
+use StepDispatcher\States\Pending;
+use StepDispatcher\States\Running;
 use StepDispatcher\Support\BaseCommand;
 use StepDispatcher\Support\Steps;
 use Throwable;
@@ -128,6 +131,25 @@ final class SyncOrdersCommand extends BaseCommand
                 // remaining positions un-synced for a full minute. Per-row
                 // isolation: the bad row logs, the rest dispatches.
                 try {
+                    // Dedupe: skip if a PrepareSyncOrdersJob is already
+                    // pending/dispatched/running for this position.
+                    // Pre-fix, every minute the cron stacked another sync
+                    // workflow on top of any prior one still queued —
+                    // when the positions queue fell behind, that backlog
+                    // turned into more backlog and a burst of duplicate
+                    // exchange reads at hundreds of positions.
+                    $alreadyPending = Step::query()
+                        ->where('class', PrepareSyncOrdersJob::class)
+                        ->whereRaw("CAST(JSON_EXTRACT(arguments, '$.positionId') AS UNSIGNED) = ?", [$position->id])
+                        ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+                        ->exists();
+
+                    if ($alreadyPending) {
+                        $this->verboseComment("  Position #{$position->id}: Skipped (sync already pending)");
+
+                        continue;
+                    }
+
                     // Don't pre-set child_block_uuid here. The orchestrator's
                     // compute() decides whether to spawn children (early-return
                     // when position isn't 'active' produces no children) and

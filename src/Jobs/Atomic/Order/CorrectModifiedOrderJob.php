@@ -26,6 +26,9 @@ use Throwable;
  * 3. doubleCheck(): Sync order and verify values were restored
  * 4. complete(): Update reference_* fields to match corrected values
  */
+// Intentionally NOT `final` — `Bitget\CorrectModifiedOrderJob` and
+// other per-exchange variants extend this class. Pint's `final_class`
+// autofix keeps re-adding `final`; if you see it back, drop it again.
 class CorrectModifiedOrderJob extends BaseApiableJob
 {
     public Position $position;
@@ -109,10 +112,14 @@ class CorrectModifiedOrderJob extends BaseApiableJob
         $referenceQuantity = $this->order->reference_quantity ?? $this->order->quantity;
         $referencePrice = $this->order->reference_price ?? $this->order->price;
 
-        // Call apiModify with reference values
+        // Pass decimal strings through unmolested — the (float) casts
+        // that used to live here truncated wide-precision values via
+        // PHP's 14-digit float-to-string default before the mapper saw
+        // them. apiModify now accepts string|int|float so the value
+        // flows verbatim to the request payload.
         $apiResponse = $this->order->apiModify(
-            quantity: (float) $referenceQuantity,
-            price: (float) $referencePrice
+            quantity: $referenceQuantity,
+            price: $referencePrice
         );
 
         return [

@@ -53,16 +53,29 @@ trait MapsAlgoOrdersQuery
     {
         $data = json_decode((string) $response->getBody(), associative: true);
 
-        // Response is a raw array of orders, not wrapped in {"orders": [...]}
-        $orders = is_array($data) && ! isset($data['code']) ? $data : [];
+        // Binance has shipped both shapes for the open-algo-orders
+        // endpoint: a bare array, AND a wrapped `{"orders": [...]}`
+        // envelope. The recovery path already handles both
+        // (BinancePositionRecoverer::675-677). Pre-fix, this mapper
+        // only handled bare and treated the wrapped shape as
+        // empty — drift analysis would report no algo orders even
+        // when live algo SL/TP existed, so DB algo rows looked
+        // missing. An error envelope with `code` is still empty.
+        if (! is_array($data) || isset($data['code'])) {
+            $orders = [];
+        } elseif (isset($data['orders']) && is_array($data['orders'])) {
+            $orders = $data['orders'];
+        } else {
+            $orders = $data;
+        }
 
         return array_map(callback: function (array $order): array {
             $order['_price'] = $this->computeAlgoOrderPrice($order);
             $order['_orderType'] = $this->canonicalAlgoOrderType($order);
-        
+
             // Mark as algo order for frontend distinction
             $order['order_source'] = 'algo';
-        
+
             return $order;
         }, array: $orders);
     }

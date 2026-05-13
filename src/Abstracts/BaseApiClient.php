@@ -44,6 +44,22 @@ abstract class BaseApiClient
 
     protected ?BaseExceptionHandler $exceptionHandler = null;
 
+    /**
+     * Total request timeout in seconds. Subclasses can override per
+     * exchange/endpoint class. 30s default — long enough for a slow
+     * legitimate exchange response, short enough to free a worker
+     * within a single dispatcher tick when a socket wedges.
+     */
+    protected ?int $httpTimeout = null;
+
+    /**
+     * TCP connect timeout in seconds. 10s default — exchange API
+     * gateways resolve+connect well under this window in healthy state;
+     * slower than this typically indicates DNS/firewall trouble that
+     * deserves to escape to the job layer.
+     */
+    protected ?int $httpConnectTimeout = null;
+
     public function __construct(string $baseURL, ?ApiCredentials $credentials = null)
     {
         $this->baseURL = $baseURL;
@@ -72,13 +88,20 @@ abstract class BaseApiClient
                 $options
             );
 
-            $this->recordSuccessfulResponse($response, $logData, $startTime);
-
-            // Check for API-level errors in HTTP 200 responses (e.g., Bybit returns errors in body)
+            // Check for API-level errors in HTTP 200 responses BEFORE
+            // recording success. Exchanges like Bybit/BitGet encode
+            // errors inside HTTP 200 bodies — pre-fix, the success log
+            // was written first (clearing the request payload) and
+            // ApiRequestLogObserver's server-instability cooldown
+            // classifier never saw the row as a failure. Reordering
+            // makes the throw run while the row is still in-flight,
+            // so the catch path captures it as a real failure log.
             if ($this->exceptionHandler && $response->getStatusCode() === 200) {
                 $request = new Request($apiRequest->method, $this->baseURL.$apiRequest->path);
                 $this->exceptionHandler->shouldThrowExceptionFromHTTP200($response, $request);
             }
+
+            $this->recordSuccessfulResponse($response, $logData, $startTime);
 
             return $response;
         } catch (RequestException $e) {
@@ -99,8 +122,24 @@ abstract class BaseApiClient
         if (app()->bound(Client::class)) {
             $this->httpRequest = app(Client::class);
         } else {
+            // Explicit Guzzle timeouts. Pre-fix, the client was constructed
+            // with no `timeout` / `connect_timeout`, so a stuck exchange
+            // socket could pin a worker indefinitely (BaseQueueableJob
+            // intentionally sets job timeout=0 and relies on Horizon's
+            // supervisor timeout — which is far coarser than per-request
+            // bounds). Under exchange degradation across many accounts,
+            // unbounded sockets pin the entire fleet on outbound calls
+            // and delay protective cancels/closes. The values below are
+            // intentionally conservative — long enough that a slow but
+            // legitimate exchange response completes, short enough that
+            // a wedged socket releases the worker within a single
+            // dispatcher tick window. Both can be overridden per-class
+            // via $this->httpTimeout / $this->httpConnectTimeout if a
+            // specific exchange needs a different bound.
             $this->httpRequest = new Client([
                 'base_uri' => $this->baseURL,
+                'timeout' => $this->httpTimeout ?? 30,
+                'connect_timeout' => $this->httpConnectTimeout ?? 10,
                 'headers' => [
                     'Content-Type' => 'application/json',
                     'Accept-Encoding' => 'application/json',
@@ -211,53 +250,6 @@ abstract class BaseApiClient
         $this->selfHealUserFixableBans($logData);
     }
 
-    /**
-     * Self-heal user-fixable ForbiddenHostname rows.
-     *
-     * A successful authenticated response from this account+IP+exchange
-     * is positive proof that the credential/whitelist problem the row
-     * was reporting is no longer real. The pre-flight gate in
-     * BaseApiableJob keys off `forbidden_until IS NULL OR > now()`, so
-     * any user-fixable row left behind after the user fixes their API
-     * key whitelist would block every subsequent step indefinitely —
-     * the exact failure mode that knocked out account #1 on 2026-05-12.
-     *
-     * Scope is intentionally narrow:
-     *  - Only types the user can self-resolve (`ip_not_whitelisted`,
-     *    `account_blocked`). `ip_rate_limited` auto-recovers via
-     *    `forbidden_until`; `ip_banned` is exchange-side and a single
-     *    successful call says nothing about a global IP ban.
-     *  - Only the exact (account_id, api_system_id, ip_address) tuple
-     *    that just succeeded — the success cannot vouch for sibling
-     *    accounts or other servers.
-     */
-    private function selfHealUserFixableBans(array $logData): void
-    {
-        $accountId = $logData['account_id'] ?? null;
-
-        if ($accountId === null) {
-            return;
-        }
-
-        if ($this->apiSystem === null) {
-            return;
-        }
-
-        $bans = ForbiddenHostname::query()
-            ->where('account_id', $accountId)
-            ->where('api_system_id', $this->apiSystem->id)
-            ->where('ip_address', Kraite::ip())
-            ->whereIn('type', [
-                ForbiddenHostname::TYPE_IP_NOT_WHITELISTED,
-                ForbiddenHostname::TYPE_ACCOUNT_BLOCKED,
-            ])
-            ->get();
-
-        foreach ($bans as $ban) {
-            $ban->delete();
-        }
-    }
-
     protected function executeHttpRequest(string $method, string $path, array $options)
     {
         if (app()->environment('testing')) {
@@ -334,5 +326,52 @@ abstract class BaseApiClient
         }
 
         return 5;
+    }
+
+    /**
+     * Self-heal user-fixable ForbiddenHostname rows.
+     *
+     * A successful authenticated response from this account+IP+exchange
+     * is positive proof that the credential/whitelist problem the row
+     * was reporting is no longer real. The pre-flight gate in
+     * BaseApiableJob keys off `forbidden_until IS NULL OR > now()`, so
+     * any user-fixable row left behind after the user fixes their API
+     * key whitelist would block every subsequent step indefinitely —
+     * the exact failure mode that knocked out account #1 on 2026-05-12.
+     *
+     * Scope is intentionally narrow:
+     *  - Only types the user can self-resolve (`ip_not_whitelisted`,
+     *    `account_blocked`). `ip_rate_limited` auto-recovers via
+     *    `forbidden_until`; `ip_banned` is exchange-side and a single
+     *    successful call says nothing about a global IP ban.
+     *  - Only the exact (account_id, api_system_id, ip_address) tuple
+     *    that just succeeded — the success cannot vouch for sibling
+     *    accounts or other servers.
+     */
+    private function selfHealUserFixableBans(array $logData): void
+    {
+        $accountId = $logData['account_id'] ?? null;
+
+        if ($accountId === null) {
+            return;
+        }
+
+        if ($this->apiSystem === null) {
+            return;
+        }
+
+        $bans = ForbiddenHostname::query()
+            ->where('account_id', $accountId)
+            ->where('api_system_id', $this->apiSystem->id)
+            ->where('ip_address', Kraite::ip())
+            ->whereIn('type', [
+                ForbiddenHostname::TYPE_IP_NOT_WHITELISTED,
+                ForbiddenHostname::TYPE_ACCOUNT_BLOCKED,
+            ])
+            ->get();
+
+        foreach ($bans as $ban) {
+            $ban->delete();
+        }
     }
 }

@@ -6,8 +6,10 @@ namespace Kraite\Core\Commands;
 
 use Kraite\Core\Models\Server;
 use StepDispatcher\Models\Step;
+use StepDispatcher\States\Dispatched;
 use StepDispatcher\States\Running;
 use StepDispatcher\Support\BaseCommand;
+use StepDispatcher\Support\Steps;
 
 final class SafeToRestartCommand extends BaseCommand
 {
@@ -34,17 +36,27 @@ final class SafeToRestartCommand extends BaseCommand
             return 1;
         }
 
-        // 3. Check for Running non-parent steps (actively executing work)
-        // Parent steps (with child_block_uuid) are just waiting - they can be interrupted.
-        // Only child steps (without child_block_uuid) are actively doing work.
-        $runningCount = Step::where('state', Running::class)
+        // 3. Inspect BOTH the default `steps` table AND the `trading_steps`
+        // prefix. Pre-fix, only the default prefix was queried — major
+        // trading lifecycles run under the `trading` step prefix, so a
+        // deployment guard that only saw default could report safe while
+        // active trading work was in flight.
+        // Also count `Dispatched` rows: those have been picked up by a
+        // worker but not yet flipped to Running. Killing them mid-handoff
+        // is the same blast radius as killing Running.
+        $countActive = static fn (): int => (int) Step::query()
+            ->whereIn('state', [Running::class, Dispatched::class])
             ->whereNull('child_block_uuid')
             ->count();
 
-        if ($runningCount > 0) {
+        $defaultCount = $countActive();
+        $tradingCount = (int) Steps::usingPrefix('trading', $countActive);
+        $totalActive = $defaultCount + $tradingCount;
+
+        if ($totalActive > 0) {
             $this->line('false');
-            $this->error("❌ {$runningCount} steps are still running");
-            $this->warn('⏳ Wait for running steps to complete before deploying');
+            $this->error("❌ {$totalActive} step(s) still active — default={$defaultCount}, trading={$tradingCount}");
+            $this->warn('⏳ Wait for active steps to complete before deploying');
             $this->warn('💡 Tip: Enable cooling down from the dashboard to stop new dispatches');
 
             return 1;
@@ -52,7 +64,7 @@ final class SafeToRestartCommand extends BaseCommand
 
         // 4. All clear - safe to deploy
         $this->line('true');
-        $this->info('✅ No running steps - safe to deploy');
+        $this->info('✅ No active steps in default or trading prefixes — safe to deploy');
 
         return 0;
     }

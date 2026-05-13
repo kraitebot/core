@@ -2,6 +2,57 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.40.0 - 2026-05-13
+
+Code-review pass closing reviews 10–24. ~50 source files patched; 2 new migrations; 11 new TDD test files. Foundational refactors (state machines, durable audit tables, atomic Redis reservations, normalised DTOs, replay queues) consistently discarded — narrow safety patches only.
+
+### Features
+
+- [NEW FEATURE] **`orders.recreated_from_order_id` lineage column.** Nullable indexed FK so `RecreateCancelledOrderJob` can resume a prior replacement on retry instead of placing a duplicate exchange order. Same idempotency parity as `PlaceMarketOrderJob` / `PlaceLimitOrderJob`.
+- [NEW FEATURE] **`UserDataStreamEvent::$closePosition`.** Mapper populates from Binance `o.cp` on ALGO_UPDATE frames. Manual-close detection now accepts either `reduceOnly === true` OR `closePosition === true` for unowned filled close events.
+- [NEW FEATURE] **`UpdatePositionStatusJob::withOnlyFromStatus(array)` lifecycle wrapper** + close + cancel orchestrators declare legal predecessors for every transition.
+- [NEW FEATURE] **`MaintenanceMode::resumeAllStepsDispatch()`** + `activeDispatcherPauses()` helpers. `kraite:warmup` now resumes all known prefixes.
+- [NEW FEATURE] **`--allow-untested-exchange` flag** on `kraite:recover-positions`. Bybit + KuCoin recoverers flagged `isUntested(): true` and are gated off by default.
+- [NEW FEATURE] **`account_drift_snapshot_failed`, `position_exchange_only_detected`, `orders_exchange_only_detected`** notifications surface drift outcomes the previous alert path missed.
+
+### Improvements
+
+- [IMPROVED] **All 4 `OrderObserver` dispatch sites re-read the locked Position row** + status-guard against `activeStatuses()` before any state write or `Step::create`. Closes the cross-workflow race the original lock-only pattern was blind to.
+- [IMPROVED] **Throttler fail-CLOSED on Redis outage** across all 4 throttlers (Binance / Bybit / Bitget / KuCoin). Pre-fix, cache failure returned `false` (allow traffic) — exactly when distributed coordination was unavailable.
+- [IMPROVED] **`forbidIpNotWhitelisted` + `forbidAccountBlocked` records are sticky** (no `forbiddenUntil`). User-action-required failures no longer auto-retry daily; existing success-path self-heal cleans the record on the next valid call after credentials repair.
+- [IMPROVED] **`autoFlipPositionMode` 10-minute Cache cooldown** stops the bounce-on-every-retry pattern.
+- [IMPROVED] **`BaseApiClient` explicit Guzzle `timeout=30s` + `connect_timeout=10s`** with per-class override props. Removes the unbounded-socket worst-case where a stalled exchange connection could pin a worker indefinitely.
+- [IMPROVED] **`Order::apiModify` signature widened to `string|int|float|null`.** Decimal precision flows verbatim to mapper-layer `(string)` boundary instead of round-tripping through PHP's 14-digit float-to-string default.
+- [IMPROVED] **Recovery dual-prefix freeze + cancel** (default + trading). Phase 4 in-flight-step guard. Multi-exchange position-key extraction (`positionAmt | size | contracts | total | currentQty`). Position-scoped order idempotency. `MYSQL_PWD` env var instead of `-p<pass>`. Snapshot failure refuses `--override` unless `--allow-snapshot-failure`.
+- [IMPROVED] **`Position::limitOrders()` + `profitOrder()` exclude `REJECTED`** alongside `CANCELLED` / `EXPIRED`. Rejected TP no longer counts as "present" in the structure audit.
+- [IMPROVED] **`DriftCheckService::normalizeDirection`** recognises Bitget one-way `side='long' / 'short'` (was misclassified as SHORT) + multi-exchange quantity precedence.
+- [IMPROVED] **`MapsAlgoOrdersQuery`** accepts both bare-array and `{"orders": […]}` envelope shapes.
+- [IMPROVED] **`BaseApiClient::processRequest`** runs `shouldThrowExceptionFromHTTP200` BEFORE `recordSuccessfulResponse`. Bybit/BitGet API-level errors in HTTP 200 bodies now flow through the failure log path, not the success path.
+- [IMPROVED] **`BitgetExceptionHandler::isIpRateLimited`** requires explicit `Retry-After` header before classifying a 429 as IP-level. Soft 429s now flow through `rescheduleWithoutRetry()` instead of creating fleet-wide `ForbiddenHostname` records.
+- [IMPROVED] **`Account::scopeEligibleForBinanceUserDataStream` + `isEligibleForBinanceUserDataStream`** require both `binance_api_key` AND `binance_api_secret`.
+- [IMPROVED] **`StreamBinanceUserDataCommand` close + error WebSocket callbacks** call `closeAndUnsetSlot($account->id)` so the next discovery tick can re-spawn.
+- [IMPROVED] **`DispatchPositionSlotsJob` re-fetches account + user state at the final dispatch boundary** and refuses to dispatch slots if disabled mid-workflow.
+- [IMPROVED] **`kraite:recover-positions --override` w/o scope requires `--force`**; `kraite:cron-store-accounts-balances --clean` outside `local` requires `--force`; `kraite:safe-to-restart` and `kraite:cooldown` inspect both default and `trading` prefixes.
+- [IMPROVED] **Cooldown probes return `-1` (UNKNOWN) on Redis/DB failure** with explicit fail-closed reasons in status output.
+- [IMPROVED] **User-data dead-letter writes check `file_put_contents()` return value.** Lossy writes emit a critical log line tagged `DEAD-LETTER WRITE FAILED — frame LOST` instead of the generic "stashed to disk".
+- [IMPROVED] **`ProcessUserDataEventJob::resolveLocalOrder`** scopes `exchange_order_id` / `client_order_id` lookups by account + api_system. Closes the cross-account leak vector.
+- [IMPROVED] **`AbstractPositionRecoverer::upsertOrder`** scopes the idempotency check by `position_id`.
+- [IMPROVED] **Recovery `restoreTrading` no-clobber-newer-halt.** A safety halt set during recovery (e.g. structure_broken) survives the restore.
+- [IMPROVED] **`getEffectiveMinNotional`** returns `?string` (was `?float`) — aligns with engine's string-decimal `Math::*` discipline.
+- [IMPROVED] **`DispatchLimitOrdersJob`** surfaces `__meta.warnings` (price clamps, dropped rungs) via `position->appLog('ladder_warnings_observed', …)` BEFORE any Step::create runs.
+
+### Hardening
+
+- [HARDENED] **`Kraite::computeMarketOrder` + `HasPositionPlanning` trait deleted.** Both had zero callers across core + ingestion + admin. The "false-canonical" trap they created (looked canonical, took undivided margin) is gone.
+- [HARDENED] **Dead `dispatchSyncOrders` + `dispatchCancelOrphanLifecycle` deleted from `CheckDriftsCommand`.** Command renamed alert-only in description + docblocks. `HEAL_PAIR_STATUSES` → `ALERT_PAIR_STATUSES`.
+- [HARDENED] **`api_data_stream.idempotency_key` column comment aligned** with the actual md5-of-full-payload implementation.
+- [HARDENED] **Connectivity-test API now requires auth** middleware (was throttle-only public).
+
+### Migrations
+
+- `2026_05_13_080000_add_recreated_from_order_id_to_orders` — nullable indexed column on `orders`. Safe online ALTER.
+- `2026_05_13_090000_align_api_data_stream_idempotency_key_comment` — column-comment-only ALTER. Metadata operation, no data lock.
+
 ## 1.35.0 - 2026-05-09
 
 ### Features

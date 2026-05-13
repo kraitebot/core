@@ -15,6 +15,7 @@ use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
 use RuntimeException;
 use StepDispatcher\Models\Step;
+use StepDispatcher\Support\Steps;
 use Throwable;
 
 /**
@@ -35,6 +36,10 @@ use Throwable;
  * - Profit order must exist
  * - profit_percentage must be configured
  */
+// Intentionally NOT `final` — per-exchange overrides extend this class.
+// Pint's `final_class` rule keeps trying to mark it final; if you re-run
+// Pint and see `final` re-added, drop it again. The Feature test
+// `CalculateWapExchangeClassLoadingTest` pins the contract.
 class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
 {
     public Position $position;
@@ -200,7 +205,10 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
         // the error message reports the real exchange state rather than
         // leaving the operator wondering whether the modify partially applied.
         try {
-            $this->profitOrder->apiModify((float) $formattedQty, (float) $formattedPrice);
+            // Pass decimal strings through — the (float) casts that used
+            // to live here truncated wide-precision values via PHP's
+            // 14-digit float-to-string default before the mapper saw them.
+            $this->profitOrder->apiModify($formattedQty, $formattedPrice);
         } catch (Throwable $e) {
             try {
                 $this->profitOrder->apiSync();
@@ -355,17 +363,26 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
         $hasUnackedFills = $unackedLimitsQuery->exists();
 
         if ($hasUnackedFills) {
-            (clone $unackedLimitsQuery)->update(['reference_status' => 'FILLED']);
+            // Pin the StepDispatcher prefix explicitly. The follow-up
+            // Step::create MUST land in `trading_steps` so the
+            // OrderObserver's prefix-scoped dedupe can see it; relying
+            // on the ambient context restored by BaseStepJob::handle()
+            // works in production today but is fragile to future
+            // framework changes. Wrapping here matches the prefix
+            // discipline of every other trading-step dispatch site.
+            Steps::usingPrefix('trading', function () use ($unackedLimitsQuery): void {
+                (clone $unackedLimitsQuery)->update(['reference_status' => 'FILLED']);
 
-            Step::create([
-                'class' => ApplyWapJob::class,
-                'queue' => 'positions',
-                'arguments' => [
-                    'positionId' => $this->position->id,
-                    'message' => 'Follow-up WAP for LIMIT fills that arrived during the prior WAP run',
-                ],
-                'dispatch_after' => now()->addSeconds(3),
-            ]);
+                Step::create([
+                    'class' => ApplyWapJob::class,
+                    'queue' => 'positions',
+                    'arguments' => [
+                        'positionId' => $this->position->id,
+                        'message' => 'Follow-up WAP for LIMIT fills that arrived during the prior WAP run',
+                    ],
+                    'dispatch_after' => now()->addSeconds(3),
+                ]);
+            });
         }
     }
 

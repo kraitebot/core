@@ -1284,10 +1284,27 @@ final class NotificationMessageBuilder
                 $detail = (string) ($context['detail'] ?? '(no detail)');
                 $detectedAt = (string) ($context['detected_at'] ?? '');
 
-                $severityEnum = match (mb_strtolower($severityValue)) {
+                $normalisedSeverity = mb_strtolower($severityValue);
+
+                $severityEnum = match ($normalisedSeverity) {
                     'critical' => NotificationSeverity::Critical,
                     'medium' => NotificationSeverity::Medium,
+                    'low' => NotificationSeverity::Info,
                     default => NotificationSeverity::High,
+                };
+
+                // Severity → Pushover priority. Critical and high both
+                // map to 1 (bypass quiet hours, alert sound) — these are
+                // page-now signals. Medium stays at 0 (normal default).
+                // Low / unknown-non-default tokens map to -1 (quiet) so
+                // routine info doesn't interrupt. Emergency priority 2
+                // (repeat-until-ack) is deliberately NOT used: cron-
+                // driven alerts shouldn't demand interactive ack.
+                $priority = match ($normalisedSeverity) {
+                    'critical', 'high' => 1,
+                    'medium' => 0,
+                    'low' => -1,
+                    default => 1,
                 };
 
                 $emailBody = "{$title}\n\n{$detail}";
@@ -1303,7 +1320,7 @@ final class NotificationMessageBuilder
                     'pushoverMessage' => "[{$severityValue}] {$title}\n{$detail}",
                     'actionUrl' => null,
                     'actionLabel' => null,
-                    'priority' => 0,
+                    'priority' => $priority,
                 ];
             })(),
 

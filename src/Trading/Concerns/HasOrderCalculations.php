@@ -5,15 +5,30 @@ declare(strict_types=1);
 namespace Kraite\Core\Trading\Concerns;
 
 use InvalidArgumentException;
-use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Support\Math;
+use Kraite\Core\Trading\Kraite;
 use RuntimeException;
 
 trait HasOrderCalculations
 {
     /**
      * Calculates budget distribution across market order and limit ladder.
+     *
+     * NOT THE PRODUCTION SIZING PATH. This is the bounded-budget martingale
+     * alternative — it splits a fixed total `$budget` across one MARKET leg
+     * and N LIMIT rungs so the cumulative margin sums exactly to budget.
+     *
+     * Live opening uses the UNBOUNDED ladder model instead:
+     *   - `Kraite::calculateMarketOrderData()` for the MARKET leg with the
+     *     external `get_market_order_amount_divider($N)` divider applied
+     *     by the caller (`PlaceMarketOrderJob`, `VerifyOrderNotionalForMarketOrderJob`).
+     *   - `Kraite::calculateLimitOrdersData()` chains rung quantities from
+     *     the MARKET quantity using step ratios — no fixed budget cap.
+     *
+     * Preserved here as a reference implementation of the bounded-budget
+     * model and for potential future strategies. Has zero production
+     * callers today; only consumed by `CalculateBudgetDistributionTest`.
      *
      * Algorithm:
      * 1. Compute weight sum S using inverse cumulative products from the end:
@@ -502,59 +517,6 @@ trait HasOrderCalculations
             'price' => $price,
             'quantity' => $quantity,
             'amount' => $amount,
-        ];
-    }
-
-    /**
-     * Computes a MARKET order with side and position_side for exchange API.
-     *
-     * This is a higher-level wrapper around calculateMarketOrderData() that adds:
-     * - side: BUY (for LONG) or SELL (for SHORT)
-     * - position_side: LONG or SHORT (for hedge mode)
-     *
-     * @param  'LONG'|'SHORT'  $direction  Position direction
-     * @param  string|int|float  $margin  Quote currency margin for the order
-     * @param  int  $leverage  Leverage to apply
-     * @param  string|int|float|null  $referencePrice  Optional basis price
-     * @return array{
-     *   side: 'BUY'|'SELL',
-     *   position_side: 'LONG'|'SHORT',
-     *   quantity: string,
-     *   estimated_price: string,
-     *   margin: string,
-     *   notional: string
-     * }
-     */
-    public static function computeMarketOrder(
-        ExchangeSymbol $exchangeSymbol,
-        string $direction,
-        $margin,
-        int $leverage,
-        $referencePrice = null
-    ): array {
-        $direction = mb_strtoupper(mb_trim($direction));
-        if (! in_array($direction, ['LONG', 'SHORT'], true)) {
-            throw new InvalidArgumentException('Direction must be LONG or SHORT.');
-        }
-
-        // Determine side based on direction
-        $side = $direction === 'LONG' ? 'BUY' : 'SELL';
-
-        // Use existing market order calculation
-        $orderData = self::calculateMarketOrderData(
-            $margin,
-            $leverage,
-            $exchangeSymbol,
-            $referencePrice
-        );
-
-        return [
-            'side' => $side,
-            'position_side' => $direction,
-            'quantity' => $orderData['quantity'],
-            'estimated_price' => $orderData['price'],
-            'margin' => $orderData['margin'],
-            'notional' => $orderData['notional'],
         ];
     }
 

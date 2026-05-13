@@ -55,7 +55,7 @@ use StepDispatcher\States\Running;
  * the executionType is null and they are always record-only at this
  * layer. Daemon-level branches handle listen_key_expired separately.
  */
-class ProcessUserDataEventJob extends BaseQueueableJob
+final class ProcessUserDataEventJob extends BaseQueueableJob
 {
     /**
      * @param  array<string, mixed>  $payload
@@ -274,8 +274,32 @@ class ProcessUserDataEventJob extends BaseQueueableJob
 
     private function resolveLocalOrder(UserDataStreamEvent $event): ?Order
     {
+        // Account/api-system-scoped lookup. Pre-fix, the exchange_order_id
+        // / client_order_id matches were global — exchange order ids are
+        // not unique across accounts or api_systems, so a Binance frame
+        // for account A could mutate an order belonging to account B if
+        // the numeric id collided (test/prod imports, recovery rows,
+        // multiple accounts on the same exchange). Constraining the
+        // lookup through the order's parent position to require
+        // account_id == frame account AND apiSystem.id == frame
+        // api_system closes that cross-account leak.
+        // Pre-bind the IDs into locals so the nested closures stay
+        // $this-free. Pint's `static_lambda` rule otherwise marks the
+        // outer closure static and PHP then errors with "Using $this
+        // when not in object context" on the inner $q->where access.
+        $accountId = $this->accountId;
+        $apiSystemId = $this->apiSystemId;
+
+        $scope = static fn ($query) => $query->whereHas(
+            'position',
+            static function ($q) use ($accountId, $apiSystemId): void {
+                $q->where('account_id', $accountId)
+                    ->whereHas('account', static fn ($qa) => $qa->where('api_system_id', $apiSystemId));
+            }
+        );
+
         if ($event->exchangeOrderId !== null) {
-            $byExchange = Order::where('exchange_order_id', $event->exchangeOrderId)->first();
+            $byExchange = $scope(Order::where('exchange_order_id', $event->exchangeOrderId))->first();
 
             if ($byExchange !== null) {
                 return $byExchange;
@@ -283,7 +307,7 @@ class ProcessUserDataEventJob extends BaseQueueableJob
         }
 
         if ($event->clientOrderId !== null) {
-            return Order::where('client_order_id', $event->clientOrderId)->first();
+            return $scope(Order::where('client_order_id', $event->clientOrderId))->first();
         }
 
         return null;
@@ -315,7 +339,14 @@ class ProcessUserDataEventJob extends BaseQueueableJob
      *
      * Strict gate set:
      *   - eventType must be order_update (skip account_update / margin_call)
-     *   - reduceOnly must be true (a non-reduce fill is benign DCA flow)
+     *   - reduceOnly must be true OR closePosition must be true (a non-
+     *     reduce, non-close fill is benign DCA flow). Pre-fix, only the
+     *     reduceOnly half was checked; Binance ALGO_UPDATE close-position
+     *     algo fills carry `o.cp=true` but no `o.R` flag (the mapper
+     *     deliberately leaves reduceOnly=null for ALGO frames), so a
+     *     manual-close algo trigger could not flow through this branch.
+     *     With closePosition added to the DTO (see MapsUserDataStream +
+     *     UserDataStreamEvent), this gate now accepts either signal.
      *   - normalizedStatus must be FILLED (PARTIAL fills do not flat the position)
      *   - applyToOrderModel must have skipped (no local match — confirms
      *     the order is not one we already track)
@@ -331,7 +362,7 @@ class ProcessUserDataEventJob extends BaseQueueableJob
             return false;
         }
 
-        if ($event->reduceOnly !== true) {
+        if ($event->reduceOnly !== true && $event->closePosition !== true) {
             return false;
         }
 

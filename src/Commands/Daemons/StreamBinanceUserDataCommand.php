@@ -181,6 +181,70 @@ final class StreamBinanceUserDataCommand extends Command
     }
 
     /**
+     * Close the Pawl connection for an account slot and remove the slot
+     * from the in-memory map.
+     *
+     * Used by the rotation and listen-key-expiry paths so the OLD
+     * Pawl connection is cleanly torn down before initAccount() opens a
+     * fresh one. Without this, the prior client stays alive in the
+     * ReactPHP event loop and Binance counts it against the account's
+     * stream limit until either the server-side close lands or the
+     * idle watchdog acts. With keys rotating every ~60min × N accounts,
+     * the orphan-connection rate would otherwise scale linearly with
+     * fleet size.
+     *
+     * Mirrors the close-then-unset shape from reapAccount(), so all
+     * three teardown paths (reap, rotation, expiry) now share the
+     * same lifecycle. Public visibility is intentional: it lets a unit
+     * test inject a synthetic slot, call this method, and assert the
+     * close+unset contract without spinning up the ReactPHP loop or
+     * issuing a real Binance request.
+     */
+    public function closeAndUnsetSlot(int $accountId): void
+    {
+        $slot = $this->accountClients[$accountId] ?? null;
+        if ($slot === null) {
+            return;
+        }
+
+        try {
+            if (isset($slot['client']) && is_object($slot['client']) && method_exists($slot['client'], 'close')) {
+                $slot['client']->close();
+            }
+        } catch (Throwable $exception) {
+            // Closing a half-dead Pawl connection can throw. The unset
+            // below MUST still run — leaving the slot populated with a
+            // dead client would block re-init forever.
+            Log::channel('user-data')->warning('[USER-DATA] slot close threw', [
+                'account_id' => $accountId,
+                'error' => $exception->getMessage(),
+            ]);
+        }
+
+        unset($this->accountClients[$accountId]);
+    }
+
+    /**
+     * Direct accessors for unit tests. The daemon's in-memory map is
+     * the canonical source of truth for "which accounts are streaming";
+     * tests need to inject and inspect it without booting the full
+     * ReactPHP loop. Both methods are no-ops outside the test path.
+     *
+     * @internal
+     *
+     * @param  array<string, mixed>  $slot
+     */
+    public function injectSlotForTest(int $accountId, array $slot): void
+    {
+        $this->accountClients[$accountId] = $slot;
+    }
+
+    public function hasSlotForTest(int $accountId): bool
+    {
+        return isset($this->accountClients[$accountId]);
+    }
+
+    /**
      * Walk the accounts table and reconcile the in-process slot set
      * with the DB. Two passes:
      *
@@ -203,10 +267,12 @@ final class StreamBinanceUserDataCommand extends Command
      */
     private function discoverNewAccounts(): void
     {
+        // Eligibility predicate centralised on the Account model so the
+        // daemon's discovery and the keepalive cron's per-row check
+        // stay aligned. See Account::scopeEligibleForBinanceUserDataStream
+        // for the conditions and rationale.
         $eligibleAccounts = Account::query()
-            ->where('api_system_id', $this->binanceSystemId)
-            ->where('is_active', true)
-            ->whereNotNull('binance_api_key')
+            ->eligibleForBinanceUserDataStream()
             ->get()
             ->keyBy('id');
 
@@ -287,12 +353,24 @@ final class StreamBinanceUserDataCommand extends Command
                 Log::channel('user-data')->warning('[USER-DATA] connection closed', [
                     'account_id' => $account->id,
                 ]);
+                // Drop the slot so discoverNewAccounts() (which skips
+                // accounts already in $accountClients) can re-spawn
+                // this account on the next discovery tick. Pre-fix,
+                // close just logged — the slot stayed populated, the
+                // socket was dead, and the daemon never re-init'd
+                // until a listen-key rotation, daemon restart, or
+                // manual intervention.
+                $this->closeAndUnsetSlot($account->id);
             },
             'error' => function ($conn, Throwable $exception) use ($account) {
                 Log::channel('user-data')->error('[USER-DATA] connection error', [
                     'account_id' => $account->id,
                     'error' => $exception->getMessage(),
                 ]);
+                // Same rationale as the close handler: clear the slot
+                // so the next discovery tick can re-spawn instead of
+                // assuming a healthy connection that's actually dead.
+                $this->closeAndUnsetSlot($account->id);
             },
         ]);
 
@@ -408,7 +486,25 @@ final class StreamBinanceUserDataCommand extends Command
         // Suppress filesystem errors — the daemon must keep running
         // even if the disk is full, the path is read-only, etc. Loss
         // of the dead-letter line is preferable to loss of the daemon.
-        @file_put_contents($path, $line, FILE_APPEND | LOCK_EX);
+        // BUT capture the return value: when the write actually fails
+        // (disk full, permission, no space, etc.) the dead-letter path
+        // has lost the event silently. Pre-fix the daemon logged
+        // "stashed to disk" regardless of whether the write succeeded.
+        // Now we know which case happened and surface a louder signal
+        // for the lossy case so checkUserDataDeadLetters can detect it.
+        $bytesWritten = @file_put_contents($path, $line, FILE_APPEND | LOCK_EX);
+
+        if ($bytesWritten === false || $bytesWritten === 0) {
+            Log::channel('user-data')->critical('[USER-DATA] DEAD-LETTER WRITE FAILED — frame LOST', [
+                'account_id' => $account->id,
+                'event_type' => $payload['e'] ?? 'unknown',
+                'deadletter_file' => basename($path),
+                'underlying_error' => $exception->getMessage(),
+                'reason' => 'file_put_contents returned false/0 — disk full / permission / read-only filesystem',
+            ]);
+
+            return;
+        }
 
         Log::channel('user-data')->error('[USER-DATA] frame dispatch failed — stashed to disk', [
             'account_id' => $account->id,
@@ -430,7 +526,7 @@ final class StreamBinanceUserDataCommand extends Command
             cacheKey: ['account_id' => (string) $account->id]
         );
 
-        unset($this->accountClients[$account->id]);
+        $this->closeAndUnsetSlot($account->id);
 
         BinanceListenKey::where('account_id', $account->id)->delete();
 
@@ -552,7 +648,7 @@ final class StreamBinanceUserDataCommand extends Command
                 continue;
             }
 
-            unset($this->accountClients[$row->account_id]);
+            $this->closeAndUnsetSlot($row->account_id);
 
             try {
                 $this->initAccount($account);

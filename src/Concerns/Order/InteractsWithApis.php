@@ -72,13 +72,29 @@ trait InteractsWithApis
         );
     }
 
-    public function apiModify(?float $quantity = null, ?float $price = null): ApiResponse
+    /**
+     * Modify an order's quantity and/or price on the exchange.
+     *
+     * Quantity and price flow as decimal strings end-to-end. Casting to
+     * `?float` here would coerce any caller-provided string into a 64-bit
+     * double, which PHP's default 14-digit float-to-string precision then
+     * truncates before the mapper receives it — silent precision loss on
+     * coarse-tick / low-price symbols and long-form qty values like
+     * `58721234.123456789`. The mapper layer already does `(string) $value`
+     * at the wire boundary, so accepting `string|int|float|null` here keeps
+     * the value verbatim through to the request payload and aligns with
+     * the engine's broader Math::* string-decimal discipline.
+     *
+     * @param  string|int|float|null  $quantity  Decimal quantity (preferred: string)
+     * @param  string|int|float|null  $price  Decimal price (preferred: string)
+     */
+    public function apiModify(string|int|float|null $quantity = null, string|int|float|null $price = null): ApiResponse
     {
-        if (! $quantity) {
+        if ($quantity === null || $quantity === '' || $quantity === 0 || $quantity === '0') {
             $quantity = $this->quantity;
         }
 
-        if (! $price) {
+        if ($price === null || $price === '' || $price === 0 || $price === '0') {
             $price = $this->price;
         }
 

@@ -77,17 +77,50 @@ final class DispatchLimitOrdersJob extends BaseQueueableJob
 
         $resolver = JobProxy::with($this->position->account);
 
-        // 1. Calculate ladder → 2. Create Orders in database
-        // Observer silently rejects excess orders (returns false from creating()),
-        // so filter removes any nulls from blocked creations
-        $this->limitOrders = collect(Kraite::calculateLimitOrdersData(
+        // 1. Calculate ladder + meta → 2. Create Orders in database.
+        // Pass withMeta=true so price_clamped + rung_dropped_zero_qty
+        // warnings the math layer already collects flow back to us
+        // instead of being silently discarded. The throwing min_notional
+        // rejection path is logged by VerifyOrderNotionalForMarketOrderJob;
+        // this surfaces the milder boundary-compression signals on the
+        // success path so operators can spot stale symbol bounds before
+        // they degrade into hard rejections.
+        $ladderPayload = Kraite::calculateLimitOrdersData(
             totalLimitOrders: $totalLimitOrders,
             direction: $direction,
             referencePrice: $referencePrice,
             marketOrderQty: $marketOrderQty,
             exchangeSymbol: $exchangeSymbol,
             limitQuantityMultipliers: $exchangeSymbol->limit_quantity_multipliers,
-        ))
+            withMeta: true,
+        );
+
+        $ladder = $ladderPayload['ladder'];
+        $ladderWarnings = $ladderPayload['__meta']['warnings'] ?? [];
+
+        // Persist ladder warnings BEFORE any Step::create runs so a
+        // downstream dispatch failure cannot eat the symbol-health
+        // signal. Empty-warnings positions (the steady state) skip
+        // the log entirely — only abnormal ladder calcs leave a trail.
+        if ($ladderWarnings !== []) {
+            $this->position->appLog(
+                event: 'ladder_warnings_observed',
+                message: sprintf(
+                    'Ladder calc emitted %d warning(s) — likely symbol-bounds compression on %s',
+                    count($ladderWarnings),
+                    $exchangeSymbol->parsed_trading_pair ?? (string) $exchangeSymbol->token,
+                ),
+                metadata: [
+                    'warnings' => $ladderWarnings,
+                    'reference_price' => $referencePrice,
+                    'total_limit_orders_expected' => $totalLimitOrders,
+                ],
+            );
+        }
+
+        // Observer silently rejects excess orders (returns false from creating()),
+        // so filter removes any nulls from blocked creations
+        $this->limitOrders = collect($ladder)
             ->map(function (array $rung) use ($side, $direction): Order {
                 return Order::create([
                     'position_id' => $this->position->id,

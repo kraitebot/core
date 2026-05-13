@@ -59,14 +59,20 @@ final class CancelPositionJob extends BaseApiableJob
         $resolver = JobProxy::with($this->position->account);
         $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
 
-        // Step 1: Update status to 'cancelling'
+        // Step 1: Update status to 'cancelling'. Only allow from
+        // active-family states — a stale cancel lifecycle clobbering
+        // a newer 'closing' / 'closed' / 'failed' state would corrupt
+        // the position's owned-by-which-workflow contract.
         $statusLifecycleClass = $resolver->resolve(UpdatePositionStatusJob::class);
         $statusLifecycle = new $statusLifecycleClass($this->position);
-        $nextIndex = $statusLifecycle->withStatus('cancelling')->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: 1,
-            workflowId: null
-        );
+        $nextIndex = $statusLifecycle
+            ->withStatus('cancelling')
+            ->withOnlyFromStatus(['active', 'syncing', 'opening', 'waping'])
+            ->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: 1,
+                workflowId: null
+            );
 
         // Step 2: Close position on exchange (with price verification for cancel workflow)
         $closeLifecycleClass = $resolver->resolve(ClosePositionAtomicallyJob::class);
@@ -113,14 +119,19 @@ final class CancelPositionJob extends BaseApiableJob
             workflowId: null
         );
 
-        // Step 7: Update status to 'cancelled'
+        // Step 7: Update status to 'cancelled'. Only legal predecessor
+        // is 'cancelling' — guards against a stale step pulling a
+        // closed/failed position back to 'cancelled'.
         $finalStatusLifecycleClass = $resolver->resolve(UpdatePositionStatusJob::class);
         $finalStatusLifecycle = new $finalStatusLifecycleClass($this->position);
-        $nextIndex = $finalStatusLifecycle->withStatus('cancelled', $this->message)->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+        $nextIndex = $finalStatusLifecycle
+            ->withStatus('cancelled', $this->message)
+            ->withOnlyFromStatus(['cancelling'])
+            ->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
 
         // resolve-exception step: Update status to 'failed' if cancel workflow fails
         // Note: index=1 allows immediate dispatch when promoted to Pending

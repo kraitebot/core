@@ -13,6 +13,9 @@ use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Proxies\JobProxy;
 use Kraite\Core\Trading\Kraite;
 use StepDispatcher\Models\Step;
+use StepDispatcher\States\Dispatched;
+use StepDispatcher\States\Pending;
+use StepDispatcher\States\Running;
 use StepDispatcher\Support\BaseCommand;
 use StepDispatcher\Support\Steps;
 use Throwable;
@@ -265,6 +268,25 @@ final class CreatePositionsCommand extends BaseCommand
         // Check directional guards
         if (! $engine->canOpenLongs() && ! $engine->canOpenShorts()) {
             $this->verboseComment('    → Directional guards prevent opening, skipping');
+
+            return;
+        }
+
+        // Dedupe: skip if a PreparePositionsOpeningJob is already
+        // pending/dispatched/running for this account. Pre-fix, every
+        // 3-minute cron tick would stack another opening workflow
+        // even if the prior one was still throttled or queue-delayed —
+        // duplicating expensive balance/open-positions/open-orders API
+        // checks and adding pressure on the throttler that the
+        // duplicate workflow can't pass anyway.
+        $alreadyPending = Step::query()
+            ->where('class', PreparePositionsOpeningJob::class)
+            ->whereRaw("CAST(JSON_EXTRACT(arguments, '$.accountId') AS UNSIGNED) = ?", [$account->id])
+            ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+            ->exists();
+
+        if ($alreadyPending) {
+            $this->verboseComment('    → Skipped: PreparePositionsOpeningJob already pending for this account');
 
             return;
         }

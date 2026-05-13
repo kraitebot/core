@@ -129,6 +129,29 @@ abstract class BaseWebsocketClient
 
     private bool $watchdogStarted = false;
 
+    /**
+     * Reconnect cancellation flag.
+     *
+     * Default `true`: the close → reconnect chain is the project's
+     * always-on contract for supervised daemons (network blips, server
+     * restarts, etc. should never kill the stream).
+     *
+     * Set to `false` by the public `close()` method so an INTENTIONAL
+     * teardown (account reap, listen-key rotation, listen-key expiry)
+     * does NOT schedule a reconnect of the now-stale URL. Without this
+     * flag, the Pawl close-event handler unconditionally called
+     * `reconnect()` after every close — which meant the daemon's
+     * teardown path kept the old URL alive on a backoff timer and
+     * eventually re-opened a ghost connection for an account that
+     * had been reaped or had a fresh listenKey minted.
+     *
+     * The flag is checked BOTH in the close-event handler (to skip
+     * scheduling a fresh reconnect timer) AND inside the deferred
+     * timer callback (to swallow a timer that was already scheduled
+     * before close() ran).
+     */
+    private bool $shouldReconnect = true;
+
     public function __construct(array $args = [])
     {
         $this->baseURL = $args['baseURL'] ?? '';
@@ -172,6 +195,13 @@ abstract class BaseWebsocketClient
      */
     final public function close(): void
     {
+        // Mark this teardown as intentional BEFORE the underlying close
+        // runs. Pawl's close-event handler will fire $conn->close()
+        // synchronously and (without this flag) schedule a reconnect
+        // of the now-stale URL. Setting the flag first guarantees the
+        // close-event handler skips the reconnect.
+        $this->shouldReconnect = false;
+
         if ($this->wsConnection === null) {
             return;
         }
@@ -289,6 +319,21 @@ abstract class BaseWebsocketClient
                         $callback['close']($conn);
                     }
 
+                    // Skip the reconnect chain on an intentional close
+                    // (account reap, listen-key rotation/expiry). Without
+                    // this guard, the daemon's teardown path would
+                    // schedule a reconnect of the stale URL and re-open
+                    // a ghost connection for an account that had been
+                    // reaped or had a fresh listenKey minted.
+                    if (! $this->shouldReconnect) {
+                        Log::channel('jobs')->info(
+                            '[WEBSOCKET] Reconnect skipped — intentional close',
+                            ['url' => $url]
+                        );
+
+                        return;
+                    }
+
                     $this->reconnect($url, $callback);
                 });
             },
@@ -300,6 +345,19 @@ abstract class BaseWebsocketClient
 
                 if (isset($callback['error']) && is_callable($callback['error'])) {
                     $callback['error'](null, $e);
+                }
+
+                // Same intentional-close guard as the close-event handler:
+                // if close() ran while a connect was in flight, the failure
+                // path here must NOT chain into a reconnect of the stale
+                // URL.
+                if (! $this->shouldReconnect) {
+                    Log::channel('jobs')->info(
+                        '[WEBSOCKET] Reconnect skipped — intentional close (during connect failure)',
+                        ['url' => $url]
+                    );
+
+                    return;
                 }
 
                 $this->reconnect($url, $callback);
@@ -379,6 +437,21 @@ abstract class BaseWebsocketClient
         }
 
         $this->loop->addTimer($delay, function () use ($url, $callback) {
+            // Final cancellation check inside the deferred timer. This
+            // catches the race where close() runs AFTER reconnect()
+            // already scheduled the timer but BEFORE the timer fires.
+            // Without this guard, the timer would re-open a connection
+            // to the stale URL even though shouldReconnect was flipped
+            // to false in the meantime.
+            if (! $this->shouldReconnect) {
+                Log::channel('jobs')->info(
+                    '[WEBSOCKET] Deferred reconnect cancelled — intentional close ran while timer was pending',
+                    ['url' => $url]
+                );
+
+                return;
+            }
+
             $this->reconnectAttempt++;
             $this->handleCallback($url, $callback);
         });

@@ -11,15 +11,20 @@ use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\TokenMapper;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\ApiWebsocketProxy;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
+use React\EventLoop\Loop;
+use Throwable;
 
 /**
  * StreamBinancePricesCommand
  *
  * Long-running daemon that subscribes to Binance's all-symbols mark-price
- * WebSocket stream (1-second cadence) and keeps `exchange_symbols.mark_price`
- * + `mark_price_synced_at` current for every Binance-listed symbol.
+ * WebSocket stream (1-second cadence) and keeps the
+ * `exchange_symbol_prices` sidecar (`mark_price` + `mark_price_synced_at`)
+ * current for every Binance-listed symbol AND for peer rows on Bybit /
+ * Bitget / KuCoin that map to the same underlying token+quote.
  *
  * Runs under supervisor, not the scheduler — the process is expected to be
  * alive continuously. A stopped process is an incident, not a missed tick.
@@ -29,8 +34,16 @@ use Kraite\Core\Support\ValueObjects\ApiCredentials;
  *   every 5 min so newly-discovered symbols start receiving prices without
  *   a restart).
  * - Open the Binance `!markPrice@arr@1s` stream via ApiWebsocketProxy.
- * - On each tick: decode the array of `{s: symbol, p: markPrice}` rows,
- *   batch into 500-row chunked CASE/WHEN UPDATEs against exchange_symbols.
+ * - On each tick: decode the array of `{s: symbol, p: markPrice}` rows.
+ * - Coalesce frames to one DB flush every WRITE_INTERVAL_SECONDS (5s).
+ *   Intermediate frames are dropped — the next accepted frame carries the
+ *   freshest price for every symbol the bot tracks, so no information is
+ *   lost, only the cadence at which it lands in the DB is reduced.
+ * - On the accepted frame: batch into 500-row chunked CASE/WHEN UPDATEs
+ *   against `exchange_symbol_prices` (writes go to the sidecar — not
+ *   `exchange_symbols` — so the daemon's row locks don't contend with
+ *   indicator pipeline / direction-burst writers; ref:
+ *   db_lock_contention_mark_price_daemon.md, 2026-05-04).
  * - gc_collect_cycles() after each batch to keep the long-running process
  *   memory profile stable.
  *
@@ -39,12 +52,14 @@ use Kraite\Core\Support\ValueObjects\ApiCredentials;
  *   spam for every hiccup, the supervisor handles process-level failure.
  * - UPDATEs bypass Eloquent for speed — no observers fire. The intent here
  *   is pure price refresh, not auditable state change.
+ * - `ExchangeSymbol::$mark_price` reads are proxied through the model
+ *   accessor onto the sidecar, so all consumers stay zero-touch.
  */
 final class StreamBinancePricesCommand extends Command
 {
     protected $signature = 'kraite:stream-binance-prices';
 
-    protected $description = 'Daemon that streams Binance mark prices into exchange_symbols via WebSocket.';
+    protected $description = 'Daemon that streams Binance mark prices into the exchange_symbol_prices sidecar via WebSocket (5s coalesce cadence).';
 
     /**
      * Minimum interval between persistence flushes, in seconds. Binance's
@@ -59,6 +74,19 @@ final class StreamBinancePricesCommand extends Command
      * downstream consumer.
      */
     private const WRITE_INTERVAL_SECONDS = 5;
+
+    /**
+     * Maximum consecutive frame-processing failures the daemon tolerates
+     * before exiting for supervisor respawn.
+     *
+     * Same shape as the user-data daemon's memory-pressure self-exit
+     * (StreamBinanceUserDataCommand:622-647): one transient DB blip
+     * should not kill price streaming permanently, but a sustained
+     * write-failure window means the loop is stuck and a fresh process
+     * is the right recovery. Counter resets to 0 on every successful
+     * flush.
+     */
+    private const MAX_CONSECUTIVE_WRITE_FAILURES = 5;
 
     /**
      * Binance parsed_trading_pair (e.g. "SOLUSDT") → list of exchange_symbol
@@ -85,6 +113,16 @@ final class StreamBinancePricesCommand extends Command
      * DB is reduced.
      */
     private float $lastWriteAt = 0.0;
+
+    /**
+     * Consecutive frame-processing failures since the last successful
+     * flush. Reset to 0 in the success path; incremented in the catch
+     * block. When it reaches MAX_CONSECUTIVE_WRITE_FAILURES the daemon
+     * stops the loop so supervisor's autorestart=true respawns a fresh
+     * process — same recovery shape as the user-data daemon's memory
+     * limit auto-exit.
+     */
+    private int $writeFailureCount = 0;
 
     public function handle(): int
     {
@@ -119,51 +157,99 @@ final class StreamBinancePricesCommand extends Command
 
         $websocketProxy->markPrices([
             'message' => function ($conn, $msg) {
-                $decoded = json_decode($msg, true);
+                // Failure-containment contract for the price-stream hot
+                // path. Mirrors the shape used by the user-data daemon
+                // (StreamBinanceUserDataCommand::onMessage), the
+                // ApiRequestLogObserver per-branch wrap, and
+                // NotificationService::sendToSpecificUser: any throw
+                // inside the message callback is caught and logged.
+                // ReactPHP / Pawl have no global error boundary inside
+                // the loop — an uncaught exception here can tear down
+                // the connection or wedge the loop, killing the always-
+                // on price feed. The catch keeps the daemon alive on
+                // transient failures (DB blip, deadlock, metadata lock)
+                // and exits intentionally after a sustained failure
+                // window so supervisor respawns a fresh process.
+                try {
+                    $decoded = json_decode($msg, true);
 
-                if (json_last_error() !== JSON_ERROR_NONE || ! is_array($decoded)) {
-                    Log::channel('jobs')->warning(
-                        '[BINANCE-STREAM] Invalid JSON on mark-price frame',
-                        ['bytes' => mb_strlen($msg)]
+                    if (json_last_error() !== JSON_ERROR_NONE || ! is_array($decoded)) {
+                        Log::channel('jobs')->warning(
+                            '[BINANCE-STREAM] Invalid JSON on mark-price frame',
+                            ['bytes' => mb_strlen($msg)]
+                        );
+
+                        return;
+                    }
+
+                    // Coalesce frames to one DB flush every WRITE_INTERVAL_SECONDS.
+                    // Binance sends a full snapshot of every symbol on every
+                    // tick, so dropping intermediate frames loses no
+                    // information — the next accepted frame carries the
+                    // freshest price for every symbol the bot tracks. The
+                    // map refresh runs unconditionally so newly-discovered
+                    // symbols still come online inside the 5-min refresh
+                    // window even during an idle persistence interval.
+                    $now = microtime(true);
+                    if ($now - $this->lastWriteAt < self::WRITE_INTERVAL_SECONDS) {
+                        $this->maybeRefreshPairMap();
+
+                        return;
+                    }
+
+                    // Combined-stream envelope: `{"stream": "...", "data": [...]}`.
+                    // The single-stream shape (bare array) is no longer in use
+                    // after the 2026-04-24 switch to `/stream?streams=` but we
+                    // accept it as a fallback so a server-side rollback doesn't
+                    // silently drop writes again.
+                    $rows = isset($decoded['data']) && is_array($decoded['data'])
+                        ? $decoded['data']
+                        : $decoded;
+
+                    $prices = [];
+                    foreach ($rows as $row) {
+                        if (is_array($row) && isset($row['s'], $row['p'])) {
+                            $prices[$row['s']] = $row['p'];
+                        }
+                    }
+
+                    $this->updateExchangeSymbols($prices);
+
+                    // Success path: lastWriteAt + counter reset only run
+                    // when updateExchangeSymbols completes without
+                    // throwing. A failed flush leaves lastWriteAt
+                    // unchanged so the next frame retries immediately
+                    // (no 5-sec coalesce penalty on the recovery side)
+                    // and resets the failure counter only on real
+                    // success — preventing a slow degrade where every
+                    // other flush succeeds and the counter never
+                    // reaches the exit threshold.
+                    $this->lastWriteAt = $now;
+                    $this->writeFailureCount = 0;
+
+                    $this->maybeRefreshPairMap();
+                } catch (Throwable $exception) {
+                    $this->writeFailureCount++;
+
+                    Log::channel('jobs')->error(
+                        '[BINANCE-STREAM] frame processing threw — swallowed to keep loop alive',
+                        [
+                            'consecutive_failures' => $this->writeFailureCount,
+                            'threshold' => self::MAX_CONSECUTIVE_WRITE_FAILURES,
+                            'exception' => $exception::class,
+                            'message' => $exception->getMessage(),
+                        ]
                     );
 
-                    return;
-                }
+                    if ($this->writeFailureCount >= self::MAX_CONSECUTIVE_WRITE_FAILURES) {
+                        Log::channel('jobs')->warning(
+                            '[BINANCE-STREAM] consecutive failure threshold exceeded — exiting for supervisor respawn',
+                            ['failures' => $this->writeFailureCount]
+                        );
 
-                // Coalesce frames to one DB flush every WRITE_INTERVAL_SECONDS.
-                // Binance sends a full snapshot of every symbol on every
-                // tick, so dropping intermediate frames loses no
-                // information — the next accepted frame carries the
-                // freshest price for every symbol the bot tracks. The
-                // map refresh runs unconditionally so newly-discovered
-                // symbols still come online inside the 5-min refresh
-                // window even during an idle persistence interval.
-                $now = microtime(true);
-                if ($now - $this->lastWriteAt < self::WRITE_INTERVAL_SECONDS) {
-                    $this->maybeRefreshPairMap();
-
-                    return;
-                }
-
-                // Combined-stream envelope: `{"stream": "...", "data": [...]}`.
-                // The single-stream shape (bare array) is no longer in use
-                // after the 2026-04-24 switch to `/stream?streams=` but we
-                // accept it as a fallback so a server-side rollback doesn't
-                // silently drop writes again.
-                $rows = isset($decoded['data']) && is_array($decoded['data'])
-                    ? $decoded['data']
-                    : $decoded;
-
-                $prices = [];
-                foreach ($rows as $row) {
-                    if (is_array($row) && isset($row['s'], $row['p'])) {
-                        $prices[$row['s']] = $row['p'];
+                        Loop::get()->stop();
                     }
                 }
-
-                $this->updateExchangeSymbols($prices);
-                $this->lastWriteAt = $now;
-                $this->maybeRefreshPairMap();
             },
             'ping' => function () {},
             'close' => function () {
@@ -201,15 +287,37 @@ final class StreamBinancePricesCommand extends Command
     {
         $now = now();
         $batch = [];
+        $skipped = 0;
 
         foreach ($prices as $pair => $price) {
             if (! isset($this->pairToIds[$pair])) {
                 continue;
             }
 
-            foreach ($this->pairToIds[$pair] as $id) {
-                $batch[] = ['id' => $id, 'price' => $price];
+            // Reject malformed prices BEFORE they reach the SQL builder.
+            // `Math::isPositive` covers null, empty string, non-numeric,
+            // zero, and negative — all the shapes that previously
+            // collapsed to '0' via the old `quoteNumeric` fallback and
+            // produced fresh-timestamp/zero-price rows in the sidecar
+            // (a freshness check passes while consumers read a
+            // nonsensical value). Skipping preserves the previous
+            // valid `mark_price` + `mark_price_synced_at` for that
+            // symbol, which is strictly safer than overwriting.
+            if (! Math::isPositive($price)) {
+                $skipped++;
+
+                continue;
             }
+
+            foreach ($this->pairToIds[$pair] as $id) {
+                $batch[] = ['id' => $id, 'price' => (string) $price];
+            }
+        }
+
+        if ($skipped > 0) {
+            Log::channel('price-stream')->warning('[PRICE-STREAM] skipped non-positive prices', [
+                'skipped_pairs' => $skipped,
+            ]);
         }
 
         if (empty($batch)) {
@@ -220,7 +328,10 @@ final class StreamBinancePricesCommand extends Command
             $ids = array_column($chunk, 'id');
             $case = 'CASE exchange_symbol_id';
             foreach ($chunk as $row) {
-                $case .= ' WHEN '.(int) $row['id'].' THEN '.$this->quoteNumeric($row['price']);
+                // Price already validated as positive above. The cast to
+                // string is just to satisfy the SQL builder; bcmath has
+                // already proven it's a valid numeric.
+                $case .= ' WHEN '.(int) $row['id'].' THEN '.$row['price'];
             }
             $case .= ' END';
 
@@ -256,16 +367,30 @@ final class StreamBinancePricesCommand extends Command
      */
     private function refreshPairMap(): void
     {
+        // Column projection: the map only needs id / api_system_id / token /
+        // quote. ExchangeSymbol carries 5+ JSON blobs (api_statuses,
+        // leverage_brackets, btc_correlation_*, btc_elasticity_*,
+        // indicators_values, symbol_information) that get hydrated and
+        // discarded otherwise. At production scale (~10k rows) projecting
+        // cuts hydration memory ~7× and JSON-decode time materially —
+        // important here because this method runs synchronously inside the
+        // ReactPHP message callback and any stall blocks WS keepalive.
+        $startedAt = microtime(true);
+
         $otherApiSystemIds = ApiSystem::where('id', '!=', $this->binanceSystemId)->pluck('id');
 
         $otherSymbolsByKey = ExchangeSymbol::where('api_system_id', '!=', $this->binanceSystemId)
-            ->get()
+            ->get(['id', 'api_system_id', 'token', 'quote'])
             ->groupBy(fn ($symbol) => "{$symbol->api_system_id}:{$symbol->token}:{$symbol->quote}");
 
-        $tokenMappersByBinanceToken = TokenMapper::all()->groupBy('binance_token');
+        $tokenMappersByBinanceToken = TokenMapper::query()
+            ->get(['binance_token', 'other_token', 'other_api_system_id'])
+            ->groupBy('binance_token');
 
         $map = [];
-        foreach (ExchangeSymbol::where('api_system_id', $this->binanceSystemId)->get() as $binance) {
+        $binanceRows = ExchangeSymbol::where('api_system_id', $this->binanceSystemId)
+            ->get(['id', 'api_system_id', 'token', 'quote']);
+        foreach ($binanceRows as $binance) {
             $pair = $binance->parsed_trading_pair;
             if ($pair === null) {
                 continue;
@@ -292,6 +417,23 @@ final class StreamBinancePricesCommand extends Command
 
         $this->pairToIds = $map;
         $this->lastPairMapRefreshAt = time();
+
+        // Duration + counts logged at info level so growing event-loop
+        // stall is visible in the jobs channel before it becomes a
+        // production incident. Symbol universe grows ~linearly with new
+        // exchange listings; this is the trip-wire to know when the
+        // refresh is cheap enough to keep inline vs. when it should be
+        // moved out of the ReactPHP callback.
+        Log::channel('jobs')->info(
+            '[BINANCE-STREAM] Pair map rebuilt',
+            [
+                'duration_ms' => (int) ((microtime(true) - $startedAt) * 1000),
+                'binance_pairs' => count($map),
+                'other_symbols_loaded' => $otherSymbolsByKey->sum(fn ($g) => $g->count()),
+                'token_mappers_loaded' => $tokenMappersByBinanceToken->sum(fn ($g) => $g->count()),
+                'total_replicated_rows' => array_sum(array_map('count', $map)),
+            ]
+        );
     }
 
     private function maybeRefreshPairMap(): void
@@ -303,8 +445,4 @@ final class StreamBinancePricesCommand extends Command
         }
     }
 
-    private function quoteNumeric(mixed $value): string
-    {
-        return is_numeric($value) ? (string) $value : '0';
-    }
 }

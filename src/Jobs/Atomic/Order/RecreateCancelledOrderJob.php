@@ -26,7 +26,7 @@ use Throwable;
  * 3. doubleCheck(): Verify order was accepted
  * 4. complete(): Set reference_* fields, mark old order as handled
  */
-class RecreateCancelledOrderJob extends BaseApiableJob
+final class RecreateCancelledOrderJob extends BaseApiableJob
 {
     public Position $position;
 
@@ -54,6 +54,15 @@ class RecreateCancelledOrderJob extends BaseApiableJob
 
     /**
      * Verify order needs recreation and position is ready.
+     *
+     * On retry, restore $this->newOrder from DB if a prior attempt already
+     * created the replacement (linked via `recreated_from_order_id`).
+     * Without this, a worker death between `apiPlace()` succeeding and
+     * `doubleCheck()` completing would let the framework retry
+     * `computeApiable()` against a fresh `$this->newOrder` (null on
+     * reconstruction), writing a second local Order row and placing a
+     * duplicate exchange order. Same idempotency shape as
+     * `PlaceMarketOrderJob` and `PlaceLimitOrderJob`.
      */
     public function startOrFail(): bool
     {
@@ -91,31 +100,39 @@ class RecreateCancelledOrderJob extends BaseApiableJob
             }
         }
 
-        return true;
-    }
+        // Idempotent-resume: surface a prior replacement so computeApiable
+        // can short-circuit `Order::create` + `apiPlace()` whenever the
+        // exchange already accepted the order on a prior attempt.
+        $existingReplacement = Order::query()
+            ->where('recreated_from_order_id', $this->cancelledOrder->id)
+            ->latest('id')
+            ->first();
 
-    /**
-     * Detect closePosition-style algo orders where quantity=0 is the
-     * canonical valid placement value (Binance STOP-MARKET with
-     * closePosition=true, and equivalent patterns on Bitget / Kucoin /
-     * Bybit). For these, the remaining-quantity gate in startOrFail
-     * must not apply.
-     */
-    private function isCloseAllAlgoOrder(): bool
-    {
-        if (! $this->cancelledOrder->is_algo) {
-            return false;
+        if ($existingReplacement !== null) {
+            $this->newOrder = $existingReplacement;
         }
 
-        $referenceQty = (string) ($this->cancelledOrder->reference_quantity
-            ?? $this->cancelledOrder->quantity
-            ?? '0');
-
-        return Math::equal($referenceQty, '0');
+        return true;
     }
 
     public function computeApiable()
     {
+        // Retry path: a prior attempt already placed the replacement order on
+        // the exchange. Skip Order::create + apiPlace; doubleCheck() +
+        // complete() will run against the existing row and finalise normally.
+        if ($this->newOrder !== null && $this->newOrder->exchange_order_id !== null) {
+            return [
+                'position_id' => $this->position->id,
+                'cancelled_order_id' => $this->cancelledOrder->id,
+                'new_order_id' => $this->newOrder->id,
+                'type' => $this->newOrder->type,
+                'price' => $this->newOrder->price,
+                'quantity' => $this->newOrder->quantity,
+                'exchange_order_id' => $this->newOrder->exchange_order_id,
+                'message' => 'Replacement order already placed on prior attempt — skipping re-placement',
+            ];
+        }
+
         $direction = $this->position->direction;
 
         // Side is same as original order
@@ -127,17 +144,22 @@ class RecreateCancelledOrderJob extends BaseApiableJob
         // Calculate remaining quantity
         $quantity = $this->calculateRemainingQuantity();
 
-        // Create new Order record
-        $this->newOrder = Order::create([
-            'position_id' => $this->position->id,
-            'type' => $this->cancelledOrder->type,
-            'status' => 'NEW',
-            'side' => $side,
-            'position_side' => $direction,
-            'price' => $price,
-            'quantity' => $quantity,
-            'is_algo' => $this->cancelledOrder->is_algo,
-        ]);
+        // Reuse any Order row a prior attempt left behind without an
+        // exchange_order_id (the apiPlace never reached the exchange) so
+        // we don't accumulate orphan rows on retries.
+        if ($this->newOrder === null) {
+            $this->newOrder = Order::create([
+                'position_id' => $this->position->id,
+                'type' => $this->cancelledOrder->type,
+                'status' => 'NEW',
+                'side' => $side,
+                'position_side' => $direction,
+                'price' => $price,
+                'quantity' => $quantity,
+                'is_algo' => $this->cancelledOrder->is_algo,
+                'recreated_from_order_id' => $this->cancelledOrder->id,
+            ]);
+        }
 
         // Place on exchange
         $this->newOrder->apiPlace();
@@ -211,7 +233,27 @@ class RecreateCancelledOrderJob extends BaseApiableJob
     public function resolveException(Throwable $e): void
     {
         $this->position->updateSaving([
-            'error_message' => 'Order recreation failed: ' . $e->getMessage(),
+            'error_message' => 'Order recreation failed: '.$e->getMessage(),
         ]);
+    }
+
+    /**
+     * Detect closePosition-style algo orders where quantity=0 is the
+     * canonical valid placement value (Binance STOP-MARKET with
+     * closePosition=true, and equivalent patterns on Bitget / Kucoin /
+     * Bybit). For these, the remaining-quantity gate in startOrFail
+     * must not apply.
+     */
+    private function isCloseAllAlgoOrder(): bool
+    {
+        if (! $this->cancelledOrder->is_algo) {
+            return false;
+        }
+
+        $referenceQty = (string) ($this->cancelledOrder->reference_quantity
+            ?? $this->cancelledOrder->quantity
+            ?? '0');
+
+        return Math::equal($referenceQty, '0');
     }
 }

@@ -7,6 +7,7 @@ namespace Kraite\Core\Concerns\BaseApiableJob;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Kraite\Core\Models\Account;
@@ -266,7 +267,26 @@ trait HandlesApiJobExceptions
             return;
         }
 
-        DB::transaction(function () use ($account): void {
+        // Bounded auto-flip: refuse a second flip within a 10-minute
+        // cooldown window. Pre-fix, repeated mismatch errors on the
+        // same account could oscillate `on_hedge_mode` true ↔ false on
+        // every retry, since the toggle was a blind invert with no
+        // verification against the exchange's actual mode. The
+        // cooldown forces an explicit operator review (the warning
+        // log + modelLog entries surface the bounce) instead of
+        // letting the system fight itself.
+        $cooldownKey = "position_mode_auto_flip:cooldown:{$account->id}";
+        if (Cache::has($cooldownKey)) {
+            Log::warning('position_mode_auto_flip_skipped', [
+                'reason' => 'cooldown_active',
+                'account_id' => $account->id,
+                'job_class' => static::class,
+            ]);
+
+            return;
+        }
+
+        DB::transaction(function () use ($account, $cooldownKey): void {
             /** @var Account $locked */
             $locked = Account::whereKey($account->id)->lockForUpdate()->first();
 
@@ -276,6 +296,10 @@ trait HandlesApiJobExceptions
 
             $previous = (bool) $locked->on_hedge_mode;
             $next = ! $previous;
+
+            // Stamp cooldown inside the transaction so concurrent flips
+            // on this account are also blocked once the first commits.
+            Cache::put($cooldownKey, true, 600);
 
             $locked->on_hedge_mode = $next;
             $locked->save();

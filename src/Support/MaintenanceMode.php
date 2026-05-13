@@ -87,6 +87,69 @@ final class MaintenanceMode
     }
 
     /**
+     * Resume dispatch across the all-scope flag AND every known prefix.
+     * Used by warmup so a prefix-specific pause (e.g. only `trading`
+     * paused via `pauseStepsDispatch('trading')`) doesn't survive a
+     * post-deployment warmup that called `resumeStepsDispatch(null)` —
+     * which only forgets the blanket key. Mirrors the dual-prefix
+     * freeze pattern used elsewhere across the codebase.
+     */
+    public static function resumeAllStepsDispatch(): void
+    {
+        Cache::forget(self::STEPS_DISPATCH_KEY);
+
+        foreach (self::knownDispatcherPrefixes() as $prefix) {
+            Cache::forget(self::cacheKeyFor($prefix));
+        }
+    }
+
+    /**
+     * Active per-prefix pause keys. Used by warmup + status surfaces
+     * to enumerate every prefix the system knows about. Default and
+     * `trading` are the only two prefixes the kraite codebase wires
+     * — extend here if a new prefix is added.
+     *
+     * @return array<int, string>
+     */
+    public static function knownDispatcherPrefixes(): array
+    {
+        return ['trading'];
+    }
+
+    /**
+     * Snapshot of currently-paused dispatcher scopes. Returns one entry
+     * per active pause: the all-scope blanket flag AND every prefix
+     * with its own flag. Used by `kraite:cooldown --status` so an
+     * operator sees the full picture instead of only the all-scope
+     * flag's state.
+     *
+     * @return array<int, array{prefix: ?string, payload: array<string, mixed>|null}>
+     */
+    public static function activeDispatcherPauses(): array
+    {
+        $entries = [];
+
+        if (Cache::has(self::STEPS_DISPATCH_KEY)) {
+            $entries[] = [
+                'prefix' => null,
+                'payload' => Cache::get(self::STEPS_DISPATCH_KEY),
+            ];
+        }
+
+        foreach (self::knownDispatcherPrefixes() as $prefix) {
+            $key = self::cacheKeyFor($prefix);
+            if (Cache::has($key)) {
+                $entries[] = [
+                    'prefix' => $prefix,
+                    'payload' => Cache::get($key),
+                ];
+            }
+        }
+
+        return $entries;
+    }
+
+    /**
      * Is the dispatcher paused for the given prefix?
      *
      * Returns true when EITHER the all-scope flag is set OR the

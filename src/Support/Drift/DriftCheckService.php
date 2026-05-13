@@ -707,9 +707,35 @@ final class DriftCheckService implements DriftChecker
             return mb_strtoupper((string) $pos['positionSide']);
         }
         if (isset($pos['side'])) {
-            return mb_strtoupper((string) $pos['side']) === 'BUY' ? 'LONG' : 'SHORT';
+            // Bitget one-way mode emits `positionSide=BOTH` and copies
+            // the raw `holdSide` ('long' / 'short') into `side`. Pre-fix,
+            // this branch treated anything other than 'BUY' as SHORT —
+            // so a Bitget one-way LONG (`side='long'`) was misclassified
+            // as SHORT, and the drift comparator would report DB-only /
+            // exchange-only on every Bitget LONG position.
+            $side = mb_strtoupper((string) $pos['side']);
+
+            if ($side === 'LONG' || $side === 'BUY') {
+                return 'LONG';
+            }
+
+            if ($side === 'SHORT' || $side === 'SELL') {
+                return 'SHORT';
+            }
         }
-        $qty = (string) ($pos['positionAmt'] ?? $pos['size'] ?? '0');
+        // Mirror the multi-exchange quantity precedence used by the
+        // filter at line 124 + exchangePositionData() — Binance uses
+        // positionAmt, Bybit uses size, KuCoin uses currentQty/contracts,
+        // Bitget uses total. Pre-fix, normalizeDirection only read the
+        // first two, so a SHORT position with negative `contracts` /
+        // `currentQty` / `total` defaulted to LONG via the `'0'`
+        // fallback's `>= '0'` check.
+        $qty = (string) ($pos['positionAmt']
+            ?? $pos['size']
+            ?? $pos['contracts']
+            ?? $pos['total']
+            ?? $pos['currentQty']
+            ?? '0');
 
         return Math::gte($qty, '0') ? 'LONG' : 'SHORT';
     }

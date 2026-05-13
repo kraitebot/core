@@ -40,6 +40,40 @@ final class DispatchPositionSlotsJob extends BaseQueueableJob
 
     public function compute()
     {
+        // Re-fetch account + user state at the final dispatch boundary.
+        // PreparePositionsOpening's earlier child steps captured the
+        // Account model when the orchestrator's compute() began. If an
+        // operator disabled trading mid-workflow, the already-created
+        // `new` positions would otherwise be dispatched against an
+        // account that's no longer eligible. Refusing to dispatch here
+        // keeps the slots in `new` so a subsequent re-enable can pick
+        // them up cleanly, OR a scrub job can clean them — without
+        // ever placing exchange orders against the disabled account.
+        $freshAccount = $this->account->fresh(['user']);
+
+        if (! $freshAccount || ! $freshAccount->is_active || ! $freshAccount->can_trade) {
+            return [
+                'account_id' => $this->account->id,
+                'positions_dispatched' => 0,
+                'message' => 'Account became inactive/non-tradeable mid-workflow — refusing to dispatch slots',
+            ];
+        }
+
+        // User check only fires WHEN a user is attached. Legacy orphan
+        // accounts (test fixtures, recovery-imported rows) may have no
+        // user — those are already filtered upstream by
+        // CreatePositionsCommand's `whereHas('user', …->can_trade)`.
+        // Re-checking here for the case where the user existed at the
+        // start of the workflow and was disabled mid-flight.
+        if ($freshAccount->user !== null
+            && (! $freshAccount->user->can_trade || ! $freshAccount->user->is_active)) {
+            return [
+                'account_id' => $this->account->id,
+                'positions_dispatched' => 0,
+                'message' => 'Account user became inactive/non-tradeable mid-workflow — refusing to dispatch slots',
+            ];
+        }
+
         // Get all new positions for this account that have a token assigned
         $positions = $this->account->positions()
             ->where('status', 'new')

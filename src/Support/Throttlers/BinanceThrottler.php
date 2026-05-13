@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Support\Throttlers;
 
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseApiThrottler;
 use Psr\Http\Message\ResponseInterface;
@@ -167,8 +168,19 @@ final class BinanceThrottler extends BaseApiThrottler
 
             return $bannedUntil && now()->timestamp < (int) $bannedUntil;
         } catch (Throwable $e) {
-            // Fail safe - if Cache fails, allow the request
-            return false;
+            // Fail CLOSED on cache failure for trading-grade safety.
+            // Pre-fix, a Redis outage would make every worker bypass
+            // the IP-ban gate simultaneously — exactly when distributed
+            // coordination matters most. Treat the cache being
+            // unreachable as "I cannot prove we're not banned" =
+            // assume banned. The caller's reschedule logic backs off
+            // until cache is reachable again. Visible failure is
+            // strongly preferable to silent unlimited exchange traffic.
+            Log::channel('jobs')->warning('[BinanceThrottler] isCurrentlyBanned cache failure — failing closed', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return true;
         }
     }
 

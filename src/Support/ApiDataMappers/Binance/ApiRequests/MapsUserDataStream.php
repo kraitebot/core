@@ -103,6 +103,16 @@ trait MapsUserDataStream
             reduceOnly: $isAlgoEvent
                 ? null
                 : $this->boolOrNull($order['R'] ?? null),
+            // Map Binance `o.cp` (closePosition) only on ALGO_UPDATE
+            // frames — non-algo events don't carry this field. Pre-fix,
+            // ALGO_UPDATE close-position semantics were silently
+            // dropped, so a stream-driven close path could not tell a
+            // close-position algo trigger from an ordinary conditional
+            // update. Kept distinct from `reduceOnly` because the two
+            // behaviours overlap but aren't interchangeable.
+            closePosition: $isAlgoEvent
+                ? $this->boolOrNull($order['cp'] ?? null)
+                : null,
         );
     }
 

@@ -118,10 +118,17 @@ trait ApiExceptionHelpers
     {
         $errorData = $this->extractHttpErrorCodes($exception);
 
+        // IP-not-whitelisted is user-action-required: the operator must
+        // add this IP on the exchange's whitelist. Pre-fix, the record
+        // auto-expired after 24h, which produced a daily retry storm
+        // against an exchange that already rejected the IP. Make the
+        // block sticky — only a successful authenticated call (which
+        // self-heals via the account/api/IP tuple in the exception
+        // helpers) or an explicit operator clear should remove it.
         $this->createForbiddenRecord(
             type: ForbiddenHostname::TYPE_IP_NOT_WHITELISTED,
             accountId: $this->account->id, // Account-specific
-            forbiddenUntil: now()->addHours(24), // Auto-retry after 24 hours
+            forbiddenUntil: null, // Sticky until proof of repair
             errorCode: (string) ($errorData['status_code'] ?? ''),
             errorMessage: $errorData['message'] ?? null
         );
@@ -178,10 +185,17 @@ trait ApiExceptionHelpers
     {
         $errorData = $this->extractHttpErrorCodes($exception);
 
+        // Account-blocked = invalid / revoked / disabled API key.
+        // Recovery requires the user to regenerate or reactivate the
+        // key on the exchange — a daily auto-retry against known-bad
+        // credentials does nothing useful and probes the exchange's
+        // auth surface. Make sticky; the success-path self-heal in
+        // ApiExceptionHelpers cleans the record on the next valid
+        // call after the user re-credentials.
         $this->createForbiddenRecord(
             type: ForbiddenHostname::TYPE_ACCOUNT_BLOCKED,
             accountId: $this->account->id, // Account-specific
-            forbiddenUntil: now()->addHours(24), // Auto-retry after 24 hours
+            forbiddenUntil: null, // Sticky until credentials repaired
             errorCode: (string) ($errorData['status_code'] ?? ''),
             errorMessage: $errorData['message'] ?? null
         );
@@ -389,28 +403,6 @@ trait ApiExceptionHelpers
     }
 
     /**
-     * Walk a Throwable and its $previous chain, returning the first
-     * RequestException found or null. Depth-bounded to avoid pathological
-     * loops in maliciously-constructed exceptions.
-     */
-    private function firstRequestExceptionIn(Throwable $exception): ?RequestException
-    {
-        $current = $exception;
-        $depth = 0;
-
-        while ($current !== null && $depth < 10) {
-            if ($current instanceof RequestException) {
-                return $current;
-            }
-
-            $current = $current->getPrevious();
-            $depth++;
-        }
-
-        return null;
-    }
-
-    /**
      * Normalize headers (lower-case keys, comma-joined values).
      */
     protected function normalizeHeaders(MessageInterface $msg): array
@@ -479,5 +471,27 @@ trait ApiExceptionHelpers
             default:
                 return $t->copy()->startOfMinute()->addMinute();
         }
+    }
+
+    /**
+     * Walk a Throwable and its $previous chain, returning the first
+     * RequestException found or null. Depth-bounded to avoid pathological
+     * loops in maliciously-constructed exceptions.
+     */
+    private function firstRequestExceptionIn(Throwable $exception): ?RequestException
+    {
+        $current = $exception;
+        $depth = 0;
+
+        while ($current !== null && $depth < 10) {
+            if ($current instanceof RequestException) {
+                return $current;
+            }
+
+            $current = $current->getPrevious();
+            $depth++;
+        }
+
+        return null;
     }
 }

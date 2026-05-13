@@ -11,16 +11,18 @@ use StepDispatcher\Models\Step;
 use StepDispatcher\States\Dispatched;
 use StepDispatcher\States\Running;
 use StepDispatcher\Support\BaseCommand;
+use StepDispatcher\Support\Steps;
+use Throwable;
 
 final class CooldownCommand extends BaseCommand
 {
+    private const QUEUE_NAMES = ['default', 'priority', 'positions', 'orders', 'cronjobs', 'indicators', 'user-data-stream'];
+
     protected $signature = 'kraite:cooldown
         {--status : Check cooldown status without initiating}
         {--force : Force immediate cooldown, killing remaining work}';
 
     protected $description = 'Cooldown this server for deployment. Behaviour depends on SERVER_ROLE env.';
-
-    private const QUEUE_NAMES = ['default', 'priority', 'positions', 'orders', 'cronjobs', 'indicators', 'user-data-stream'];
 
     public function handle(): int
     {
@@ -48,7 +50,9 @@ final class CooldownCommand extends BaseCommand
 
         if (in_array($role, ['ingestion', 'worker'])) {
             $queueDepth = $this->getQueueDepth();
-            if ($queueDepth > 0) {
+            if ($queueDepth === -1) {
+                $reasons[] = 'Queue depth: UNKNOWN (Redis probe failed — fail-closed)';
+            } elseif ($queueDepth > 0) {
                 $reasons[] = "Queue depth: {$queueDepth} jobs pending";
             }
         }
@@ -59,7 +63,9 @@ final class CooldownCommand extends BaseCommand
             }
 
             $activeSteps = $this->getActiveStepCount();
-            if ($activeSteps > 0) {
+            if ($activeSteps === -1) {
+                $reasons[] = 'Active steps: UNKNOWN (DB probe failed — fail-closed)';
+            } elseif ($activeSteps > 0) {
                 $reasons[] = "Active steps: {$activeSteps} (running/dispatched)";
             }
         }
@@ -178,6 +184,12 @@ final class CooldownCommand extends BaseCommand
         return 0;
     }
 
+    /**
+     * Queue depth probe. Returns -1 on probe failure so callers can
+     * distinguish "I cannot prove queues are empty" from "queues are
+     * empty". Pre-fix, a Redis outage returned 0 — letting cooldown
+     * declare drained while real queue state was unknown.
+     */
     private function getQueueDepth(): int
     {
         try {
@@ -186,21 +198,40 @@ final class CooldownCommand extends BaseCommand
                 $depth += (int) Redis::connection()->llen("queues:{$queue}");
             }
 
-            $hostname = strtolower(str_replace('-', '', gethostname() ?: 'unknown'));
+            $hostname = mb_strtolower(str_replace('-', '', gethostname() ?: 'unknown'));
             $depth += (int) Redis::connection()->llen("queues:{$hostname}");
 
             return $depth;
-        } catch (\Throwable) {
-            return 0;
+        } catch (Throwable $e) {
+            $this->warn('Queue-depth probe failed: '.$e->getMessage().' — treating as UNKNOWN (fail-closed).');
+
+            return -1;
         }
     }
 
+    /**
+     * Active step count probe. Returns -1 on probe failure so callers
+     * can distinguish "I cannot prove steps are drained" from "steps
+     * are drained". Pre-fix, a DB outage returned 0 — letting cooldown
+     * declare drained against unknown step state.
+     */
     private function getActiveStepCount(): int
     {
         try {
-            return Step::whereIn('state', [Running::class, Dispatched::class])->count();
-        } catch (\Throwable) {
-            return 0;
+            // Count active rows across BOTH the default `steps` and the
+            // `trading_steps` prefix. A cooldown command that only sees
+            // default could place the app in maintenance with trading
+            // workflows still active — the very signal it's meant to
+            // catch.
+            $count = static fn (): int => (int) Step::query()
+                ->whereIn('state', [Running::class, Dispatched::class])
+                ->count();
+
+            return $count() + (int) Steps::usingPrefix('trading', $count);
+        } catch (Throwable $e) {
+            $this->warn('Active-step probe failed: '.$e->getMessage().' — treating as UNKNOWN (fail-closed).');
+
+            return -1;
         }
     }
 }

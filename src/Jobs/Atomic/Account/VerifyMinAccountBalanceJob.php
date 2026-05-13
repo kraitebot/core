@@ -58,11 +58,17 @@ final class VerifyMinAccountBalanceJob extends BaseApiableJob
         // Verify minimum balance
         $hasMinBalance = Math::gte($availableBalance, $minAccountBalance, 8);
 
-        // Store result before potential exception
+        // Store a redacted result on the step — pass/fail signal +
+        // available vs minimum, without echoing the full balance
+        // payload (asset breakdowns, margin balance, position margin,
+        // etc.). The full snapshot already lives in `ApiSnapshot`
+        // with proper retention/access controls; the step response
+        // doesn't need to duplicate it. Pre-fix, the step row carried
+        // the entire exchange balance payload, expanding the blast
+        // radius of any surface that renders step responses.
         $this->step->update([
             'response' => [
                 'account_id' => $this->account->id,
-                'balance' => $balanceData,
                 'available_balance' => $availableBalance,
                 'min_account_balance' => $minAccountBalance,
                 'has_min_balance' => $hasMinBalance,

@@ -56,12 +56,32 @@ final class RefreshBinanceListenKeysCommand extends BaseCommand
         $kept = 0;
         $rotated = 0;
         $failed = 0;
+        $reaped = 0;
 
         foreach ($rows as $row) {
             $account = Account::find($row->account_id);
 
             if ($account === null) {
                 $this->verboseWarn("Skipping row #{$row->id} — account #{$row->account_id} no longer exists.");
+
+                continue;
+            }
+
+            // Eligibility-gated reap: the daemon is the canonical writer/
+            // deleter of binance_listen_keys rows, but if the daemon is
+            // down its reaper isn't running and rows for now-ineligible
+            // accounts (deactivated, switched away from Binance, key
+            // removed) accumulate. The keepalive cron would otherwise
+            // keep refreshing them — wasted Binance API calls and
+            // prolonged server-side stream resources. Eligible accounts
+            // are left untouched, preserving the "daemon restart reuses
+            // the live key" property documented at the top of this
+            // command. Predicate centralised on the Account model so
+            // this stays aligned with the daemon's discovery scope.
+            if (! $account->isEligibleForBinanceUserDataStream()) {
+                $row->delete();
+                $reaped++;
+                $this->verboseWarn("Reaped row #{$row->id} — account #{$account->id} is no longer eligible for Binance user-data streaming.");
 
                 continue;
             }
@@ -106,9 +126,10 @@ final class RefreshBinanceListenKeysCommand extends BaseCommand
         }
 
         $this->verboseInfo(sprintf(
-            'listen-key refresh: kept=%d rotated=%d failed=%d total=%d',
+            'listen-key refresh: kept=%d rotated=%d reaped=%d failed=%d total=%d',
             $kept,
             $rotated,
+            $reaped,
             $failed,
             $rows->count()
         ));

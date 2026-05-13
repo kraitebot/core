@@ -26,6 +26,11 @@ use Throwable;
  */
 final class BybitPositionRecoverer extends AbstractPositionRecoverer
 {
+    public function isUntested(): bool
+    {
+        return true;
+    }
+
     protected function fetchOpenPositions(): array
     {
         $response = $this->account->apiQueryPositions();

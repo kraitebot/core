@@ -140,9 +140,26 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
      */
     public function isIpRateLimited(Throwable $exception): bool
     {
-        // Check HTTP 429
-        if ($this->containsHttpExceptionIn($exception, $this->ipRateLimitedHttpCodes)) {
-            return true;
+        // Plain HTTP 429 alone is NOT enough to declare a fleet-wide IP
+        // ban. Bitget routinely emits soft 429s for short bursts that
+        // recover within the next request window — treating those as
+        // an IP-level ban writes a `ForbiddenHostname` row that blocks
+        // every account on this exchange/IP, synchronising the entire
+        // fleet into a coordinated pause. The generic `isRateLimited()`
+        // path handles soft 429s correctly via `rescheduleWithoutRetry()`
+        // without polluting fleet-wide state. Require explicit ban
+        // evidence (a `Retry-After` header — only the exchange knows the
+        // ban window) before classifying as IP-rate-limited.
+        if (! $this->containsHttpExceptionIn($exception, $this->ipRateLimitedHttpCodes)) {
+            return false;
+        }
+
+        if ($exception instanceof RequestException && $exception->hasResponse()) {
+            $response = $exception->getResponse();
+
+            if ($response !== null && $response->hasHeader('Retry-After')) {
+                return true;
+            }
         }
 
         return false;

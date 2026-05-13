@@ -17,7 +17,7 @@ trait HasGetters
     {
         return $this->orders()
             ->where('type', 'LIMIT')
-            ->whereNotIn('status', ['CANCELLED', 'EXPIRED'])
+            ->whereNotIn('status', ['CANCELLED', 'EXPIRED', 'REJECTED'])
             ->get();
     }
 
@@ -140,7 +140,7 @@ trait HasGetters
     {
         return $this->orders()
             ->whereIn('orders.type', ['PROFIT-LIMIT', 'PROFIT-MARKET'])
-            ->whereNotIn('orders.status', ['CANCELLED', 'EXPIRED'])
+            ->whereNotIn('orders.status', ['CANCELLED', 'EXPIRED', 'REJECTED'])
             ->orderByDesc('orders.id')
             ->first();
     }

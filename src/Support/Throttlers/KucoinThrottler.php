@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Support\Throttlers;
 
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Kraite\Core\Abstracts\BaseApiThrottler;
 use Psr\Http\Message\ResponseInterface;
 use Throwable;
@@ -118,8 +119,13 @@ final class KucoinThrottler extends BaseApiThrottler
 
             return $bannedUntil && now()->timestamp < (int) $bannedUntil;
         } catch (Throwable $e) {
-            // Fail safe - if Cache fails, allow the request
-            return false;
+            // Fail CLOSED on cache failure — see BinanceThrottler for the
+            // full rationale.
+            Log::channel('jobs')->warning('[KucoinThrottler] isCurrentlyBanned cache failure — failing closed', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return true;
         }
     }
 

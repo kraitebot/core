@@ -34,16 +34,23 @@ Route::post('/webhooks/pushover/receipt', [NotificationWebhookController::class,
  * Tests which server IPs can connect to exchange APIs before account creation.
  */
 
-// Start connectivity test for user-provided credentials
-// Creates test steps for all apiable servers and returns block_uuid for polling
+// Start connectivity test for user-provided credentials.
+// Creates test steps for all apiable servers and returns block_uuid for polling.
+// Requires authentication — the endpoint accepts raw exchange credentials and
+// dispatches them to every API-capable server in the fleet, which is a
+// credential-bound action that must NOT be reachable anonymously. Pre-fix,
+// only IP-based throttle:3,1 protected the route, which let anyone with
+// network access probe exchange credential validity at low volume.
 Route::post('/connectivity-test/start', [ConnectivityTestController::class, 'start'])
-    ->middleware('throttle:3,1')
+    ->middleware(['auth', 'throttle:3,1'])
     ->name('connectivity-test.start');
 
-// Get connectivity test status by block_uuid
-// Returns progress and results of all server connectivity tests
+// Get connectivity test status by block_uuid.
+// Returns progress and results of all server connectivity tests. Authenticated
+// because the response includes per-server error_message values that leak
+// operational state and credential-validation outcomes.
 Route::get('/connectivity-test/status/{blockUuid}', [ConnectivityTestController::class, 'status'])
-    ->middleware('throttle:30,1')
+    ->middleware(['auth', 'throttle:30,1'])
     ->name('connectivity-test.status');
 
 /**

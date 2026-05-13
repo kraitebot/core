@@ -22,8 +22,14 @@ final class WarmupCommand extends BaseCommand
 
         if ($role === 'ingestion') {
             $this->line('Resuming step dispatchers (all prefixes)...');
-            MaintenanceMode::resumeStepsDispatch(null);
-            $this->info('Step dispatchers resumed.');
+            // Pre-fix this called resumeStepsDispatch(null), which only
+            // forgets the blanket key — a prefix-specific pause (e.g.
+            // `trading_steps` paused via pauseStepsDispatch('trading'))
+            // would survive warmup and leave that part of the system
+            // paused silently. Use the all-prefix helper so warmup
+            // returns the full system to dispatching.
+            MaintenanceMode::resumeAllStepsDispatch();
+            $this->info('Step dispatchers resumed (default + trading).');
         }
 
         $this->line('Bringing application UP...');

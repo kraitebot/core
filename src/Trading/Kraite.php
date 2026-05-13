@@ -4,14 +4,13 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Trading;
 
+use Kraite\Core\Models\Account;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Trading\Concerns\HasComputationHelpers;
 use Kraite\Core\Trading\Concerns\HasMinNotionalChecks;
 use Kraite\Core\Trading\Concerns\HasOrderCalculations;
 use Kraite\Core\Trading\Concerns\HasPnLCalculations;
-use Kraite\Core\Trading\Concerns\HasPositionPlanning;
 use Kraite\Core\Trading\Concerns\HasTradingGuards;
-use Kraite\Core\Models\Account;
-use Kraite\Core\Support\Math;
 
 /**
  * Kraite Engine — Unbounded ladder model (production)
@@ -29,7 +28,6 @@ final class Kraite
     use HasMinNotionalChecks;
     use HasOrderCalculations;
     use HasPnLCalculations;
-    use HasPositionPlanning;
     use HasTradingGuards;
 
     /**

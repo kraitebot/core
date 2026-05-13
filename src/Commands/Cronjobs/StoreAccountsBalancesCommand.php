@@ -12,7 +12,8 @@ use StepDispatcher\Support\BaseCommand;
 final class StoreAccountsBalancesCommand extends BaseCommand
 {
     protected $signature = 'kraite:cron-store-accounts-balances
-                            {--clean : Truncate tables and clear laravel.log}
+                            {--clean : Truncate operational + audit tables and clear logs (DESTRUCTIVE — requires --force outside local)}
+                            {--force : Required to run --clean outside the `local` environment}
                             {--output : Display command output (silent by default)}';
 
     protected $description = 'Stores accounts balances for each active account.';
@@ -20,6 +21,20 @@ final class StoreAccountsBalancesCommand extends BaseCommand
     public function handle(): int
     {
         if ($this->option('clean')) {
+            // --clean truncates `steps`, `account_balance_history`,
+            // `api_request_logs`, `notification_logs`, plus log files.
+            // In production that erases dispatcher history, balance
+            // history, API evidence, notifications, and cleanup logs —
+            // exactly the data needed for incident reconstruction.
+            // Refuse outside `local` unless --force is supplied so a
+            // mistyped command can't silently destroy audit trails on
+            // a live host.
+            if (app()->environment() !== 'local' && ! (bool) $this->option('force')) {
+                $this->error("--clean refused: '".app()->environment()."' is not 'local'. This truncates dispatcher + balance + API + notification audit history. Pass --force only if you intentionally want to erase those tables on this host.");
+
+                return self::FAILURE;
+            }
+
             $this->cleanTables();
         }
 

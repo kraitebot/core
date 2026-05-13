@@ -18,6 +18,7 @@ use StepDispatcher\Models\Step;
 use StepDispatcher\States\Cancelled;
 use StepDispatcher\Support\BaseCommand;
 use StepDispatcher\Support\StepDispatcher;
+use StepDispatcher\Support\Steps;
 use Throwable;
 
 /**
@@ -48,7 +49,10 @@ final class RecoverPositionsCommand extends BaseCommand
                             {--account_id= : Restrict to a single account by id}
                             {--token= : Restrict to a single trading pair (e.g. APEUSDT)}
                             {--dry-run : Run end-to-end but roll back all writes at the end}
-                            {--override : Delete matching local positions+orders BEFORE recovery so the rebuild is from scratch (scoped by --account_id and --token if set)}';
+                            {--override : Delete matching local positions+orders BEFORE recovery so the rebuild is from scratch (scoped by --account_id and --token if set)}
+                            {--allow-untested-exchange : Permit recoverers flagged as untested (Bybit, KuCoin) to run; they are gated off by default to prevent disaster paths from running unverified code at the worst possible time}
+                            {--force : Required for unscoped --override (no --account_id, no --token). Without this gate a fleet-wide wipe would only need a single mistyped flag — explicit --force makes the destructive intent visible}
+                            {--allow-snapshot-failure : Required for --override to proceed when the pre-run mysqldump snapshot fails. Default refusal protects the only restore point}';
 
     protected $description = 'Reconstruct local positions + orders from the exchange APIs (disaster recovery, idempotent)';
 
@@ -66,15 +70,33 @@ final class RecoverPositionsCommand extends BaseCommand
             return self::FAILURE;
         }
 
+        // Production-grade --override gate: an unscoped destructive
+        // override (no --account_id, no --token) must carry an explicit
+        // --force flag. A mistyped operator command of the form
+        // `kraite:recover-positions --override` would otherwise wipe
+        // every position + every order across every account in scope.
+        // The dry-run path is exempt — it rolls back all writes by
+        // design, so it serves as the safe preview.
+        if ($override && ! $dryRun && ! $accountId && ! $tokenFilter && ! (bool) $this->option('force')) {
+            $this->error('--override without --account_id or --token requires --force. The unscoped destructive override would wipe every position + every order across every account in scope. Re-run with --dry-run first to preview, then add --force to confirm intent.');
+
+            return self::FAILURE;
+        }
+
         $report = new RecoveryReport;
         $report->dryRun = $dryRun;
 
         $this->printHeader($accounts->count(), $accountId, $tokenFilter, $dryRun, $override);
 
-        // Deactivate the step dispatcher for the whole run so no
-        // workflow chains pick up half-recovered positions mid-write.
-        // The flag is restored in the finally regardless of outcome.
-        StepDispatcher::deactivate();
+        // Deactivate the step dispatcher in BOTH prefixes for the whole
+        // run so no workflow chains pick up half-recovered positions
+        // mid-write. `StepDispatcher::deactivate()` is prefix-scoped via
+        // `RuntimeContext::current()` — calling it once would only freeze
+        // the default `active.flag`, leaving `trading_active.flag`
+        // running. Trading workflows would keep dispatching against the
+        // half-rebuilt DB. The flag is restored in the finally regardless
+        // of outcome.
+        $this->deactivateAllDispatchers();
 
         // Phase 5 — operational guards. Capture pre-run trading flag
         // so we restore it on completion. Dump positions + orders
@@ -83,6 +105,19 @@ final class RecoverPositionsCommand extends BaseCommand
         // mid-run exception doesn't leave the system frozen.
         $tradingWasOn = $this->freezeTrading();
         $snapshotPath = $dryRun ? null : $this->snapshotDatabase($report);
+
+        // Snapshot is the only restore point a botched destructive
+        // override can fall back on. Refuse to proceed with --override
+        // when the snapshot failed unless the operator explicitly opts
+        // in via --allow-snapshot-failure. Pre-fix, the snapshot
+        // failure logged a warning and the destructive path continued.
+        if ($override && ! $dryRun && $snapshotPath === null && ! (bool) $this->option('allow-snapshot-failure')) {
+            $this->error('--override aborted: pre-run mysqldump snapshot failed and no restore point exists. Re-run with --allow-snapshot-failure if you have an alternative recovery plan.');
+            $this->restoreTrading($tradingWasOn);
+            $this->activateAllDispatchers();
+
+            return self::FAILURE;
+        }
 
         $rolledBack = false;
 
@@ -149,9 +184,10 @@ final class RecoverPositionsCommand extends BaseCommand
 
             return self::FAILURE;
         } finally {
-            // Always restore the dispatcher flag — even on exception —
-            // so workers don't stay idle indefinitely after a failed run.
-            StepDispatcher::activate();
+            // Always restore the dispatcher flag in BOTH prefixes — even
+            // on exception — so workers don't stay idle indefinitely
+            // after a failed run. Mirrors the dual-prefix freeze above.
+            $this->activateAllDispatchers();
         }
 
         $this->renderReport($report);
@@ -204,6 +240,17 @@ final class RecoverPositionsCommand extends BaseCommand
 
         try {
             $recoverer = RecovererResolver::for($account, $report, $tokenFilter);
+
+            if ($recoverer->isUntested() && ! (bool) $this->option('allow-untested-exchange')) {
+                $report->accountsSkipped++;
+                $report->warning(
+                    "Account #{$account->id} ({$exchange}) skipped — recoverer flagged untested. Re-run with --allow-untested-exchange to permit."
+                );
+                $report->line('  ⚠ Recoverer is flagged UNTESTED for this exchange. Skipped (use --allow-untested-exchange to override).');
+
+                return;
+            }
+
             $recoverer->run();
             $report->accountsOk++;
         } catch (Throwable $e) {
@@ -336,29 +383,65 @@ final class RecoverPositionsCommand extends BaseCommand
             return 0;
         }
 
-        $terminal = Step::terminalStepStates();
+        // Cancel matching rows in BOTH the default `steps` table AND the
+        // `trading_steps` prefix. `Step::query()` is prefix-scoped via
+        // `RuntimeContext::current()`, so a single call only sees the
+        // ambient prefix's table — pre-fix, --override could delete a
+        // position locally while leaving live `trading_steps` rows
+        // referencing that id, which would then mutate the rebuilt
+        // state on the next dispatcher tick.
+        $cancelOne = function () use ($positionIds, $orderIds): int {
+            $terminal = Step::terminalStepStates();
 
-        $query = Step::query()->whereNotIn('state', $terminal);
+            $query = Step::query()->whereNotIn('state', $terminal);
 
-        $query->where(function ($q) use ($positionIds, $orderIds): void {
-            if ($positionIds !== []) {
-                $q->orWhereIn(
-                    DB::raw("CAST(JSON_EXTRACT(arguments, '$.positionId') AS UNSIGNED)"),
-                    $positionIds
-                );
-            }
-            if ($orderIds !== []) {
-                $q->orWhereIn(
-                    DB::raw("CAST(JSON_EXTRACT(arguments, '$.orderId') AS UNSIGNED)"),
-                    $orderIds
-                );
-            }
-        });
+            $query->where(function ($q) use ($positionIds, $orderIds): void {
+                if ($positionIds !== []) {
+                    $q->orWhereIn(
+                        DB::raw("CAST(JSON_EXTRACT(arguments, '$.positionId') AS UNSIGNED)"),
+                        $positionIds
+                    );
+                }
+                if ($orderIds !== []) {
+                    $q->orWhereIn(
+                        DB::raw("CAST(JSON_EXTRACT(arguments, '$.orderId') AS UNSIGNED)"),
+                        $orderIds
+                    );
+                }
+            });
 
-        return $query->update([
-            'state' => Cancelled::class,
-            'error_message' => 'Cancelled by kraite:recover-positions --override (referenced position/order is being wiped)',
-        ]);
+            return $query->update([
+                'state' => Cancelled::class,
+                'error_message' => 'Cancelled by kraite:recover-positions --override (referenced position/order is being wiped)',
+            ]);
+        };
+
+        $cancelledDefault = $cancelOne();
+        $cancelledTrading = Steps::usingPrefix('trading', $cancelOne);
+
+        return $cancelledDefault + $cancelledTrading;
+    }
+
+    /**
+     * Deactivate the step dispatcher in every prefix this app uses
+     * (default + trading). Called at recovery start; mirrored by
+     * activateAllDispatchers() in the finally block.
+     */
+    protected function deactivateAllDispatchers(): void
+    {
+        StepDispatcher::deactivate();
+        Steps::usingPrefix('trading', fn () => StepDispatcher::deactivate());
+    }
+
+    /**
+     * Re-activate the step dispatcher in every prefix this app uses
+     * (default + trading). Called from the finally block; safe to call
+     * multiple times — `activate()` is idempotent.
+     */
+    protected function activateAllDispatchers(): void
+    {
+        StepDispatcher::activate();
+        Steps::usingPrefix('trading', fn () => StepDispatcher::activate());
     }
 
     protected function renderReport(RecoveryReport $report): void
@@ -418,14 +501,29 @@ final class RecoverPositionsCommand extends BaseCommand
     }
 
     /**
-     * Restore the pre-run value of `kraite.allow_opening_positions`.
-     * Idempotent — calling twice with the same value is a no-op.
+     * Restore the pre-run value of `kraite.allow_opening_positions`,
+     * but ONLY if the current value still matches the freeze recovery
+     * applied (false). If another component flipped the flag during
+     * recovery — e.g. a structure-broken halt from CheckDriftsCommand,
+     * an operator manually pausing opens, a separate safety circuit —
+     * the current value is no longer false, which proves recovery is
+     * not the owner of this state any more. Restoring would silently
+     * undo the newer safety halt.
+     *
+     * Idempotent: calling twice with the same value is a no-op.
      */
     protected function restoreTrading(bool $previousValue): void
     {
         $engine = Kraite::find(1);
 
         if (! $engine) {
+            return;
+        }
+
+        // If the flag is no longer in the "frozen" state recovery set,
+        // someone else changed it — don't clobber. The newer change
+        // wins; an operator can re-warmup explicitly.
+        if ((bool) $engine->allow_opening_positions !== false) {
             return;
         }
 
@@ -458,18 +556,36 @@ final class RecoverPositionsCommand extends BaseCommand
         $password = config('database.connections.mysql.password');
         $host = config('database.connections.mysql.host', '127.0.0.1');
 
+        // Pass the password via MYSQL_PWD instead of `-p<pass>` on the
+        // command line. The inline form leaks the credential through
+        // /proc/<pid>/cmdline + `ps auxf` while the dump is running —
+        // a real exposure on shared hosts. MYSQL_PWD survives only in
+        // the child process's environment and is never serialised to
+        // the process listing.
         $command = sprintf(
-            'mysqldump --single-transaction --quick -h %s -u %s -p%s %s positions orders > %s 2>/dev/null',
+            'mysqldump --single-transaction --quick -h %s -u %s %s positions orders > %s 2>/dev/null',
             escapeshellarg((string) $host),
             escapeshellarg((string) $username),
-            escapeshellarg((string) $password),
             escapeshellarg((string) $database),
             escapeshellarg($path),
         );
 
         $exitCode = 0;
         $output = [];
-        @exec($command, $output, $exitCode);
+        $previousPwd = getenv('MYSQL_PWD');
+        putenv('MYSQL_PWD='.((string) $password));
+
+        try {
+            @exec($command, $output, $exitCode);
+        } finally {
+            // Restore previous MYSQL_PWD to avoid leaking the credential
+            // into anything else this PHP process might exec later.
+            if ($previousPwd === false) {
+                putenv('MYSQL_PWD');
+            } else {
+                putenv('MYSQL_PWD='.$previousPwd);
+            }
+        }
 
         if ($exitCode !== 0 || ! is_file($path) || filesize($path) === 0) {
             $report->warning("Pre-recovery snapshot failed (exit={$exitCode}); proceeding without it");
@@ -559,7 +675,19 @@ final class RecoverPositionsCommand extends BaseCommand
 
         $keys = [];
         foreach ($positions as $key => $row) {
-            $amt = (string) ($row['positionAmt'] ?? '0');
+            // Multi-exchange quantity-field precedence — Binance uses
+            // `positionAmt`, Bybit uses `size`, Bitget uses `total`,
+            // KuCoin uses `currentQty` / `contracts`. Mirrors the same
+            // shape that AbstractPositionRecoverer::absQuantity() handles.
+            // Pre-fix, only `positionAmt` was read, which yielded an
+            // empty key list for non-Binance recoverers and would let
+            // Phase 4 close real positions as ghosts.
+            $amt = (string) ($row['positionAmt']
+                ?? $row['size']
+                ?? $row['total']
+                ?? $row['currentQty']
+                ?? $row['contracts']
+                ?? '0');
 
             if (Math::equal($amt, '0')) {
                 continue;
@@ -706,7 +834,15 @@ final class RecoverPositionsCommand extends BaseCommand
 
             foreach ($orders as $order) {
                 try {
-                    $order->apiSync();
+                    // Suppress OrderObserver during the mirror pass so a
+                    // status change (NEW → FILLED, NEW → CANCELLED) does
+                    // NOT dispatch Close / Wap / Replacement jobs against
+                    // the half-recovered DB. The remaining recovery
+                    // phases (4 stuck-state reset, post-recovery
+                    // reconciliation) handle the intentional state
+                    // transitions; the dispatcher stays deactivated
+                    // until the finally block re-activates it.
+                    Order::withoutEvents(fn () => $order->apiSync());
                     $synced++;
                 } catch (Throwable $exception) {
                     $failed++;
@@ -769,7 +905,44 @@ final class RecoverPositionsCommand extends BaseCommand
 
             $stuck = $stuckQuery->get();
 
+            // Belt-and-braces against false ghost-closing. An empty
+            // exchange-keys list for an account that DOES have stuck
+            // positions can mean (a) all those positions really did
+            // close during the gap, or (b) the API call to fetch
+            // positions failed and the stale-snapshot guard collapsed
+            // them all to "ghost". Phase 2 has the same shape of guard
+            // (markClosedDuringGap); Phase 4 inherits it here so both
+            // close-detection paths refuse to mass-close on empty
+            // snapshots that may just reflect transient API failure
+            // or non-Binance key extraction missing the quantity field.
+            if ($exchangeKeys === [] && $stuck->isNotEmpty()) {
+                $report->warning(
+                    "Account #{$account->id}: empty exchange snapshot but {$stuck->count()} stuck position(s) — refusing to ghost-close (likely API failure or non-Binance key extraction gap)"
+                );
+                $report->line("  ⚠ Account #{$account->id}: skipped Phase 4 — empty exchange snapshot, {$stuck->count()} stuck position(s) preserved");
+
+                continue;
+            }
+
             foreach ($stuck as $position) {
+                // The Phase 4 invariant — "no in-flight workflow can be
+                // running" — requires an actual check, not just the
+                // dispatcher freeze above. A queued/pending Step row
+                // still REFERENCES the position via JSON arguments;
+                // resetting the position's status would mean that
+                // when the dispatcher reactivates in the finally block
+                // it picks up the queued step and mutates state recovery
+                // just rewrote. Skip + warn so the operator can manually
+                // cancel + re-run.
+                if ($this->hasInflightStepFor($position->id)) {
+                    $report->warning(
+                        "Position #{$position->id} ({$position->parsed_trading_pair} {$position->direction}) skipped — in-flight workflow step(s) still reference it"
+                    );
+                    $report->line("  ⚠ Position #{$position->id} ({$position->parsed_trading_pair} {$position->direction}): kept in {$position->status} (in-flight workflow still owns it)");
+
+                    continue;
+                }
+
                 $key = "{$position->parsed_trading_pair}:{$position->direction}";
 
                 if (in_array($key, $exchangeKeys, true)) {
@@ -791,5 +964,30 @@ final class RecoverPositionsCommand extends BaseCommand
         }
 
         $report->line("  → Reset {$reset} stuck position(s) to active; closed {$closedAsGhost} ghost(s).");
+    }
+
+    /**
+     * Returns true when any non-terminal Step row in EITHER the default
+     * `steps` table OR the `trading_steps` prefix references this
+     * positionId via JSON arguments. Used by Phase 4 to honour the
+     * "no in-flight workflow" invariant before rewriting status.
+     */
+    protected function hasInflightStepFor(int $positionId): bool
+    {
+        $check = function () use ($positionId): bool {
+            return Step::query()
+                ->whereNotIn('state', Step::terminalStepStates())
+                ->whereRaw(
+                    "CAST(JSON_EXTRACT(arguments, '$.positionId') AS UNSIGNED) = ?",
+                    [$positionId],
+                )
+                ->exists();
+        };
+
+        if ($check()) {
+            return true;
+        }
+
+        return (bool) Steps::usingPrefix('trading', $check);
     }
 }

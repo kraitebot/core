@@ -28,17 +28,23 @@ use Throwable;
 /**
  * CheckSystemHealthCommand
  *
- * Runs nine staleness / connectivity checks every minute. Each check
- * emits zero-or-many alerts via the shared `system_health_alert`
- * notification canonical, with a per-signal cache key (5-minute
- * throttle) so distinct failures dedupe independently while sharing
- * the same Pushover / email plumbing.
+ * Runs a dozen-plus staleness / connectivity checks every 7 minutes
+ * (`routes/console.php` → cron expression every 7 minutes). Paired with the
+ * every-5-min drift watchdog as the faster alert-side companion —
+ * Health follows up with the auto-cancel pass on its next tick. The
+ * 7-min cadence was chosen at v1.20.1 (2026-05-04) to absorb the
+ * per-account orphan-reconciliation cost (exchange snapshot fetch +
+ * classification) without dragging the cheaper checks below their
+ * useful frequency. Each check emits zero-or-many alerts via the
+ * shared `system_health_alert` notification canonical, with a
+ * per-signal cache key (5-minute throttle) so distinct failures dedupe
+ * independently while sharing the same Pushover / email plumbing.
  *
- * Why one command for all nine: the notification canonical is shared,
- * the throttle behaviour is shared, the loop / try-catch / log shape
- * is shared. A single sequential pass keeps one cron entry, one log
- * line per run, and adding a tenth check is a single new private
- * method. No notifications-table churn per check.
+ * Why one command for all of them: the notification canonical is
+ * shared, the throttle behaviour is shared, the loop / try-catch /
+ * log shape is shared. A single sequential pass keeps one cron
+ * entry, one log line per run, and adding a new check is a single
+ * new private method. No notifications-table churn per check.
  *
  * Severity is informational only — Pushover delivery doesn't filter
  * on it. The field is here so the dashboard / model_logs can render
@@ -48,9 +54,73 @@ final class CheckSystemHealthCommand extends BaseCommand
 {
     private const MARK_PRICE_STALENESS_SECONDS = 60;
 
-    private const FAILED_JOBS_THRESHOLD = 10;
+    /**
+     * Grace window before a never-synced sidecar row (mark_price_synced_at
+     * IS NULL) is treated as a missing-price alert. Covers the normal
+     * onboarding gap: ExchangeSymbolObserver creates the sidecar at
+     * symbol creation, then the price daemon's pair-map refresh runs
+     * every 5 min — newly-onboarded symbols can legitimately sit at null
+     * for up to that window. Past it, "still null" means the daemon's
+     * pair mapper missed the symbol (pair-name mismatch) or the daemon
+     * was offline through the onboarding window. Both cases are real
+     * failures: token discovery currently treats null timestamps as
+     * "pass" (HasTokenDiscovery line 293-295), so the symbol gets
+     * selected for slots and position-sizing reads a null mark_price
+     * downstream.
+     */
+    private const MARK_PRICE_MISSING_GRACE_MINUTES = 5;
 
-    private const HORIZON_QUEUE_DEPTH_THRESHOLD = 5000;
+    /**
+     * Two-pronged failed_jobs alerting. The lifetime row count
+     * (`FAILED_JOBS_CAPACITY_THRESHOLD`) is a backstop — "stop
+     * monitoring, start cleaning"; the rolling-1h count
+     * (`FAILED_JOBS_RECENT_THRESHOLD`) is the operationally useful
+     * "something is currently failing right now" signal. Splitting
+     * them stops yesterday's investigated-but-not-pruned incident
+     * from masquerading as a fresh failure, AND surfaces dominant
+     * exception class + dominant job class in the recent-burst
+     * Pushover so the operator navigates to root cause without
+     * a second SQL query.
+     */
+    private const FAILED_JOBS_RECENT_THRESHOLD = 5;
+
+    private const FAILED_JOBS_CAPACITY_THRESHOLD = 1000;
+
+    private const FAILED_JOBS_RECENT_WINDOW_MINUTES = 60;
+
+    /**
+     * Per-queue Horizon-depth thresholds. Each queue carries a
+     * different operational profile and a different urgency, so a
+     * single sum threshold masks dangerous safety-critical backlogs:
+     * a `positions` queue at 100 pending ops means 100 delayed
+     * exposure-protection actions across accounts, but with the old
+     * sum-only check the alert stayed silent until 5000+ total. Per-
+     * queue thresholds page on each safety-critical queue
+     * independently of the long-running indicator burst.
+     *
+     * Tuning rationale:
+     *  - positions / orders: tight (50). These carry SL/TP placement
+     *    and sync ops; backlog = exposure delay.
+     *  - user-data-stream: 100. Frame routing should be near-zero;
+     *    sustained backlog = WS handler stall.
+     *  - priority: 200. TP/SL escalation; small but matters.
+     *  - default / cronjobs: 500 / 500. Utility scope.
+     *  - indicators: 5000. Hourly conclude burst dispatches ~600 entry
+     *    steps that promote into ~thousands of indicator jobs; depth
+     *    in low thousands during the burst is normal and should not
+     *    page.
+     *
+     * @var array<string, int>
+     */
+    private const HORIZON_QUEUE_DEPTH_THRESHOLDS = [
+        'positions' => 50,
+        'orders' => 50,
+        'user-data-stream' => 100,
+        'priority' => 200,
+        'default' => 500,
+        'cronjobs' => 500,
+        'indicators' => 5000,
+    ];
 
     /**
      * Indicators run hourly via `kraite:cron-conclude-symbols-direction`
@@ -78,8 +148,6 @@ final class CheckSystemHealthCommand extends BaseCommand
 
     private const DAEMON_HEARTBEAT_STALENESS_SECONDS = 120;
 
-    private const DISPATCHER_TICK_STALENESS_SECONDS = 60;
-
     private const SCHEDULER_LIVENESS_SECONDS = 120;
 
     /**
@@ -99,8 +167,6 @@ final class CheckSystemHealthCommand extends BaseCommand
      * already exhausted. Operator action is required to unstick it.
      */
     private const STALE_SYNCING_POSITION_MINUTES = 15;
-
-    private const HORIZON_QUEUES = ['default', 'priority', 'positions', 'orders', 'cronjobs', 'indicators', 'user-data-stream'];
 
     protected $signature = 'kraite:cron-check-system-health
                             {--output : Display command output (silent by default)}';
@@ -132,16 +198,19 @@ final class CheckSystemHealthCommand extends BaseCommand
             'checkIndicatorFreshness',
             'checkAccountBalanceFreshness',
             'checkDaemonHeartbeat',
-            // 'checkDispatcherTickRate' disabled 2026-05-03: signal
-            // mismatch — `steps_dispatcher.last_selected_at` updates
-            // only on root-step CREATE (via `StepsDispatcher::getNextGroup()`),
-            // not on every dispatch attempt. During quiet periods
-            // between minute-level crons MAX naturally exceeds 60s
-            // and fires false-positive alerts even though Horizon is
-            // healthy and the dispatcher is processing. Re-enable
-            // after the step-dispatcher path package gains a true
-            // per-tick stamp column (column on `steps_dispatcher`
-            // written by every dispatch attempt regardless of work).
+            // Dispatcher-progress liveness is owned outside this
+            // command: `kraite-dispatch-daemon` supervisor process
+            // (alive via `supervisorctl status`) plus the step-
+            // dispatcher package's own `steps:recover-stale
+            // --recover-dispatched --release-locks` cron (wedge
+            // detection per prefix). A direct in-command tick check
+            // was tried (2026-05-03) using
+            // `steps_dispatcher.last_selected_at` and removed because
+            // that column only updates on root-step CREATE — quiet
+            // periods between minute-level crons fired false positives
+            // while the dispatcher was healthy. Worker-side starvation
+            // is caught here by `checkHorizonQueueDepth` +
+            // `checkFailedJobsOverflow`.
             'checkSchedulerLiveness',
             'checkFailedJobsOverflow',
             'checkDatabaseConnection',
@@ -150,6 +219,7 @@ final class CheckSystemHealthCommand extends BaseCommand
             'checkOrphanReconciliation',
             'checkDiskPressure',
             'checkStaleSyncingPositions',
+            'checkUserDataDeadLetters',
         ];
 
         // The two dispatcher-dependent checks (indicator + balance
@@ -215,7 +285,13 @@ final class CheckSystemHealthCommand extends BaseCommand
     private function checkMarkPriceFreshness(): int
     {
         $threshold = now()->subSeconds(self::MARK_PRICE_STALENESS_SECONDS);
+        $missingGraceCutoff = now()->subMinutes(self::MARK_PRICE_MISSING_GRACE_MINUTES);
 
+        $alerts = 0;
+
+        // Branch 1 — STALE: sidecar has a timestamp but it's older than
+        // the freshness threshold. Daemon was running, then stopped or
+        // got pair-mapper drift mid-flight.
         $stale = $this->eligibleExchangeSymbolsQuery()
             ->notDelisted()
             ->join('exchange_symbol_prices', 'exchange_symbol_prices.exchange_symbol_id', '=', 'exchange_symbols.id')
@@ -229,7 +305,6 @@ final class CheckSystemHealthCommand extends BaseCommand
                 'exchange_symbol_prices.mark_price_synced_at',
             ]);
 
-        $alerts = 0;
         foreach ($stale as $row) {
             $pair = $row->token.$row->quote;
             $age = (int) now()->diffInSeconds($row->mark_price_synced_at, true);
@@ -238,6 +313,38 @@ final class CheckSystemHealthCommand extends BaseCommand
                 severity: 'high',
                 title: "Mark price stale for {$pair}",
                 detail: "exchange_symbol_prices.mark_price_synced_at is {$age}s old (threshold: ".self::MARK_PRICE_STALENESS_SECONDS."s) for exchange_symbol #{$row->id}. Price daemon is no longer publishing fresh prices for a symbol the bot has skin in (open position or tradeable).",
+            );
+            $alerts++;
+        }
+
+        // Branch 2 — MISSING: sidecar timestamp is null past the
+        // onboarding grace window. Token discovery currently treats
+        // null timestamps as "pass" (HasTokenDiscovery line 293-295),
+        // so without this alert a never-synced symbol can get selected
+        // for slots and position-sizing math reads a null mark_price.
+        // Distinct signal name lets ops triage "never synced" (likely
+        // pair-mapping issue) vs "stale" (likely daemon issue).
+        $missing = $this->eligibleExchangeSymbolsQuery()
+            ->notDelisted()
+            ->join('exchange_symbol_prices', 'exchange_symbol_prices.exchange_symbol_id', '=', 'exchange_symbols.id')
+            ->whereNull('exchange_symbol_prices.mark_price_synced_at')
+            ->where('exchange_symbol_prices.created_at', '<', $missingGraceCutoff)
+            ->orderBy('exchange_symbol_prices.created_at')
+            ->get([
+                'exchange_symbols.id',
+                'exchange_symbols.token',
+                'exchange_symbols.quote',
+                'exchange_symbol_prices.created_at',
+            ]);
+
+        foreach ($missing as $row) {
+            $pair = $row->token.$row->quote;
+            $sidecarAgeMinutes = (int) now()->diffInMinutes($row->created_at, true);
+            $this->emit(
+                signal: "mark_price_missing_{$pair}",
+                severity: 'high',
+                title: "Mark price never synced for {$pair}",
+                detail: "exchange_symbol_prices.mark_price_synced_at IS NULL for exchange_symbol #{$row->id} ({$pair}); sidecar row created {$sidecarAgeMinutes}min ago (grace: ".self::MARK_PRICE_MISSING_GRACE_MINUTES."min). The price daemon never wrote for this symbol — most likely pair-name mismatch in the daemon's pairToIds map, or daemon was offline through the onboarding window. Token discovery passes null-timestamp symbols through the freshness gate, so this symbol can be selected for slots while having no live price.",
             );
             $alerts++;
         }
@@ -282,16 +389,18 @@ final class CheckSystemHealthCommand extends BaseCommand
                 $q->whereNull('exchange_symbols.indicators_synced_at')
                     ->orWhere('exchange_symbols.indicators_synced_at', '<', $threshold);
             })
-            ->get(['id', 'token', 'quote']);
+            ->get(['id', 'token', 'quote', 'indicators_synced_at', 'indicators_timeframe']);
 
         $alerts = 0;
         foreach ($stale as $row) {
             $pair = $row->token.$row->quote;
+            $syncedAt = $row->indicators_synced_at?->toDateTimeString() ?? 'NULL (never synced)';
+            $timeframe = $row->indicators_timeframe ?? 'unset';
             $this->emit(
                 signal: "indicator_stale_{$pair}",
                 severity: 'high',
                 title: "Indicators stale for {$pair}",
-                detail: 'No `indicator_histories` row newer than '.self::INDICATOR_STALENESS_MINUTES."min for exchange_symbol #{$row->id}. Direction-decision logic is reading frozen signals.",
+                detail: "exchange_symbols.indicators_synced_at = {$syncedAt} for exchange_symbol #{$row->id} (timeframe: {$timeframe}); threshold ".self::INDICATOR_STALENESS_MINUTES.'min. Source of truth is the column, NOT `indicator_histories` — direction is computed natively on Binance and copied via ConcludeSymbolsDirectionCommand to other exchanges, which writes the column without inserting a history row. Direction-decision logic is reading frozen signals.',
             );
             $alerts++;
         }
@@ -388,59 +497,31 @@ final class CheckSystemHealthCommand extends BaseCommand
     }
 
     /**
-     * #4 — Dispatcher liveness via `steps_dispatcher.last_selected_at`.
-     * That timestamp gets touched on every dispatch attempt regardless
-     * of whether work was found, so a stale value across ALL groups is
-     * a hard "dispatcher cron is dead" signal.
-     *
-     * Note: we deliberately avoid `steps_dispatcher_ticks` here — that
-     * table is filtered by `recordTickWhen` (only slow ticks are
-     * persisted), so an empty recent set indicates a HEALTHY fast
-     * dispatcher, not a dead one. Using `last_selected_at` instead
-     * gives the always-on signal we actually want.
-     */
-    private function checkDispatcherTickRate(): int
-    {
-        $latest = DB::table('steps_dispatcher')->max('last_selected_at');
-
-        if ($latest === null) {
-            // No groups registered — benign on a fresh database. The
-            // first dispatch attempt will populate the table.
-            return 0;
-        }
-
-        $age = (int) now()->diffInSeconds($latest, true);
-        if ($age <= self::DISPATCHER_TICK_STALENESS_SECONDS) {
-            return 0;
-        }
-
-        $this->emit(
-            signal: 'dispatcher_tick_stale',
-            severity: 'high',
-            title: 'Step dispatcher tick stale',
-            detail: "Newest `steps_dispatcher.last_selected_at` is {$age}s old (threshold: ".self::DISPATCHER_TICK_STALENESS_SECONDS.'s). The `steps:dispatch` cron is not firing — workers will starve.',
-        );
-
-        return 1;
-    }
-
-    /**
      * #5 — Scheduler liveness. We use the keepalive cron's footprint
      * (`binance_listen_keys.last_keep_alive_at`) as a proxy: that cron
      * runs every minute, so if the newest row's keepalive timestamp
      * is older than 2 minutes, `schedule:work` is dead and the entire
      * cron chain is silent.
      *
-     * Falls back to the dispatcher-tick proxy when there are no
-     * Binance listen-key rows (e.g. all accounts inactive or deleted).
+     * Limitation: there is NO fallback when zero listen-key rows
+     * exist (e.g. fresh deploy pre-account-bootstrap, or every account
+     * inactive/deleted). The check is silent in that window —
+     * acceptable because production deploys always have active
+     * accounts. Listen-key rows themselves being stale-but-present is
+     * owned by the separate `kraite:cron-check-binance-listen-keys-stale`
+     * cron, not here. If a zero-rows window ever becomes a real
+     * production concern, the right fix is a cache-backed
+     * `scheduler:last_run_at` heartbeat written from
+     * `routes/console.php` via `Schedule::call(...)`, used as primary
+     * signal with the listen-key proxy as fallback.
      */
     private function checkSchedulerLiveness(): int
     {
         $keepaliveProxy = BinanceListenKey::query()->max('last_keep_alive_at');
 
         if ($keepaliveProxy === null) {
-            // No keep-alive proxy available — fall through to the
-            // dispatcher-tick check to avoid duplicate alerts.
+            // No proxy available — return silent. See method docblock
+            // for the limitation rationale and the future-fix shape.
             return 0;
         }
 
@@ -460,27 +541,123 @@ final class CheckSystemHealthCommand extends BaseCommand
     }
 
     /**
-     * #6 — `failed_jobs` overflow. Workers writing to this table at
-     * a sustained rate means jobs are dying; if it grows past the
-     * threshold the operator should look. Throttle handles repeat
-     * alerts for a single sustained outage.
+     * #6 — `failed_jobs` health, split into two distinct signals:
+     *
+     *  - `failed_jobs_recent_burst` — rolling-1h count above
+     *    FAILED_JOBS_RECENT_THRESHOLD. Includes top exception class +
+     *    top job class so the Pushover names the dominant root cause.
+     *
+     *  - `failed_jobs_capacity` — total lifetime count above
+     *    FAILED_JOBS_CAPACITY_THRESHOLD. Different operator action:
+     *    prune the table, not investigate a fresh failure.
+     *
+     * Each signal has its own cache key so they dedupe independently.
      */
     private function checkFailedJobsOverflow(): int
     {
-        $count = DB::table('failed_jobs')->count();
+        $alerts = 0;
 
-        if ($count <= self::FAILED_JOBS_THRESHOLD) {
-            return 0;
+        $recentSince = now()->subMinutes(self::FAILED_JOBS_RECENT_WINDOW_MINUTES);
+        $recentCount = DB::table('failed_jobs')
+            ->where('failed_at', '>=', $recentSince)
+            ->count();
+
+        if ($recentCount > self::FAILED_JOBS_RECENT_THRESHOLD) {
+            $recent = DB::table('failed_jobs')
+                ->where('failed_at', '>=', $recentSince)
+                ->get(['exception', 'payload', 'failed_at']);
+
+            $exceptionCounts = [];
+            $jobCounts = [];
+            $newest = null;
+            foreach ($recent as $row) {
+                $excClass = $this->extractExceptionClass((string) $row->exception);
+                $jobClass = $this->extractJobClass((string) $row->payload);
+
+                $exceptionCounts[$excClass] = ($exceptionCounts[$excClass] ?? 0) + 1;
+                $jobCounts[$jobClass] = ($jobCounts[$jobClass] ?? 0) + 1;
+
+                if ($newest === null || $row->failed_at > $newest) {
+                    $newest = $row->failed_at;
+                }
+            }
+
+            arsort($exceptionCounts);
+            arsort($jobCounts);
+
+            $topException = array_key_first($exceptionCounts) ?? 'unknown';
+            $topExceptionCount = $exceptionCounts[$topException] ?? 0;
+            $topJob = array_key_first($jobCounts) ?? 'unknown';
+            $topJobCount = $jobCounts[$topJob] ?? 0;
+
+            $this->emit(
+                signal: 'failed_jobs_recent_burst',
+                severity: 'high',
+                title: "failed_jobs recent burst ({$recentCount} in last ".self::FAILED_JOBS_RECENT_WINDOW_MINUTES.'min)',
+                detail: sprintf(
+                    '%d failures in last %dmin (threshold: %d). Top exception: %s (%d/%d). Top job: %s (%d/%d). Newest: %s. Investigate the dominant exception/job pair before pruning.',
+                    $recentCount,
+                    self::FAILED_JOBS_RECENT_WINDOW_MINUTES,
+                    self::FAILED_JOBS_RECENT_THRESHOLD,
+                    $topException,
+                    $topExceptionCount,
+                    $recentCount,
+                    $topJob,
+                    $topJobCount,
+                    $recentCount,
+                    $newest ?? 'unknown',
+                ),
+            );
+            $alerts++;
         }
 
-        $this->emit(
-            signal: 'failed_jobs_overflow',
-            severity: 'high',
-            title: 'failed_jobs queue overflow',
-            detail: "`failed_jobs` table has {$count} rows (threshold: ".self::FAILED_JOBS_THRESHOLD.'). Workers are dying or jobs are throwing un-handled exceptions.',
-        );
+        $totalCount = DB::table('failed_jobs')->count();
+        if ($totalCount > self::FAILED_JOBS_CAPACITY_THRESHOLD) {
+            $this->emit(
+                signal: 'failed_jobs_capacity',
+                severity: 'medium',
+                title: "failed_jobs capacity high ({$totalCount} rows total)",
+                detail: '`failed_jobs` table has '.$totalCount.' rows (capacity threshold: '.self::FAILED_JOBS_CAPACITY_THRESHOLD.'). Not necessarily a fresh failure — historical accumulation. Operator action: prune investigated rows via `php artisan queue:flush` or targeted DELETE, then revisit. Recent-burst signal (separate alert) covers active failures.',
+            );
+            $alerts++;
+        }
 
-        return 1;
+        return $alerts;
+    }
+
+    /**
+     * Extract the exception class FQN from the `exception` text column.
+     * The column stores `ClassName: message\n#0 stack-trace...`.
+     * Returns "unknown" on any unexpected shape.
+     */
+    private function extractExceptionClass(string $exception): string
+    {
+        $firstLine = strtok($exception, "\n");
+        if ($firstLine === false) {
+            return 'unknown';
+        }
+
+        $colonPos = strpos($firstLine, ':');
+        if ($colonPos === false) {
+            return trim($firstLine) ?: 'unknown';
+        }
+
+        return trim(substr($firstLine, 0, $colonPos)) ?: 'unknown';
+    }
+
+    /**
+     * Extract the job class FQN from the JSON `payload`. Standard
+     * Laravel queue payload exposes `displayName`. Returns "unknown"
+     * if the payload is malformed.
+     */
+    private function extractJobClass(string $payload): string
+    {
+        $decoded = json_decode($payload, true);
+        if (! is_array($decoded)) {
+            return 'unknown';
+        }
+
+        return (string) ($decoded['displayName'] ?? 'unknown');
     }
 
     /**
@@ -531,34 +708,48 @@ final class CheckSystemHealthCommand extends BaseCommand
     }
 
     /**
-     * #9 — Horizon queue depth. A growing pending count means workers
-     * can't keep up (or are wedged). We sum across the canonical
-     * queues we own; per-queue inspection lives in the dashboard.
+     * #9 — Horizon queue depth, per-queue with profile-tuned
+     * thresholds. A growing pending count on a safety-critical queue
+     * (positions / orders / user-data-stream) means delayed exposure-
+     * protection or stale account state; the old sum-only check
+     * masked these behind the indicators burst at 5000. Each
+     * breaching queue fires a distinct signal so the operator's
+     * Pushover names which queue + threshold + actual depth, and the
+     * full per-queue map gets attached for triage context.
      */
     private function checkHorizonQueueDepth(): int
     {
         try {
-            $depth = 0;
-            foreach (self::HORIZON_QUEUES as $queue) {
-                $depth += (int) Redis::connection()->llen("queues:{$queue}");
+            $depths = [];
+            foreach (array_keys(self::HORIZON_QUEUE_DEPTH_THRESHOLDS) as $queue) {
+                $depths[$queue] = (int) Redis::connection()->llen("queues:{$queue}");
             }
         } catch (Throwable) {
             // Redis already covered by check #8; don't double-alert.
             return 0;
         }
 
-        if ($depth <= self::HORIZON_QUEUE_DEPTH_THRESHOLD) {
-            return 0;
+        $alerts = 0;
+        foreach ($depths as $queue => $depth) {
+            $threshold = self::HORIZON_QUEUE_DEPTH_THRESHOLDS[$queue];
+            if ($depth <= $threshold) {
+                continue;
+            }
+
+            $allDepths = collect($depths)
+                ->map(fn (int $d, string $q): string => "{$q}:{$d}")
+                ->implode(', ');
+
+            $this->emit(
+                signal: "horizon_queue_depth_{$queue}",
+                severity: 'medium',
+                title: "Horizon queue depth high on `{$queue}`",
+                detail: "`{$queue}` queue depth = {$depth} (threshold: {$threshold}). Workers are not keeping up — investigate stuck jobs or insufficient processes for this queue. Full per-queue snapshot: {$allDepths}.",
+            );
+            $alerts++;
         }
 
-        $this->emit(
-            signal: 'horizon_queue_depth',
-            severity: 'medium',
-            title: 'Horizon queue depth high',
-            detail: "Pending queue depth across canonical queues = {$depth} (threshold: ".self::HORIZON_QUEUE_DEPTH_THRESHOLD.'). Workers are not keeping up — investigate stuck jobs or insufficient processes.',
-        );
-
-        return 1;
+        return $alerts;
     }
 
     /**
@@ -587,28 +778,55 @@ final class CheckSystemHealthCommand extends BaseCommand
         $free = @disk_free_space('/');
         $total = @disk_total_space('/');
 
-        if ($free === false || $total === false || $total <= 0) {
+        $payload = self::evaluateDiskPressure($free, $total, self::DISK_FREE_PERCENT_MIN);
+
+        if ($payload === null) {
             return 0;
         }
-
-        $freePercent = ($free / $total) * 100;
-
-        if ($freePercent >= self::DISK_FREE_PERCENT_MIN) {
-            return 0;
-        }
-
-        $freeGib = number_format($free / (1024 ** 3), 2);
-        $totalGib = number_format($total / (1024 ** 3), 2);
-        $freePercentStr = number_format($freePercent, 1);
 
         $this->emit(
             signal: 'disk_pressure_low',
             severity: 'high',
             title: 'Disk pressure on root filesystem',
-            detail: "Root filesystem free = {$freeGib} GiB / {$totalGib} GiB ({$freePercentStr}% free, threshold: ".self::DISK_FREE_PERCENT_MIN.'%). Logs and supervisor stdout writes will start failing before any other capacity signal. Investigate `du -sh /var/log /home/waygou/ingestion.kraite.com/storage/logs` and rotate / prune.',
+            detail: "Root filesystem free = {$payload['free_gib']} GiB / {$payload['total_gib']} GiB ({$payload['free_percent_str']}% free, threshold: ".self::DISK_FREE_PERCENT_MIN.'%). Logs and supervisor stdout writes will start failing before any other capacity signal. Investigate `du -sh /var/log /home/waygou/ingestion.kraite.com/storage/logs` and rotate / prune.',
         );
 
         return 1;
+    }
+
+    /**
+     * Pure-function disk-pressure evaluation. Extracted so the alert
+     * path is unit-testable without a host with low disk. Returns null
+     * for all "no alert" cases: healthy, unreadable (false from
+     * disk_free/total_space), corrupt total (≤ 0). Returns the
+     * structured fields (`free_gib`, `total_gib`, `free_percent_str`)
+     * for the emit() detail line otherwise.
+     *
+     * Boundary semantics: `free_percent >= threshold` is HEALTHY (no
+     * alert). Strictly below the threshold fires.
+     *
+     * @return array{free_gib: string, total_gib: string, free_percent_str: string}|null
+     */
+    public static function evaluateDiskPressure(
+        int|float|false $free,
+        int|float|false $total,
+        int $thresholdPercent,
+    ): ?array {
+        if ($free === false || $total === false || $total <= 0) {
+            return null;
+        }
+
+        $freePercent = ((float) $free / (float) $total) * 100;
+
+        if ($freePercent >= $thresholdPercent) {
+            return null;
+        }
+
+        return [
+            'free_gib' => number_format($free / (1024 ** 3), 2),
+            'total_gib' => number_format($total / (1024 ** 3), 2),
+            'free_percent_str' => number_format($freePercent, 1),
+        ];
     }
 
     /**
@@ -627,11 +845,22 @@ final class CheckSystemHealthCommand extends BaseCommand
      *
      * Match-window for "Kraite-leftover orders" is configurable via
      * `kraite.health_watchdog.orphan_kraite_match_window_minutes`
-     * (default 60). Cleanup execution is deferred to a follow-up
-     * iteration; this pass does detection + per (account, symbol)
-     * Pushover so the operator can act on confirmed orphans before
-     * we wire automatic cancel/close primitives across both
-     * exchanges.
+     * (default 60).
+     *
+     * Cleanup IS executed inline (not detection-only): orphan orders
+     * are auto-cancelled via the per-exchange API and orphan positions
+     * are auto-closed via reduce-only MARKET. Each (account, symbol)
+     * group emits one Pushover with the cancel/close outcome. Per-
+     * account try/catch isolation, the `hasInflightPositions` guard
+     * (suppresses order-orphan detection during transitional position
+     * states), and the recently-closed match window contain the blast
+     * radius. Why this lives in the system-health command instead of a
+     * dedicated `kraite:cron-reconcile-orphans`: v1.20.1 (2026-05-04)
+     * relaxed the Health cadence to every 7 minutes specifically to
+     * absorb this pass's per-account API cost — combined cron, shared
+     * `system_health_alert` canonical with per-signal cache key, single
+     * log entry per run. Splitting would multiply notification +
+     * scheduling surface area for no operator gain.
      */
     private function checkOrphanReconciliation(): int
     {
@@ -779,6 +1008,25 @@ final class CheckSystemHealthCommand extends BaseCommand
 
         $alerts = 0;
 
+        // Dual cooldown gate. During a global operator cooldown
+        // (`Kraite.is_cooling_down` — set by `kraite:cooldown` for
+        // deploys / maintenance) OR a per-exchange instability cooldown
+        // (`ApiSystem.cooldown_until` — set by ApiRequestLogObserver on
+        // 503/504 spikes), orphan cancel/close mutations are
+        // suppressed. Detection still runs and we still emit one
+        // Pushover per (account, symbol) group so the operator knows
+        // an orphan exists and is awaiting cooldown lift. Same
+        // reasoning as PlaceMarketOrderJob's cooldown gate: piling
+        // additional API calls onto a shaky exchange or onto an
+        // explicitly-paused system amplifies the very condition the
+        // cooldown exists to drain.
+        $globalCooldown = (bool) Kraite::first()?->is_cooling_down;
+        $apiCooldown = $account->apiSystem->inCooldown();
+        $skipMutations = $globalCooldown || $apiCooldown;
+        $cooldownReason = $globalCooldown
+            ? 'global operator cooldown'
+            : ($apiCooldown ? "{$account->apiSystem->canonical} API instability cooldown" : null);
+
         $ordersBySymbol = collect($report->ordersToCancel)
             ->groupBy(fn (string $orderId): string => $exchangeOrderMeta[$orderId]['symbol'] ?? 'UNKNOWN');
 
@@ -787,39 +1035,52 @@ final class CheckSystemHealthCommand extends BaseCommand
             $cancelled = [];
             $failed = [];
 
-            foreach ($idsArray as $orderId) {
-                $orderId = (string) $orderId;
-                $meta = $exchangeOrderMeta[$orderId] ?? null;
-                if ($meta === null) {
-                    continue;
-                }
+            if (! $skipMutations) {
+                foreach ($idsArray as $orderId) {
+                    $orderId = (string) $orderId;
+                    $meta = $exchangeOrderMeta[$orderId] ?? null;
+                    if ($meta === null) {
+                        continue;
+                    }
 
-                try {
-                    $this->cancelOrphanOrder($account, $orderId, $symbol, (bool) $meta['is_algo']);
-                    $cancelled[] = $orderId;
-                } catch (Throwable $exception) {
-                    $failed[] = "{$orderId} ({$exception->getMessage()})";
-                    Log::channel('jobs')->error('[SYSTEM-HEALTH] orphan cancel threw', [
-                        'account_id' => $account->id,
-                        'orderId' => $orderId,
-                        'error' => $exception->getMessage(),
-                    ]);
+                    try {
+                        $this->cancelOrphanOrder($account, $orderId, $symbol, (bool) $meta['is_algo']);
+                        $cancelled[] = $orderId;
+                    } catch (Throwable $exception) {
+                        $failed[] = "{$orderId} ({$exception->getMessage()})";
+                        Log::channel('jobs')->error('[SYSTEM-HEALTH] orphan cancel threw', [
+                            'account_id' => $account->id,
+                            'orderId' => $orderId,
+                            'error' => $exception->getMessage(),
+                        ]);
+                    }
                 }
             }
 
             $this->emit(
                 signal: "orphan_orders_account_{$account->id}_{$symbol}",
                 severity: 'high',
-                title: "Orphan exchange orders cleaned on {$account->name} / {$symbol}",
-                detail: sprintf(
-                    'Cancelled %d order(s); %d failed. allow_other_orders=%s, match_window=%dmin. Cancelled: %s. Failed: %s.',
-                    count($cancelled),
-                    count($failed),
-                    $account->allow_other_orders ? 'true' : 'false',
-                    $matchWindow,
-                    $cancelled === [] ? 'none' : implode(', ', $cancelled),
-                    $failed === [] ? 'none' : implode(' | ', $failed),
-                ),
+                title: $skipMutations
+                    ? "Orphan exchange orders detected on {$account->name} / {$symbol} (cleanup skipped — {$cooldownReason})"
+                    : "Orphan exchange orders cleaned on {$account->name} / {$symbol}",
+                detail: $skipMutations
+                    ? sprintf(
+                        'Detected %d orphan order(s); cleanup deferred until %s lifts. allow_other_orders=%s, match_window=%dmin. Detected: %s.',
+                        count($idsArray),
+                        $cooldownReason,
+                        $account->allow_other_orders ? 'true' : 'false',
+                        $matchWindow,
+                        implode(', ', array_map('strval', $idsArray)),
+                    )
+                    : sprintf(
+                        'Cancelled %d order(s); %d failed. allow_other_orders=%s, match_window=%dmin. Cancelled: %s. Failed: %s.',
+                        count($cancelled),
+                        count($failed),
+                        $account->allow_other_orders ? 'true' : 'false',
+                        $matchWindow,
+                        $cancelled === [] ? 'none' : implode(', ', $cancelled),
+                        $failed === [] ? 'none' : implode(' | ', $failed),
+                    ),
             );
             $alerts++;
         }
@@ -842,25 +1103,31 @@ final class CheckSystemHealthCommand extends BaseCommand
                 $account->isHedgeMode(),
             );
 
-            try {
-                $this->closeOrphanPosition($account, $symbol, $direction, $positionQuantity);
-                $closed = true;
-            } catch (Throwable $exception) {
-                $error = $exception->getMessage();
-                Log::channel('jobs')->error('[SYSTEM-HEALTH] orphan close threw', [
-                    'account_id' => $account->id,
-                    'key' => $key,
-                    'error' => $error,
-                ]);
+            if (! $skipMutations) {
+                try {
+                    $this->closeOrphanPosition($account, $symbol, $direction, $positionQuantity);
+                    $closed = true;
+                } catch (Throwable $exception) {
+                    $error = $exception->getMessage();
+                    Log::channel('jobs')->error('[SYSTEM-HEALTH] orphan close threw', [
+                        'account_id' => $account->id,
+                        'key' => $key,
+                        'error' => $error,
+                    ]);
+                }
             }
 
             $this->emit(
                 signal: "orphan_position_account_{$account->id}_{$key}",
                 severity: 'high',
-                title: "Orphan exchange position {$key} on {$account->name}",
-                detail: $closed
-                    ? 'Auto-closed via reduce-only MARKET (allow_other_positions=false).'
-                    : "Auto-close FAILED: {$error}. Operator must intervene manually.",
+                title: $skipMutations
+                    ? "Orphan exchange position {$key} detected on {$account->name} (cleanup skipped — {$cooldownReason})"
+                    : "Orphan exchange position {$key} on {$account->name}",
+                detail: $skipMutations
+                    ? "Detected during {$cooldownReason}; auto-close deferred until cooldown lifts. Operator can intervene manually if needed."
+                    : ($closed
+                        ? 'Auto-closed via reduce-only MARKET (allow_other_positions=false).'
+                        : "Auto-close FAILED: {$error}. Operator must intervene manually."),
             );
             $alerts++;
         }
@@ -1108,6 +1375,67 @@ final class CheckSystemHealthCommand extends BaseCommand
         }
 
         return $alerts;
+    }
+
+    /**
+     * User-data daemon dead-letter alert.
+     *
+     * `StreamBinanceUserDataCommand::stashFrameToDisk` writes a JSONL line
+     * to `storage/logs/user-data-deadletter-YYYY-MM-DD.log` whenever
+     * Step::create throws inside the ReactPHP message handler (DB blip,
+     * observer-thrown exception, validation error). The current code logs
+     * to the `user-data` channel and continues — the operator only sees
+     * the failure if they grep logs.
+     *
+     * This check converts the silent log entry into a Pushover-grade
+     * alert. Today's file existing AND non-empty fires
+     * `user_data_deadletter_active` — the throttle key (5-min per-signal
+     * cache) bounds the noise even if a single bug produces many
+     * dead-letter entries in one cycle. Operator decides whether to
+     * inspect the JSONL and replay (no replay command yet — the file is
+     * idempotent-safe to manually replay through `api_data_stream.idempotency_key`).
+     */
+    private function checkUserDataDeadLetters(): int
+    {
+        $path = storage_path('logs/user-data-deadletter-'.now()->format('Y-m-d').'.log');
+
+        if (! is_file($path)) {
+            return 0;
+        }
+
+        $size = (int) (@filesize($path) ?: 0);
+        if ($size === 0) {
+            return 0;
+        }
+
+        // Approximate entry count via line count; capped read so a huge
+        // file doesn't pull bytes into memory. Any non-zero size proves
+        // at least one frame failed to dispatch — that's the operational
+        // signal we care about.
+        $lineCount = 0;
+        $handle = @fopen($path, 'r');
+        if (is_resource($handle)) {
+            while (($line = fgets($handle)) !== false) {
+                if (mb_trim($line) !== '') {
+                    $lineCount++;
+                }
+                if ($lineCount >= 1000) {
+                    break;
+                }
+            }
+            fclose($handle);
+        }
+
+        $countLabel = $lineCount >= 1000 ? '1000+' : (string) $lineCount;
+
+        $this->emit(
+            signal: 'user_data_deadletter_active',
+            severity: 'high',
+            title: 'User-data daemon dead-lettered frame(s) today',
+            detail: "Today's deadletter file ({$path}) has {$countLabel} entries (~{$size} bytes). The user-data daemon failed to dispatch one or more frames into Step::create — root cause is in user-data channel logs (DB blip / observer throw / validation). Each line is a JSONL with timestamp + account_id + payload + error; replay is idempotent via `api_data_stream.idempotency_key` once the underlying issue is fixed.",
+        );
+
+        return 1;
     }
 
     /**

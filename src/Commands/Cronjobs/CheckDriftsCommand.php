@@ -7,8 +7,6 @@ namespace Kraite\Core\Commands\Cronjobs;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
-use Kraite\Core\Jobs\Lifecycles\Order\PrepareSyncOrdersJob;
-use Kraite\Core\Jobs\Lifecycles\Position\PrepareCancelOrphanOrdersJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Order;
@@ -18,9 +16,8 @@ use Kraite\Core\Support\Drift\OrderDriftReport;
 use Kraite\Core\Support\Drift\PositionDriftReport;
 use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\NotificationService;
-use StepDispatcher\Models\Step;
 use StepDispatcher\Support\BaseCommand;
-use StepDispatcher\Support\Steps;
+use Throwable;
 
 /**
  * CheckDriftsCommand
@@ -94,9 +91,12 @@ final class CheckDriftsCommand extends BaseCommand
     public const STRUCTURALLY_DEAD_STATUSES = ['CANCELLED', 'EXPIRED', 'REJECTED'];
 
     /**
-     * Position-level pair statuses that warrant a heal dispatch.
+     * Position-level pair statuses that warrant an operator alert.
+     * Renamed from HEAL_PAIR_STATUSES — the command is alert-only;
+     * actual heal dispatch is no longer wired in here. See class
+     * docblock for rationale.
      */
-    private const HEAL_PAIR_STATUSES = [
+    private const ALERT_PAIR_STATUSES = [
         PositionDriftReport::STATUS_DRIFT,
         PositionDriftReport::STATUS_DB_ONLY,
     ];
@@ -106,7 +106,7 @@ final class CheckDriftsCommand extends BaseCommand
                             {--skip-structure-audit : Skip the active-position structural integrity scope (drift + orphan scopes still run)}
                             {--output : Display command output (silent by default)}';
 
-    protected $description = 'Proactive 5-minute drift spotter — audits active positions and orphan orders, dispatches existing healers, notifies admin.';
+    protected $description = 'Alert-only 5-minute drift spotter — audits active positions and orphan orders, notifies admin. Heal dispatch is intentionally NOT wired here; the operator decides repairs.';
 
     public function __construct(private readonly DriftChecker $driftService)
     {
@@ -183,15 +183,41 @@ final class CheckDriftsCommand extends BaseCommand
 
             $report = $this->driftService->analyseAccount($account);
 
+            // If the exchange snapshot itself failed, the report's
+            // empty exchange arrays are NOT real "no positions / no
+            // orders" — they're "we couldn't see". Classifying that as
+            // db_only drift produces noisy false alerts (and would be
+            // dangerous if auto-healing is ever re-enabled, since
+            // repairs would dispatch off a failed snapshot). Surface
+            // the snapshot failure as its own signal and skip drift
+            // classification for this account.
+            if ($report->apiError !== null) {
+                $this->notifySnapshotFailed($account, $report->apiError);
+
+                continue;
+            }
+
             $quietIds = $positions->pluck('id')->all();
 
             foreach ($report->positions as $pair) {
-                if (! in_array($pair->status, self::HEAL_PAIR_STATUSES, true)) {
+                // EXCHANGE_ONLY pairs (live exchange position with no
+                // local DB row) are the highest-risk drift state — the
+                // bot's account-level exposure is no longer trustworthy.
+                // Surface these even when the DB-side has no positionId
+                // and bypass the quiet-window filter (the position
+                // genuinely doesn't exist locally to be quiet about).
+                if ($pair->status === PositionDriftReport::STATUS_EXCHANGE_ONLY) {
+                    $this->notifyExchangeOnly($account, $pair);
+
+                    continue;
+                }
+
+                if (! in_array($pair->status, self::ALERT_PAIR_STATUSES, true)) {
                     continue;
                 }
                 if ($pair->positionId === null || ! in_array($pair->positionId, $quietIds, true)) {
-                    // Either the pair has no DB row (exchange_only — already
-                    // filtered above) or the DB row didn't pass the
+                    // Either the pair has no DB row (already handled above
+                    // for exchange_only) or the DB row didn't pass the
                     // 10-minute quiet window. Skip.
                     continue;
                 }
@@ -201,6 +227,15 @@ final class CheckDriftsCommand extends BaseCommand
                 // the drift to the operator. The reactive sync-orders
                 // cron + WS push path still handle the live healing.
                 $this->notifyDrift($account, $pair);
+            }
+
+            // Surface exchange-side orders that don't match any DB row.
+            // The Scope 2 orphan audit below is DB-first and only finds
+            // local orders whose parent position is closed; this catches
+            // the opposite case (an exchange-side order with no DB at
+            // all — manual placement, mapper bug, partial-write crash).
+            if ($report->orphanOrders !== []) {
+                $this->notifyExchangeOnlyOrders($account, $report->orphanOrders);
             }
         }
     }
@@ -275,7 +310,7 @@ final class CheckDriftsCommand extends BaseCommand
 
                 try {
                     $candidate->apiSync();
-                } catch (\Throwable $exception) {
+                } catch (Throwable $exception) {
                     Log::channel('jobs')->warning(
                         '[DRIFT-AUDIT] orphan silent-sync failed',
                         [
@@ -316,42 +351,82 @@ final class CheckDriftsCommand extends BaseCommand
     }
 
     /**
-     * Drop a top-level Step into the queue that the reactive sync-orders
-     * cron uses. The step-dispatcher promotes it to Pending on the next
-     * tick and the lifecycle does the heal.
+     * Surface exchange-side orders that have no matching DB row. These
+     * can come from manual exchange-side placement, a mapper bug, or a
+     * partial-write crash where exchange ack landed but local persist
+     * failed. Distinct from Scope 2's orphan audit which is DB-first
+     * (finds local orders whose parent is closed). One summary
+     * notification per account regardless of order count.
+     *
+     * @param  array<int, array<string, mixed>>  $orphans
      */
-    private function dispatchSyncOrders(int $positionId): void
+    private function notifyExchangeOnlyOrders(Account $account, array $orphans): void
     {
-        Steps::usingPrefix('trading', function () use ($positionId): void {
-            Step::create([
-                'class' => PrepareSyncOrdersJob::class,
-                'queue' => 'positions',
-                'arguments' => ['positionId' => $positionId],
-            ]);
-        });
-
-        $this->verboseComment("  Position #{$positionId}: dispatched PrepareSyncOrdersJob");
+        NotificationService::send(
+            user: Kraite::admin(),
+            canonical: 'orders_exchange_only_detected',
+            referenceData: [
+                'account_id' => $account->id,
+                'account_name' => $account->name,
+                'exchange' => $account->apiSystem?->canonical,
+                'orphan_count' => count($orphans),
+                'orphans' => array_slice($orphans, 0, 25),
+            ],
+            relatable: $account,
+            cacheKeys: ['account' => $account->id],
+        );
     }
 
     /**
-     * Hand the orphan parent off to the existing close-workflow cancel
-     * machinery. The wrapper Step spawns the
-     * CancelPositionOpenOrders lifecycle (bulk-cancel + algo-cancel)
-     * the close path already uses, so we get full coverage of regular
-     * AND algo orders without re-implementing per-exchange cancel
-     * routing here.
+     * Surface an exchange-only position (live exchange position with no
+     * local DB row) as a first-class alert. This is one of the highest
+     * risk drift states — the bot's account-level exposure can no longer
+     * be trusted while the unknown position is open. Operator
+     * remediation: investigate, then either record the missing position
+     * via recovery or close it manually on the exchange.
      */
-    private function dispatchCancelOrphanLifecycle(int $positionId): void
+    private function notifyExchangeOnly(Account $account, PositionDriftReport $pair): void
     {
-        Steps::usingPrefix('trading', function () use ($positionId): void {
-            Step::create([
-                'class' => PrepareCancelOrphanOrdersJob::class,
-                'queue' => 'positions',
-                'arguments' => ['positionId' => $positionId],
-            ]);
-        });
+        NotificationService::send(
+            user: Kraite::admin(),
+            canonical: 'position_exchange_only_detected',
+            referenceData: [
+                'account_id' => $account->id,
+                'account_name' => $account->name,
+                'exchange' => $account->apiSystem?->canonical,
+                'pair' => $pair->symbol,
+                'direction' => $pair->direction,
+                'exchange_data' => $pair->exchange,
+            ],
+            relatable: $account,
+            cacheKeys: [
+                'account' => $account->id,
+                'symbol' => $pair->symbol,
+                'direction' => $pair->direction,
+            ],
+        );
+    }
 
-        $this->verboseComment("  Position #{$positionId}: dispatched PrepareCancelOrphanOrdersJob");
+    /**
+     * Surface a failed exchange snapshot as its own first-class signal.
+     * Uses a dedicated canonical so the operator can tell "exchange
+     * unavailable" from "bot state drifted" — the two require very
+     * different remediation paths.
+     */
+    private function notifySnapshotFailed(Account $account, string $apiError): void
+    {
+        NotificationService::send(
+            user: Kraite::admin(),
+            canonical: 'account_drift_snapshot_failed',
+            referenceData: [
+                'account_id' => $account->id,
+                'account_name' => $account->name,
+                'exchange' => $account->apiSystem?->canonical,
+                'api_error' => $apiError,
+            ],
+            relatable: $account,
+            cacheKeys: ['account' => $account->id],
+        );
     }
 
     private function notifyDrift(Account $account, PositionDriftReport $pair): void

@@ -66,6 +66,17 @@ abstract class AbstractPositionRecoverer
     abstract protected function toLocalOrderAttributes(Position $position, array $exchangeOrder, bool $isFilled): array;
 
     /**
+     * Disaster-recovery readiness flag. Concrete recoverers that have
+     * NOT been verified against a live exchange account return true here
+     * to gate themselves behind `--allow-untested-exchange`. Default
+     * false so verified exchanges (Binance/Bitget) run without ceremony.
+     */
+    public function isUntested(): bool
+    {
+        return false;
+    }
+
+    /**
      * Top-level entry. Walks the open-positions list and reconciles each
      * one. Wraps every position in its own transaction so a single bad
      * row doesn't roll back the whole account.
@@ -287,7 +298,14 @@ abstract class AbstractPositionRecoverer
             return false;
         }
 
+        // Scope the idempotency check to THIS position. Globally keying
+        // by `exchange_order_id` alone is unsafe — exchange order ids
+        // are not guaranteed unique across accounts, exchanges, or
+        // algo-vs-regular id spaces. Recovery for account B previously
+        // could skip a real order because account A already had the
+        // same id. Within one position the id space is unambiguous.
         $exists = Order::query()
+            ->where('position_id', $position->id)
             ->where('exchange_order_id', $exchangeOrderId)
             ->exists();
 

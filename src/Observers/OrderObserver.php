@@ -269,7 +269,22 @@ final class OrderObserver
         // close workflows would race past the guard.
         Steps::usingPrefix('trading', function () use ($model, $position): void {
             DB::transaction(function () use ($model, $position): void {
-                Position::query()->whereKey($position->id)->lockForUpdate()->first();
+                // Read the locked row, not the pre-lock $position model.
+                // Worker A may have entered updated() with status='active',
+                // blocked here on the row lock while worker B advanced the
+                // position to 'cancelling' / 'closed' / 'failed', and is
+                // now holding stale in-memory state. The class-specific
+                // dedupe below catches same-workflow duplicates (the ETC
+                // #211 fix) but is blind to cross-workflow conflicts —
+                // a stale view would happily create a ClosePositionJob
+                // step for a position another lifecycle has already
+                // taken ownership of. Re-checking against the locked
+                // row's current status closes that gap.
+                $locked = Position::query()->whereKey($position->id)->lockForUpdate()->firstOrFail();
+
+                if (! in_array($locked->status, $locked->activeStatuses(), true)) {
+                    return;
+                }
 
                 $alreadyPending = Step::query()
                     ->where('class', ClosePositionJob::class)
@@ -295,15 +310,17 @@ final class OrderObserver
                 $model->updateSaving(['reference_status' => $model->status]);
 
                 // Set status to 'closing' immediately so SyncPositionOrdersJob
-                // doesn't override it to 'active' before ClosePositionJob runs
-                $position->updateToClosing();
+                // doesn't override it to 'active' before ClosePositionJob runs.
+                // Use the locked row so the state machine acts on current DB
+                // state, not the pre-lock view.
+                $locked->updateToClosing();
 
                 Step::create([
                     'class' => ClosePositionJob::class,
                     'queue' => 'positions',
                     'priority' => 'high',
                     'arguments' => [
-                        'positionId' => $position->id,
+                        'positionId' => $locked->id,
                         'message' => "{$model->type} order #{$model->id} filled — closing position",
                     ],
                 ]);
@@ -338,7 +355,15 @@ final class OrderObserver
         // connection. No Redis, no schema change, no cache.
         Steps::usingPrefix('trading', function () use ($model, $position): void {
             DB::transaction(function () use ($model, $position): void {
-                Position::query()->whereKey($position->id)->lockForUpdate()->first();
+                // Re-check the locked row before touching state — see
+                // dispatchClosePosition for the full rationale. A
+                // concurrent close / cancel workflow can land between
+                // the observer entry guard and this lock acquisition.
+                $locked = Position::query()->whereKey($position->id)->lockForUpdate()->firstOrFail();
+
+                if (! in_array($locked->status, $locked->activeStatuses(), true)) {
+                    return;
+                }
 
                 $alreadyPending = Step::query()
                     ->where('class', PreparePositionReplacementJob::class)
@@ -357,7 +382,7 @@ final class OrderObserver
                     'queue' => 'positions',
                     'priority' => 'high',
                     'arguments' => [
-                        'positionId' => $position->id,
+                        'positionId' => $locked->id,
                         'triggerStatus' => $model->status,
                         'message' => "{$model->type} order #{$model->id} {$action} — preparing replacement",
                     ],
@@ -401,7 +426,13 @@ final class OrderObserver
         // INSERT happen atomically with the dedupe check.
         Steps::usingPrefix('trading', function () use ($model, $position): void {
             DB::transaction(function () use ($model, $position): void {
-                Position::query()->whereKey($position->id)->lockForUpdate()->first();
+                // Re-check the locked row before touching state — see
+                // dispatchClosePosition for the full rationale.
+                $locked = Position::query()->whereKey($position->id)->lockForUpdate()->firstOrFail();
+
+                if (! in_array($locked->status, $locked->activeStatuses(), true)) {
+                    return;
+                }
 
                 $alreadyPending = Step::query()
                     ->where('class', ApplyWapJob::class)
@@ -420,7 +451,7 @@ final class OrderObserver
                     'queue' => 'positions',
                     'priority' => 'high',
                     'arguments' => [
-                        'positionId' => $position->id,
+                        'positionId' => $locked->id,
                         'message' => "LIMIT order #{$model->id} filled — applying WAP",
                     ],
                 ]);
@@ -460,7 +491,15 @@ final class OrderObserver
 
         Steps::usingPrefix('trading', function () use ($position): void {
             DB::transaction(function () use ($position): void {
-                Position::query()->whereKey($position->id)->lockForUpdate()->first();
+                // Re-check the locked row before dispatching. The pre-lock
+                // activeStatuses guard above filters at observer entry, but
+                // a concurrent close / cancel workflow can land between
+                // that guard and this lock acquisition.
+                $locked = Position::query()->whereKey($position->id)->lockForUpdate()->firstOrFail();
+
+                if (! in_array($locked->status, $locked->activeStatuses(), true)) {
+                    return;
+                }
 
                 $alreadyPending = Step::query()
                     ->where('class', SyncPositionQuantityFromExchangeJob::class)
@@ -476,7 +515,7 @@ final class OrderObserver
                     'class' => SyncPositionQuantityFromExchangeJob::class,
                     'queue' => 'positions',
                     'arguments' => [
-                        'positionId' => $position->id,
+                        'positionId' => $locked->id,
                     ],
                 ]);
             });

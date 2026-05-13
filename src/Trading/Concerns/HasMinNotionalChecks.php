@@ -53,14 +53,21 @@ trait HasMinNotionalChecks
      * Uses last_known_price (without freshness check) for KuCoin calculations
      * because we only need a price estimate for min order validation, not real-time accuracy.
      *
+     * Returns a decimal string so the value stays inside the engine's
+     * Math::* string-precision discipline. Casting through float here
+     * would round-trip the KuCoin lot_size × multiplier × price product
+     * through 64-bit float, which is fine for today's $5–$1000 magnitudes
+     * but would silently lose precision the moment a symbol's contract
+     * value drifts past 15 significant digits.
+     *
      * @param  ExchangeSymbol  $symbol  The exchange symbol
-     * @return float|null The minimum notional value, or null if cannot be calculated
+     * @return string|null The minimum notional value as a decimal string, or null if cannot be calculated
      */
-    public static function getEffectiveMinNotional(ExchangeSymbol $symbol): ?float
+    public static function getEffectiveMinNotional(ExchangeSymbol $symbol): ?string
     {
         // Priority 1: Direct min_notional (Binance, Bybit, BitGet)
         if (filled($symbol->min_notional)) {
-            return (float) $symbol->min_notional;
+            return (string) $symbol->min_notional;
         }
 
         // Priority 2: KuCoin (lot_size * multiplier * price)
@@ -70,9 +77,9 @@ trait HasMinNotionalChecks
                 return null;
             }
 
-            $contractValue = Math::mul($symbol->kucoin_lot_size, $symbol->kucoin_multiplier);
+            $contractValue = Math::mul((string) $symbol->kucoin_lot_size, (string) $symbol->kucoin_multiplier);
 
-            return (float) Math::mul($contractValue, $price);
+            return Math::mul($contractValue, (string) $price);
         }
 
         return null;

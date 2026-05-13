@@ -80,14 +80,23 @@ final class ClosePositionJob extends BaseApiableJob
         // Idempotent: returns existing child_block_uuid on retry.
         $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
 
-        // Step 1: Update status to 'closing'
+        // Step 1: Update status to 'closing'. Guard against a stale
+        // close lifecycle clobbering newer state — only allow the
+        // transition from 'active' / 'syncing' / 'opening' (the legal
+        // predecessors). If a competing workflow has moved the
+        // position to 'cancelling' / 'closed' / 'failed' between
+        // observer dispatch and this step running, the atomic job
+        // no-ops cleanly instead of overwriting.
         $statusLifecycleClass = $resolver->resolve(UpdatePositionStatusJob::class);
         $statusLifecycle = new $statusLifecycleClass($this->position);
-        $nextIndex = $statusLifecycle->withStatus('closing')->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: 1,
-            workflowId: null
-        );
+        $nextIndex = $statusLifecycle
+            ->withStatus('closing')
+            ->withOnlyFromStatus(['active', 'syncing', 'opening', 'waping'])
+            ->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: 1,
+                workflowId: null
+            );
 
         // Step 2: Cancel all open orders FIRST (key difference from cancel workflow)
         $cancelOrdersLifecycleClass = $resolver->resolve(CancelPositionOpenOrdersJob::class);
@@ -143,14 +152,21 @@ final class ClosePositionJob extends BaseApiableJob
             workflowId: null
         );
 
-        // Step 8: Update status to 'closed'
+        // Step 8: Update status to 'closed'. Guard against a stale
+        // step transitioning a position back to 'closed' from a
+        // terminal-but-different state ('cancelled' / 'failed') a
+        // newer workflow may have set — only legal predecessor is
+        // 'closing' itself.
         $finalStatusLifecycleClass = $resolver->resolve(UpdatePositionStatusJob::class);
         $finalStatusLifecycle = new $finalStatusLifecycleClass($this->position);
-        $nextIndex = $finalStatusLifecycle->withStatus('closed')->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+        $nextIndex = $finalStatusLifecycle
+            ->withStatus('closed')
+            ->withOnlyFromStatus(['closing'])
+            ->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
 
         // resolve-exception step: Update status to 'failed' if close workflow fails
         // Note: index=1 allows immediate dispatch when promoted to Pending
