@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.43.0 - 2026-05-15
+
+Adds a public-facing `users.uuid` column so URLs that leak nothing about row count or creation order (e.g. `admin.kraite.com/register/{uuid}`) can address a user safely. Pairs with ingestion v1.44.0 (migration that adds + backfills the column) and kraite.test v0.10.0 (verify-link redirect to admin registration page).
+
+### Improvements
+
+- [IMPROVED] **`User::booted()` auto-stamps `uuid`** with `Str::uuid()` at `creating` time if the caller didn't set one. Idempotent on existing rows (only fires when empty). New `@property string $uuid` PHPDoc.
+
 ## 1.42.0 - 2026-05-15
 
 Shared `UserEmailConfirmed` event class. Pairs with `kraite.test` v0.9.0 (firing site) and `ingestion.kraite.test` v1.43.0 (`AttachPrivateBetaCoupon` listener).

@@ -14,6 +14,7 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Notifications\Notification;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Str;
 use Kraite\Core\Database\Factories\UserFactory;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
@@ -24,6 +25,7 @@ use RuntimeException;
 
 /**
  * @property int $id
+ * @property string $uuid
  * @property int|null $subscription_id
  * @property string $name
  * @property string $email
@@ -63,6 +65,22 @@ final class User extends Authenticatable
      * Virtual users cannot be saved to the database.
      */
     public bool $is_virtual = false;
+
+    /**
+     * Auto-stamp `uuid` at create time so callers never have to remember it.
+     * The column is the public-facing identifier used in URLs that need to
+     * leak nothing about row count or creation order — e.g. the
+     * `admin.kraite.com/register/{uuid}` registration-completion page that
+     * a private-beta confirmer lands on after clicking their verify link.
+     */
+    protected static function booted(): void
+    {
+        static::creating(function (self $user): void {
+            if (empty($user->uuid)) {
+                $user->uuid = (string) Str::uuid();
+            }
+        });
+    }
 
     protected $guarded = [];
 
