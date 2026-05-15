@@ -88,8 +88,13 @@ final class CreatePositionsCommand extends BaseCommand
         // outer-then-inner loop re-queried `user->accounts()` per user.
         // Account count is the natural unit of work for this cron, so
         // we drive the iteration off the account collection directly.
+        //
+        // Eager-loads `user.subscription` because the per-account
+        // readiness check (`Account::isReadyToTrade`) consults
+        // `$user->billing()->subscription()->isActive()`, which reads
+        // `monthly_rate_usdt` on the tier.
         $accounts = Account::query()
-            ->with(['apiSystem', 'user'])
+            ->with(['apiSystem', 'user.subscription'])
             ->where('is_active', true)
             ->where('can_trade', true)
             ->whereHas('user', static fn ($q) => $q->where('can_trade', true))
@@ -123,6 +128,19 @@ final class CreatePositionsCommand extends BaseCommand
                 // 3-minute cycle. With 200+ accounts on the box, that
                 // blast radius is unacceptable.
                 try {
+                    // 3-gate per-account readiness: account.is_active +
+                    // account.can_trade (set 1) + user.can_trade (set 2)
+                    // + user.subscription.isActive() (set 3 — trial OR
+                    // wallet covers next renewal). The query already
+                    // covered sets 1 & 2 above; this re-check picks up
+                    // set 3 AND survives any account/user state that
+                    // shifted between the SELECT and the loop.
+                    if (! $account->isReadyToTrade()) {
+                        $this->verboseComment("    → Account #{$account->id} not ready to trade (subscription gate), skipping");
+
+                        continue;
+                    }
+
                     // Self-heal first — orphan 'new' positions (their previous
                     // DispatchPositionJob step was swept during operator
                     // cleanup, supervisor restart, or any cleanup that lost a

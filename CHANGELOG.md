@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.44.0 - 2026-05-15
+
+Billing facade Bruno asked for during the private-beta onboarding elicitation: `$user->billing()->subscription()->isActive()` + the matching `Account::isReadyToTrade()` 3-gate. Pairs with ingestion v1.46.0 (consumer wired into `CreatePositionsCommand`) — locked by an 11-test Pest spec in ingestion.
+
+### Features
+
+- [NEW FEATURE] **`Kraite\Core\Support\Billing\BillingManager`** — top-level facade returned by `User::billing()`. Hands out scoped sub-facades. v1 only exposes `subscription()`; Phase 2 will grow `wallet()` (topUp / rollback) and `coupons()` off the same surface.
+- [NEW FEATURE] **`Kraite\Core\Support\Billing\SubscriptionState`** — read-only facade over the existing User subscription helpers. Exposes `isActive()` (inverse of `isInClosingMode()`), `isPaused()`, `isInTrial()`, `trialIsExpired()`, `coversNextRenewal()`, `shortfallUsdt()`. Polarity rule: `isActive() === ! $user->isInClosingMode()`.
+- [NEW FEATURE] **`User::billing(): BillingManager`** — single entry point.
+- [NEW FEATURE] **`Account::isReadyToTrade(): bool`** — the 3-gate Bruno locked: `account.is_active && account.can_trade` (gate 1) AND `user.can_trade` (gate 2) AND `user->billing()->subscription()->isActive()` (gate 3). Returns true iff all three pass.
+
+### Improvements
+
+- [IMPROVED] **`CreatePositionsCommand`** now skips per-account work the moment `! $account->isReadyToTrade()` instead of the previous account-level / user-level scattered DB filter. Existing query still pre-filters gates 1+2 at the DB for index-friendly cost; the in-loop call adds gate 3 (subscription state) which can't easily be expressed as a single SQL where clause. Eager-loads `user.subscription` so the subscription check stays free of N+1.
+
 ## 1.43.0 - 2026-05-15
 
 Adds a public-facing `users.uuid` column so URLs that leak nothing about row count or creation order (e.g. `admin.kraite.com/register/{uuid}`) can address a user safely. Pairs with ingestion v1.44.0 (migration that adds + backfills the column) and kraite.test v0.10.0 (verify-link redirect to admin registration page).

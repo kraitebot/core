@@ -195,6 +195,39 @@ final class Account extends BaseModel
     }
 
     /**
+     * The 3-gate per-account readiness check used by
+     * `CreatePositionsCommand` (and any future code path that decides
+     * whether positions can open). All three must be true:
+     *
+     *   1. The account itself is `is_active=true && can_trade=true`
+     *      (system-controlled — connectivity test gate).
+     *   2. The user's pause switch is on (`users.can_trade=true`,
+     *      user- or bot-controllable).
+     *   3. The user's subscription is currently active (trial in
+     *      progress OR wallet covers next renewal AND not paused AND
+     *      renewal anchor in the future) — computed by
+     *      `$user->billing()->subscription()->isActive()`.
+     *
+     * Global gates (BSCS, pump protection, exchange cooldown,
+     * directional, slot count, dedupe) stay on the Kraite engine /
+     * inline in the command — they're not per-account boolean state.
+     */
+    public function isReadyToTrade(): bool
+    {
+        if (! $this->is_active || ! $this->can_trade) {
+            return false;
+        }
+
+        $user = $this->user;
+
+        if ($user === null || ! $user->can_trade) {
+            return false;
+        }
+
+        return $user->billing()->subscription()->isActive();
+    }
+
+    /**
      * @return BelongsTo<ApiSystem, $this>
      */
     public function apiSystem(): BelongsTo

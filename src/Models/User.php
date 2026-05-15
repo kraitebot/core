@@ -16,6 +16,7 @@ use Illuminate\Notifications\Notification;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use Kraite\Core\Database\Factories\UserFactory;
+use Kraite\Core\Support\Billing\BillingManager;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
 use NotificationChannels\Pushover\PushoverChannel;
@@ -148,6 +149,16 @@ final class User extends Authenticatable
     public function accounts(): HasMany
     {
         return $this->hasMany(Account::class);
+    }
+
+    /**
+     * Entry point Bruno asked for: `$user->billing()->subscription()->isActive()`.
+     * Returns a `BillingManager` scoped to this user. Phase 2 will
+     * grow `wallet()` and `coupons()` accessors off the same facade.
+     */
+    public function billing(): BillingManager
+    {
+        return new BillingManager($this);
     }
 
     /**
