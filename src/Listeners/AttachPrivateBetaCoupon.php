@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Listeners;
 
-use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Support\Facades\DB;
 use Kraite\Core\Events\UserEmailConfirmed;
 use Kraite\Core\Models\Coupon;
@@ -21,12 +20,12 @@ use Kraite\Core\Models\User;
  *      attached (idempotent — re-firing the event on the same user
  *      MUST be a no-op).
  *
- * Implements `ShouldQueue` because the event fires from kraite.com
- * (the marketing site) but this attach work runs on the ingestion
- * worker — the queued shape is what carries the work across processes
- * via the shared Redis queue. Without `ShouldQueue` the listener
- * would only run in the dispatching process, and kraite.com has no
- * `Coupon` or `coupon_user` access path at runtime.
+ * Runs synchronously in whichever process dispatches the event —
+ * kraite.com on the verify request, ingestion in a manual replay,
+ * etc. The work is one indexed lookup + (if absent) one insert,
+ * cheap enough to keep on the request path. The listener class
+ * lives in `kraitebot/core` so every app that includes the package
+ * autoloads it identically — no cross-process queue dance needed.
  *
  * The pivot row is permanent (per the system-wide rule that pivots
  * never detach). The attachment write is wrapped in a transaction so
@@ -37,15 +36,8 @@ use Kraite\Core\Models\User;
  * Phase-2 `CouponUserObserver` watches pivot `created` events and
  * dispatches the canonical from a single place.
  */
-final class AttachPrivateBetaCoupon implements ShouldQueue
+final class AttachPrivateBetaCoupon
 {
-    /**
-     * Default queue (Redis). Falls onto the cronjobs queue so it
-     * shares the same Horizon supervisor block as other onboarding
-     * housekeeping work.
-     */
-    public string $queue = 'cronjobs';
-
     public function handle(UserEmailConfirmed $event): void
     {
         $kraite = Kraite::find(1);

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.46.1 - 2026-05-15
+
+### Fixes
+
+- [BUG FIX] **`AttachPrivateBetaCoupon` is no longer `ShouldQueue`.** The previous release queued the listener under the assumption it needed cross-process Redis routing to reach the ingestion worker. With the listener already lifted into `kraitebot/core` (every app autoloads it identically), there is no cross-process problem to route around — the queue dance was just adding a Redis-DB-must-match coupling between kraite.com and ingestion that was silently swallowing dispatches when the two apps happened to point at different Redis databases. Listener now runs synchronously in whichever process fires the event; the work is a single indexed lookup + (if absent) one insert, cheap enough to keep on the request path. Coupon is attached before the verify response returns.
+
 ## 1.46.0 - 2026-05-15
 
 Lifts the Coupon entity + the private-beta auto-attach listener into the shared package so the marketing site (kraite.com) — which dispatches `UserEmailConfirmed` after a successful verify click — can actually route the event to a registered listener. Before this release the listener lived in ingestion's `App\Listeners` namespace and was invisible to kraite.com's autoloader, so dispatching the event from `PrivateBetaController@verify` was a silent no-op (coupon never attached). Pairs with ingestion v1.48.0 (drops the duplicate ingestion-local files + updates test imports) and kraite.test v0.12.0 (bumps the path-package ref to pick up the wiring).
