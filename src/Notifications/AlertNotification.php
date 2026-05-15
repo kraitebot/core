@@ -45,7 +45,7 @@ final class AlertNotification extends Notification
      *                                                              [COPY]/[CMD]-marker string body. Set by canonicals that
      *                                                              opt into the dark-themed component layout.
      * @param  array<int, string>|null  $forceChannels  When set, overrides the per-user notification_channels preference
-     *                                                  for this send only. Used for onboarding mails (waitlist verification,
+     *                                                  for this send only. Used for onboarding mails (private-beta verification,
      *                                                  welcome, password reset) that MUST go via mail regardless of the
      *                                                  user's pushover/telegram setup.
      */
@@ -83,7 +83,7 @@ final class AlertNotification extends Notification
         }
 
         // Per-send override wins over user preference. Used by onboarding
-        // canonicals (waitlist verification, welcome, password reset) that
+        // canonicals (private-beta verification, welcome, password reset) that
         // must always route via mail regardless of the user's pushover /
         // telegram setup (a brand-new visitor has neither).
         if ($this->forceChannels !== null) {

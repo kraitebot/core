@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.41.0 - 2026-05-15
+
+Rename onboarding canonicals from `waitlist_*` to `private_beta_*`. Marketing surface now reads "private beta" everywhere; the canonical names follow.
+
+### Improvements
+
+- [IMPROVED] **`NotificationMessageBuilder` match arms renamed.** `waitlist_email_verification` → `private_beta_email_verification`, `waitlist_welcome_password_reset` → `private_beta_welcome_password_reset`. Email bodies and Pushover summaries reworded ("Kraite waitlist" → "Kraite private beta", "approved off the waitlist" → "approved into the Kraite private beta").
+- [IMPROVED] **`test:notification` command** signature + onboarding canonical list + match arms + private method names + test verification URL path (`/private-beta/verify/...`) follow the rename. Existing TestNotificationCommand callers must update to the new canonical names.
+- [IMPROVED] **Docstrings/comments in `AlertNotification` + `config/kraite.php`** refreshed to reference the new private-beta canonicals.
+
+### Breaking — for consumers
+
+- Any caller passing `canonical: 'waitlist_email_verification'` or `canonical: 'waitlist_welcome_password_reset'` to `NotificationService::send` MUST switch to the `private_beta_*` names. `NotificationMessageBuilder` now throws on the old names (unknown-canonical default arm). Coordinated changes land in `ingestion.kraite.test` (notifications DB rows) and `kraite.test` (controller + URLs + copy).
+
 ## 1.40.0 - 2026-05-13
 
 Code-review pass closing reviews 10–24. ~50 source files patched; 2 new migrations; 11 new TDD test files. Foundational refactors (state machines, durable audit tables, atomic Redis reservations, normalised DTOs, replay queues) consistently discarded — narrow safety patches only.

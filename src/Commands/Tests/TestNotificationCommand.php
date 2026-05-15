@@ -22,11 +22,11 @@ use StepDispatcher\Support\BaseCommand;
 final class TestNotificationCommand extends BaseCommand
 {
     protected $signature = 'test:notification
-                            {canonical : Notification canonical to test (server_rate_limit_exceeded, server_ip_forbidden, server_ip_not_whitelisted, server_ip_rate_limited, server_ip_banned, server_account_blocked, stale_dispatched_steps_detected, stale_priority_steps_detected, exchange_symbol_no_taapi_data, token_delisting, slow_query_detected, waitlist_email_verification, waitlist_welcome_password_reset, password_reset)}
+                            {canonical : Notification canonical to test (server_rate_limit_exceeded, server_ip_forbidden, server_ip_not_whitelisted, server_ip_rate_limited, server_ip_banned, server_account_blocked, stale_dispatched_steps_detected, stale_priority_steps_detected, exchange_symbol_no_taapi_data, token_delisting, slow_query_detected, private_beta_email_verification, private_beta_welcome_password_reset, password_reset)}
                             {--times=1 : Number of times to send the notification (tests throttling)}
                             {--clean : Truncate notification_logs tables and clear laravel.log}
                             {--output : Display command output (silent by default)}
-                            {--email= : Override recipient user (by email) for onboarding canonicals — waitlist_email_verification, waitlist_welcome_password_reset, password_reset}';
+                            {--email= : Override recipient user (by email) for onboarding canonicals — private_beta_email_verification, private_beta_welcome_password_reset, password_reset}';
 
     protected $description = 'Test notification system - each canonical configured exactly as production';
 
@@ -69,7 +69,7 @@ final class TestNotificationCommand extends BaseCommand
         // Onboarding canonicals don't need an account context — they
         // target a specific user (by email or admin fallback) and only
         // carry URL data. Skip the account-existence check for those.
-        $onboardingCanonicals = ['waitlist_email_verification', 'waitlist_welcome_password_reset', 'password_reset'];
+        $onboardingCanonicals = ['private_beta_email_verification', 'private_beta_welcome_password_reset', 'password_reset'];
         $needsAccount = ! in_array($canonical, $onboardingCanonicals, true);
 
         // Get hardcoded defaults
@@ -104,8 +104,8 @@ final class TestNotificationCommand extends BaseCommand
             'exchange_symbol_no_taapi_data' => $this->testExchangeSymbolNoTaapiData($admin, $times),
             'token_delisting' => $this->testTokenDelisting($admin, $times),
             'slow_query_detected' => $this->testSlowQueryDetected($admin, $times),
-            'waitlist_email_verification' => $this->testWaitlistEmailVerification($times),
-            'waitlist_welcome_password_reset' => $this->testWaitlistWelcomePasswordReset($times),
+            'private_beta_email_verification' => $this->testPrivateBetaEmailVerification($times),
+            'private_beta_welcome_password_reset' => $this->testPrivateBetaWelcomePasswordReset($times),
             'password_reset' => $this->testPasswordReset($times),
             default => $this->verboseError("❌ Unknown canonical: {$canonical}"),
         };
@@ -635,7 +635,7 @@ final class TestNotificationCommand extends BaseCommand
         return $user;
     }
 
-    private function testWaitlistEmailVerification(int $times): bool
+    private function testPrivateBetaEmailVerification(int $times): bool
     {
         $user = $this->resolveOnboardingRecipient();
         if (! $user) {
@@ -647,10 +647,10 @@ final class TestNotificationCommand extends BaseCommand
 
         for ($i = 1; $i <= $times; $i++) {
             $this->verboseLine("Attempt #{$i}:");
-            $verificationUrl = url('/waitlist/verify/TEST-'.bin2hex(random_bytes(8)));
+            $verificationUrl = url('/private-beta/verify/TEST-'.bin2hex(random_bytes(8)));
             $ok = NotificationService::send(
                 user: $user,
-                canonical: 'waitlist_email_verification',
+                canonical: 'private_beta_email_verification',
                 referenceData: ['verification_url' => $verificationUrl],
                 channels: ['mail'],
             );
@@ -663,7 +663,7 @@ final class TestNotificationCommand extends BaseCommand
         return true;
     }
 
-    private function testWaitlistWelcomePasswordReset(int $times): bool
+    private function testPrivateBetaWelcomePasswordReset(int $times): bool
     {
         $user = $this->resolveOnboardingRecipient();
         if (! $user) {
@@ -681,7 +681,7 @@ final class TestNotificationCommand extends BaseCommand
             $resetUrl = $base.'/reset-password/TEST-'.bin2hex(random_bytes(8)).'?email='.urlencode($user->email);
             $ok = NotificationService::send(
                 user: $user,
-                canonical: 'waitlist_welcome_password_reset',
+                canonical: 'private_beta_welcome_password_reset',
                 referenceData: ['reset_url' => $resetUrl, 'expire_minutes' => $expireMinutes],
                 channels: ['mail'],
             );

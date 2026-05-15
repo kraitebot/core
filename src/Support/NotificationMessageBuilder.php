@@ -1426,7 +1426,7 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
-            'waitlist_email_verification' => (static function () use ($context) {
+            'private_beta_email_verification' => (static function () use ($context) {
                 $verificationUrl = is_string($context['verification_url'] ?? null)
                     ? $context['verification_url']
                     : '#';
@@ -1447,7 +1447,7 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
-            'waitlist_welcome_password_reset' => (static function () use ($context, $user) {
+            'private_beta_welcome_password_reset' => (static function () use ($context, $user) {
                 $resetUrl = is_string($context['reset_url'] ?? null)
                     ? $context['reset_url']
                     : '#';
@@ -1460,12 +1460,12 @@ final class NotificationMessageBuilder
                     'severity' => null,
                     'title' => 'Welcome to Kraite — set your password',
                     'emailMessage' => "You're in. Set your password at: {$resetUrl} (link expires in {$expireMinutes} minutes).",
-                    'pushoverMessage' => 'You are off the Kraite waitlist — set your password.',
+                    'pushoverMessage' => 'Your Kraite private beta access is ready — set your password.',
                     'actionUrl' => null,
                     'actionLabel' => null,
                     'emailBlocks' => [
                         ['type' => 'heading', 'text' => $greeting, 'size' => 'md'],
-                        ['type' => 'paragraph', 'text' => "You've been approved off the waitlist. Click the button below to set your password and sign in."],
+                        ['type' => 'paragraph', 'text' => "You've been approved into the Kraite private beta. Click the button below to set your password and sign in."],
                         ['type' => 'button', 'href' => $resetUrl, 'label' => 'Set your password', 'variant' => 'primary'],
                         ['type' => 'fineprint', 'text' => "This link will expire in {$expireMinutes} minutes. If it expires, request a fresh reset on the admin sign-in page."],
                     ],

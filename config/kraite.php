@@ -33,10 +33,10 @@ return [
     | Admin URL — canonical password-reset host
     |--------------------------------------------------------------------------
     |
-    | Used by Kraite\Core\Notifications\ResetPasswordNotification and
-    | WaitlistWelcomeNotification to build the reset link. The link
-    | always points at admin.kraite.com regardless of which app
-    | dispatches the email (kraite.com landing, console, or admin).
+    | Used by the password-reset and private-beta welcome canonicals
+    | (NotificationMessageBuilder match arms) to build the reset link.
+    | The link always points at admin.kraite.com regardless of which
+    | app dispatches the email (kraite.com landing, console, or admin).
     */
     'admin_url' => env('KRAITE_ADMIN_URL', 'https://admin.kraite.com'),
 
