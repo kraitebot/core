@@ -151,6 +151,17 @@ final class CoreServiceProvider extends ServiceProvider
         // Bridge step-dispatcher stall detection into Kraite's notification stack.
         Event::listen(StaleStepsDetected::class, [SendStaleStepsNotification::class, 'handle']);
 
+        // Cross-app: kraite.com fires `UserEmailConfirmed` from
+        // `PrivateBetaController@verify`; the listener implements
+        // ShouldQueue so the work serializes onto the shared Redis
+        // queue and the ingestion Horizon workers pick it up. The
+        // listener owns the private-beta-coupon attach (gated on
+        // `kraite.in_private_beta`).
+        Event::listen(
+            \Kraite\Core\Events\UserEmailConfirmed::class,
+            [\Kraite\Core\Listeners\AttachPrivateBetaCoupon::class, 'handle'],
+        );
+
         AccountBalanceHistory::observe(AccountBalanceHistoryObserver::class);
         Account::observe(AccountObserver::class);
         ApiRequestLog::observe(ApiRequestLogObserver::class);

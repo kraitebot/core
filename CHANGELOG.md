@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.46.0 - 2026-05-15
+
+Lifts the Coupon entity + the private-beta auto-attach listener into the shared package so the marketing site (kraite.com) — which dispatches `UserEmailConfirmed` after a successful verify click — can actually route the event to a registered listener. Before this release the listener lived in ingestion's `App\Listeners` namespace and was invisible to kraite.com's autoloader, so dispatching the event from `PrivateBetaController@verify` was a silent no-op (coupon never attached). Pairs with ingestion v1.48.0 (drops the duplicate ingestion-local files + updates test imports) and kraite.test v0.12.0 (bumps the path-package ref to pick up the wiring).
+
+### Features
+
+- [NEW FEATURE] **`Kraite\Core\Models\Coupon`** + **`Kraite\Core\Models\CouponUser`** — moved from `ingestion App\Models`. Public surface unchanged: `scopeGloballyActive`, `isGloballyActive`, `bonusFor`, `privateBeta()`, `users()`, the pivot's `isActive` + `coupon()` relation, etc.
+- [NEW FEATURE] **`Kraite\Core\Listeners\AttachPrivateBetaCoupon`** — moved from `ingestion App\Listeners`. Now implements `ShouldQueue` with `$queue = 'cronjobs'` so dispatch from any process (kraite.com, console, admin, ingestion itself) serializes onto the shared Redis queue → ingestion Horizon worker picks it up. Idempotency / lockForUpdate semantics unchanged.
+- [NEW FEATURE] **`CoreServiceProvider::boot()`** wires the listener via `Event::listen(UserEmailConfirmed::class, [AttachPrivateBetaCoupon::class, 'handle'])`. Loaded by every app that includes `kraitebot/core`, so the marketing site, admin, and ingestion all route the event identically.
+
 ## 1.45.0 - 2026-05-15
 
 Event-on-activation: dispatches `PreparePositionsOpeningJob` the moment an account's `can_trade` flips to true, instead of waiting up to 3 minutes for the next `kraite:cron-create-positions` tick. Cuts the wall-clock time from "user completes registration" to "first trade attempt" by ~3 min on the happy path. Pairs with ingestion v1.47.0 (4-test Pest spec locking the contract).
