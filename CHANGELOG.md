@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.45.0 - 2026-05-15
+
+Event-on-activation: dispatches `PreparePositionsOpeningJob` the moment an account's `can_trade` flips to true, instead of waiting up to 3 minutes for the next `kraite:cron-create-positions` tick. Cuts the wall-clock time from "user completes registration" to "first trade attempt" by ~3 min on the happy path. Pairs with ingestion v1.47.0 (4-test Pest spec locking the contract).
+
+### Features
+
+- [NEW FEATURE] **`AccountObserver::updated`** now reacts to `can_trade` transitions. Fires `PreparePositionsOpeningJob` under `Steps::usingPrefix('trading')` when (a) `can_trade` was actually changed, (b) it's now true, and (c) `Account::isReadyToTrade()` confirms all 3 gates (account + user + subscription) pass. Deduped against any already-pending step for the same account so a concurrent cron tick can't double-dispatch. Failure to dispatch is logged + swallowed — the original `Account::update` always succeeds; the cron picks up the slack on the next tick.
+
 ## 1.44.0 - 2026-05-15
 
 Billing facade Bruno asked for during the private-beta onboarding elicitation: `$user->billing()->subscription()->isActive()` + the matching `Account::isReadyToTrade()` 3-gate. Pairs with ingestion v1.46.0 (consumer wired into `CreatePositionsCommand`) — locked by an 11-test Pest spec in ingestion.
