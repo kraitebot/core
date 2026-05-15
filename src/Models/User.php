@@ -12,9 +12,14 @@ use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Notifications\Notification;
+use Illuminate\Support\Carbon;
+use Kraite\Core\Database\Factories\UserFactory;
 use Kraite\Core\Support\Math;
+use Kraite\Core\Support\NotificationService;
 use NotificationChannels\Pushover\PushoverChannel;
 use NotificationChannels\Pushover\PushoverReceiver;
+use NotificationChannels\Telegram\TelegramChannel;
 use RuntimeException;
 
 /**
@@ -22,27 +27,27 @@ use RuntimeException;
  * @property int|null $subscription_id
  * @property string $name
  * @property string $email
- * @property \Illuminate\Support\Carbon|null $email_verified_at
+ * @property Carbon|null $email_verified_at
  * @property string $password
  * @property string|null $remember_token
  * @property string|null $pushover_key
  * @property string|null $telegram_chat_id
  * @property array<int, string> $notification_channels
  * @property array|null $behaviours
- * @property \Illuminate\Support\Carbon|null $last_logged_in_at
- * @property \Illuminate\Support\Carbon|null $previous_logged_in_at
+ * @property Carbon|null $last_logged_in_at
+ * @property Carbon|null $previous_logged_in_at
  * @property bool $can_trade
  * @property bool $have_distinct_position_tokens_on_all_accounts
  * @property bool $is_active
  * @property bool $is_admin
  * @property string $wallet_balance_usdt
- * @property \Illuminate\Support\Carbon|null $trial_started_at
+ * @property Carbon|null $trial_started_at
  * @property int|null $trial_days_override
- * @property \Illuminate\Support\Carbon|null $subscription_renews_at
- * @property \Illuminate\Support\Carbon|null $subscription_paused_at
+ * @property Carbon|null $subscription_renews_at
+ * @property Carbon|null $subscription_paused_at
  * @property int|null $active_account_id
- * @property \Illuminate\Support\Carbon $created_at
- * @property \Illuminate\Support\Carbon $updated_at
+ * @property Carbon $created_at
+ * @property Carbon $updated_at
  * @property string|null $_temp_delivery_group
  * @property bool $is_virtual
  * @property-read Subscription|null $subscription
@@ -309,7 +314,7 @@ final class User extends Authenticatable
      * This method handles the temporary property pattern required because
      * the Pushover package doesn't pass the notification object to routing methods.
      *
-     * @param  \Illuminate\Notifications\Notification  $notification
+     * @param  Notification  $notification
      * @param  string|null  $deliveryGroup  Delivery group name (exceptions, default, indicators) or null for individual user key
      */
     public function notifyWithGroup($notification, ?string $deliveryGroup = null): void
@@ -332,7 +337,18 @@ final class User extends Authenticatable
      */
     public function sendPasswordResetNotification(#[\SensitiveParameter] $token): void
     {
-        $this->notify(new \App\Notifications\ResetPassword($token));
+        $resetUrl = rtrim((string) config('kraite.admin_url'), '/').'/reset-password/'.$token.'?email='.urlencode($this->getEmailForPasswordReset());
+        $expireMinutes = (int) config('auth.passwords.'.config('auth.defaults.passwords').'.expire', 60);
+
+        NotificationService::send(
+            user: $this,
+            canonical: 'password_reset',
+            referenceData: [
+                'reset_url' => $resetUrl,
+                'expire_minutes' => $expireMinutes,
+            ],
+            channels: ['mail'],
+        );
     }
 
     /**
@@ -421,7 +437,7 @@ final class User extends Authenticatable
             return match ($channel) {
                 'pushover' => PushoverChannel::class,
                 'mail' => 'mail',
-                'telegram' => \NotificationChannels\Telegram\TelegramChannel::class,
+                'telegram' => TelegramChannel::class,
                 default => $channel
             };
         }, array: $channels);
@@ -445,6 +461,6 @@ final class User extends Authenticatable
 
     protected static function newFactory()
     {
-        return \Kraite\Core\Database\Factories\UserFactory::new();
+        return UserFactory::new();
     }
 }

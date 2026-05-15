@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Notifications;
 
-
 use Illuminate\Mail\Mailable;
 use Illuminate\Notifications\Notification;
+use Kraite\Core\Enums\NotificationSeverity;
 use Kraite\Core\Mail\AlertMail;
 use NotificationChannels\Pushover\PushoverChannel;
 use NotificationChannels\Pushover\PushoverMessage;
@@ -32,12 +32,22 @@ final class AlertNotification extends Notification
      * @param  string|null  $canonical  Notification canonical identifier (e.g., 'ip_not_whitelisted', 'server_rate_limit_exceeded')
      * @param  string|null  $deliveryGroup  Delivery group name (exceptions, default, indicators) or null for individual user
      * @param  array  $additionalParameters  Extra parameters (sound, priority, url, etc.)
-     * @param  \Kraite\Core\Enums\NotificationSeverity|null  $severity  Severity level for visual styling
+     * @param  NotificationSeverity|null  $severity  Severity level for visual styling
      * @param  string|null  $pushoverMessage  Override message for Pushover (defaults to $message)
      * @param  string|null  $exchange  Exchange name for email subject (e.g., 'binance', 'bybit')
      * @param  string|null  $serverIp  Server IP address for email subject (e.g., '192.168.1.100')
      * @param  string|null  $telegramMessage  Override message for Telegram (defaults to $pushoverMessage if present, else $message — keeps the chat-friendly compact format aligned across the two terse channels)
      * @param  object|null  $relatable  Relatable model for audit-trail context (extracted by NotificationLogListener into notification_logs.relatable_*). Travels on the per-send notification object — NOT as a dynamic property on the (possibly cached) notifiable — so consecutive admin sends with different relatables do not leak context across each other.
+     */
+    /**
+     * @param  array<int, array<string, mixed>>|null  $emailBlocks  Structured body blocks for the new
+     *                                                              component-based email template. Bypasses the legacy
+     *                                                              [COPY]/[CMD]-marker string body. Set by canonicals that
+     *                                                              opt into the dark-themed component layout.
+     * @param  array<int, string>|null  $forceChannels  When set, overrides the per-user notification_channels preference
+     *                                                  for this send only. Used for onboarding mails (waitlist verification,
+     *                                                  welcome, password reset) that MUST go via mail regardless of the
+     *                                                  user's pushover/telegram setup.
      */
     public function __construct(
         public string $message,
@@ -45,12 +55,14 @@ final class AlertNotification extends Notification
         public ?string $canonical = null,
         public ?string $deliveryGroup = null,
         public array $additionalParameters = [],
-        public ?\Kraite\Core\Enums\NotificationSeverity $severity = null,
+        public ?NotificationSeverity $severity = null,
         public ?string $pushoverMessage = null,
         public ?string $exchange = null,
         public ?string $serverIp = null,
         public ?string $telegramMessage = null,
         public ?object $relatable = null,
+        public ?array $emailBlocks = null,
+        public ?array $forceChannels = null,
     ) {}
 
     /**
@@ -68,6 +80,14 @@ final class AlertNotification extends Notification
         // Don't send notifications to inactive users
         if (! $notifiable->is_active) {
             return [];
+        }
+
+        // Per-send override wins over user preference. Used by onboarding
+        // canonicals (waitlist verification, welcome, password reset) that
+        // must always route via mail regardless of the user's pushover /
+        // telegram setup (a brand-new visitor has neither).
+        if ($this->forceChannels !== null) {
+            return $this->forceChannels;
         }
 
         return $notifiable->notification_channels ?? [PushoverChannel::class];
@@ -102,7 +122,7 @@ final class AlertNotification extends Notification
 
         // Determine priority based on severity
         // Critical = emergency priority (2), all others = normal priority (0)
-        $priority = ($this->severity === \Kraite\Core\Enums\NotificationSeverity::Critical) ? 2 : 0;
+        $priority = ($this->severity === NotificationSeverity::Critical) ? 2 : 0;
 
         // Allow manual override via additionalParameters if explicitly provided
         if (isset($this->additionalParameters['priority'])) {
@@ -192,7 +212,8 @@ final class AlertNotification extends Notification
             hostname: gethostname(),
             userName: $notifiable->name ?? null,
             exchange: $this->exchange,
-            serverIp: $this->serverIp
+            serverIp: $this->serverIp,
+            emailBlocks: $this->emailBlocks,
         ))->to($notifiable->email);
     }
 

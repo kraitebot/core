@@ -30,6 +30,18 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Admin URL — canonical password-reset host
+    |--------------------------------------------------------------------------
+    |
+    | Used by Kraite\Core\Notifications\ResetPasswordNotification and
+    | WaitlistWelcomeNotification to build the reset link. The link
+    | always points at admin.kraite.com regardless of which app
+    | dispatches the email (kraite.com landing, console, or admin).
+    */
+    'admin_url' => env('KRAITE_ADMIN_URL', 'https://admin.kraite.com'),
+
+    /*
+    |--------------------------------------------------------------------------
     | User Data Stream
     |--------------------------------------------------------------------------
     |

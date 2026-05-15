@@ -4,13 +4,14 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Commands\Tests;
 
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSystem;
-use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\ExchangeSymbol;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Notification;
 use Kraite\Core\Models\NotificationLog;
 use Kraite\Core\Models\User;
@@ -21,10 +22,11 @@ use StepDispatcher\Support\BaseCommand;
 final class TestNotificationCommand extends BaseCommand
 {
     protected $signature = 'test:notification
-                            {canonical : Notification canonical to test (server_rate_limit_exceeded, server_ip_forbidden, server_ip_not_whitelisted, server_ip_rate_limited, server_ip_banned, server_account_blocked, stale_dispatched_steps_detected, stale_priority_steps_detected, exchange_symbol_no_taapi_data, token_delisting, slow_query_detected)}
+                            {canonical : Notification canonical to test (server_rate_limit_exceeded, server_ip_forbidden, server_ip_not_whitelisted, server_ip_rate_limited, server_ip_banned, server_account_blocked, stale_dispatched_steps_detected, stale_priority_steps_detected, exchange_symbol_no_taapi_data, token_delisting, slow_query_detected, waitlist_email_verification, waitlist_welcome_password_reset, password_reset)}
                             {--times=1 : Number of times to send the notification (tests throttling)}
                             {--clean : Truncate notification_logs tables and clear laravel.log}
-                            {--output : Display command output (silent by default)}';
+                            {--output : Display command output (silent by default)}
+                            {--email= : Override recipient user (by email) for onboarding canonicals — waitlist_email_verification, waitlist_welcome_password_reset, password_reset}';
 
     protected $description = 'Test notification system - each canonical configured exactly as production';
 
@@ -64,20 +66,28 @@ final class TestNotificationCommand extends BaseCommand
         $canonical = $this->argument('canonical');
         $times = max(1, (int) $this->option('times'));
 
+        // Onboarding canonicals don't need an account context — they
+        // target a specific user (by email or admin fallback) and only
+        // carry URL data. Skip the account-existence check for those.
+        $onboardingCanonicals = ['waitlist_email_verification', 'waitlist_welcome_password_reset', 'password_reset'];
+        $needsAccount = ! in_array($canonical, $onboardingCanonicals, true);
+
         // Get hardcoded defaults
         $admin = Kraite::admin();
-        $account = Account::with('user')->first();
-        if (! $account || ! $account->user) {
+        $account = $needsAccount ? Account::with('user')->first() : null;
+        if ($needsAccount && (! $account || ! $account->user)) {
             $this->verboseError('❌ No accounts with users found in database. Please seed accounts first.');
 
             return 1;
         }
 
-        $accountUser = $account->user;
+        $accountUser = $account?->user;
 
         $this->verboseInfo("🔔 Testing Notification: {$canonical}");
         $this->verboseLine("Admin: {$admin->name} (#{$admin->id})");
-        $this->verboseLine("Account: {$account->name} (#{$account->id})");
+        if ($account) {
+            $this->verboseLine("Account: {$account->name} (#{$account->id})");
+        }
         $this->verboseLine("Times: {$times}");
         $this->verboseNewLine();
 
@@ -94,6 +104,9 @@ final class TestNotificationCommand extends BaseCommand
             'exchange_symbol_no_taapi_data' => $this->testExchangeSymbolNoTaapiData($admin, $times),
             'token_delisting' => $this->testTokenDelisting($admin, $times),
             'slow_query_detected' => $this->testSlowQueryDetected($admin, $times),
+            'waitlist_email_verification' => $this->testWaitlistEmailVerification($times),
+            'waitlist_welcome_password_reset' => $this->testWaitlistWelcomePasswordReset($times),
+            'password_reset' => $this->testPasswordReset($times),
             default => $this->verboseError("❌ Unknown canonical: {$canonical}"),
         };
 
@@ -541,7 +554,7 @@ final class TestNotificationCommand extends BaseCommand
                 $throttleRelatable = $relatable ?? $admin;
                 $throttleDuration = $duration ?? 60;
 
-                /** @var User|\Illuminate\Database\Eloquent\Model $throttleRelatable */
+                /** @var User|Model $throttleRelatable */
                 $throttleRelatableKey = $throttleRelatable->getKey();
                 $throttleRelatableId = is_numeric($throttleRelatableKey) ? (int) $throttleRelatableKey : 0;
                 $throttleRelatableClass = get_class($throttleRelatable);
@@ -586,6 +599,128 @@ final class TestNotificationCommand extends BaseCommand
         $this->verboseInfo('📊 Results:');
         $this->verboseLine("  ✓ Sent: {$sentCount}");
         $this->verboseLine("  ⏸ Throttled: {$throttledCount}");
+
+        return true;
+    }
+
+    /**
+     * Resolve the recipient user for onboarding canonicals.
+     *  - --email=foo@bar wins
+     *  - else first non-admin user found
+     *  - else admin user (fallback)
+     */
+    private function resolveOnboardingRecipient(): ?User
+    {
+        $email = $this->option('email');
+        if (is_string($email) && $email !== '') {
+            $user = User::where('email', $email)->first();
+            if (! $user) {
+                $this->verboseError("❌ No user found with email '{$email}'.");
+
+                return null;
+            }
+
+            return $user;
+        }
+
+        $user = User::where('is_admin', false)->orderBy('id')->first()
+            ?? User::orderBy('id')->first();
+
+        if (! $user) {
+            $this->verboseError('❌ No users in database. Seed at least one or pass --email=');
+
+            return null;
+        }
+
+        return $user;
+    }
+
+    private function testWaitlistEmailVerification(int $times): bool
+    {
+        $user = $this->resolveOnboardingRecipient();
+        if (! $user) {
+            return false;
+        }
+
+        $this->verboseWarn("📤 Sending to USER: {$user->name} <{$user->email}> (#{$user->id})");
+        $this->verboseNewLine();
+
+        for ($i = 1; $i <= $times; $i++) {
+            $this->verboseLine("Attempt #{$i}:");
+            $verificationUrl = url('/waitlist/verify/TEST-'.bin2hex(random_bytes(8)));
+            $ok = NotificationService::send(
+                user: $user,
+                canonical: 'waitlist_email_verification',
+                referenceData: ['verification_url' => $verificationUrl],
+                channels: ['mail'],
+            );
+            $this->verboseLine($ok ? '  ✓ Dispatched via mail channel' : '  ✗ Send returned false (check logs)');
+            if ($i < $times) {
+                usleep(100000);
+            }
+        }
+
+        return true;
+    }
+
+    private function testWaitlistWelcomePasswordReset(int $times): bool
+    {
+        $user = $this->resolveOnboardingRecipient();
+        if (! $user) {
+            return false;
+        }
+
+        $this->verboseWarn("📤 Sending to USER: {$user->name} <{$user->email}> (#{$user->id})");
+        $this->verboseNewLine();
+
+        $expireMinutes = (int) config('auth.passwords.'.config('auth.defaults.passwords').'.expire', 60);
+        $base = rtrim((string) config('kraite.admin_url'), '/');
+
+        for ($i = 1; $i <= $times; $i++) {
+            $this->verboseLine("Attempt #{$i}:");
+            $resetUrl = $base.'/reset-password/TEST-'.bin2hex(random_bytes(8)).'?email='.urlencode($user->email);
+            $ok = NotificationService::send(
+                user: $user,
+                canonical: 'waitlist_welcome_password_reset',
+                referenceData: ['reset_url' => $resetUrl, 'expire_minutes' => $expireMinutes],
+                channels: ['mail'],
+            );
+            $this->verboseLine($ok ? '  ✓ Dispatched via mail channel' : '  ✗ Send returned false (check logs)');
+            if ($i < $times) {
+                usleep(100000);
+            }
+        }
+
+        return true;
+    }
+
+    private function testPasswordReset(int $times): bool
+    {
+        $user = $this->resolveOnboardingRecipient();
+        if (! $user) {
+            return false;
+        }
+
+        $this->verboseWarn("📤 Sending to USER: {$user->name} <{$user->email}> (#{$user->id})");
+        $this->verboseNewLine();
+
+        $expireMinutes = (int) config('auth.passwords.'.config('auth.defaults.passwords').'.expire', 60);
+        $base = rtrim((string) config('kraite.admin_url'), '/');
+
+        for ($i = 1; $i <= $times; $i++) {
+            $this->verboseLine("Attempt #{$i}:");
+            $resetUrl = $base.'/reset-password/TEST-'.bin2hex(random_bytes(8)).'?email='.urlencode($user->email);
+            $ok = NotificationService::send(
+                user: $user,
+                canonical: 'password_reset',
+                referenceData: ['reset_url' => $resetUrl, 'expire_minutes' => $expireMinutes],
+                channels: ['mail'],
+            );
+            $this->verboseLine($ok ? '  ✓ Dispatched via mail channel' : '  ✗ Send returned false (check logs)');
+            if ($i < $times) {
+                usleep(100000);
+            }
+        }
 
         return true;
     }

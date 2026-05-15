@@ -6,10 +6,12 @@ namespace Kraite\Core\Mail;
 
 use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
+use Illuminate\Mail\Mailables\Attachment;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
 use Kraite\Core\Enums\NotificationSeverity;
+use Symfony\Component\Mime\Email;
 
 final class AlertMail extends Mailable
 {
@@ -17,6 +19,14 @@ final class AlertMail extends Mailable
 
     /**
      * Create a new message instance.
+     */
+    /**
+     * @param  array<int, array<string, mixed>>|null  $emailBlocks  Structured body blocks.
+     *                                                              When present, the view renders blocks via the mail component
+     *                                                              library and IGNORES $notificationMessage. When null, the view
+     *                                                              falls back to legacy [COPY]/[CMD]-marker parsing of the
+     *                                                              $notificationMessage string. New canonicals should populate
+     *                                                              this array; existing trading canonicals keep working unchanged.
      */
     public function __construct(
         public string $notificationTitle,
@@ -28,7 +38,8 @@ final class AlertMail extends Mailable
         public ?string $hostname = null,
         public ?string $userName = null,
         public ?string $exchange = null,
-        public ?string $serverIp = null
+        public ?string $serverIp = null,
+        public ?array $emailBlocks = null,
     ) {}
 
     /**
@@ -57,8 +68,8 @@ final class AlertMail extends Mailable
         // Set email priority based on severity level
         // Critical and High severity get high priority headers
         if ($this->severity && in_array($this->severity, [NotificationSeverity::Critical, NotificationSeverity::High])) {
-            $envelope->using(static function (\Symfony\Component\Mime\Email $message) {
-                $message->priority(\Symfony\Component\Mime\Email::PRIORITY_HIGH);
+            $envelope->using(static function (Email $message) {
+                $message->priority(Email::PRIORITY_HIGH);
                 $message->getHeaders()
                     ->addTextHeader('X-Priority', '1')
                     ->addTextHeader('Importance', 'high');
@@ -81,7 +92,7 @@ final class AlertMail extends Mailable
     /**
      * Get the attachments for the message.
      *
-     * @return array<int, \Illuminate\Mail\Mailables\Attachment>
+     * @return array<int, Attachment>
      */
     public function attachments(): array
     {

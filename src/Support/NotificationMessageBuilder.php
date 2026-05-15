@@ -6,6 +6,7 @@ namespace Kraite\Core\Support;
 
 use Carbon\Carbon;
 use Exception;
+use Illuminate\Foundation\Auth\User as AuthUser;
 use Illuminate\Support\Facades\URL;
 use InvalidArgumentException;
 use Kraite\Core\Enums\NotificationSeverity;
@@ -45,7 +46,7 @@ final class NotificationMessageBuilder
      * whose High severity should specifically get priority = 1 to bypass
      * quiet hours on the user's device).
      */
-    public static function build(string|Notification $canonical, array $context = [], ?User $user = null): array
+    public static function build(string|Notification $canonical, array $context = [], ?AuthUser $user = null): array
     {
         // Extract canonical string from model if provided
         $canonicalString = $canonical instanceof Notification ? $canonical->canonical : $canonical;
@@ -1422,6 +1423,75 @@ final class NotificationMessageBuilder
                     'actionUrl' => null,
                     'actionLabel' => null,
                     'priority' => 1,
+                ];
+            })(),
+
+            'waitlist_email_verification' => (static function () use ($context) {
+                $verificationUrl = is_string($context['verification_url'] ?? null)
+                    ? $context['verification_url']
+                    : '#';
+
+                return [
+                    'severity' => null,
+                    'title' => 'Verify your email',
+                    'emailMessage' => "Confirm your Kraite email address at: {$verificationUrl}",
+                    'pushoverMessage' => 'Confirm your Kraite email address',
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'emailBlocks' => [
+                        ['type' => 'paragraph', 'text' => 'Hi there,'],
+                        ['type' => 'paragraph', 'text' => 'We need you to confirm your email address, for security reasons. Click the button below to verify and we will be able to reach you again from this address.'],
+                        ['type' => 'button', 'href' => $verificationUrl, 'label' => 'Verify Email', 'variant' => 'primary'],
+                        ['type' => 'fineprint', 'text' => "If you didn't sign up for Kraite, you can safely ignore this email."],
+                    ],
+                ];
+            })(),
+
+            'waitlist_welcome_password_reset' => (static function () use ($context, $user) {
+                $resetUrl = is_string($context['reset_url'] ?? null)
+                    ? $context['reset_url']
+                    : '#';
+                $expireMinutes = (int) ($context['expire_minutes'] ?? 60);
+                $greeting = $user !== null && filled($user->name)
+                    ? "Welcome to Kraite, {$user->name}!"
+                    : 'Welcome to Kraite!';
+
+                return [
+                    'severity' => null,
+                    'title' => 'Welcome to Kraite — set your password',
+                    'emailMessage' => "You're in. Set your password at: {$resetUrl} (link expires in {$expireMinutes} minutes).",
+                    'pushoverMessage' => 'You are off the Kraite waitlist — set your password.',
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'emailBlocks' => [
+                        ['type' => 'heading', 'text' => $greeting, 'size' => 'md'],
+                        ['type' => 'paragraph', 'text' => "You've been approved off the waitlist. Click the button below to set your password and sign in."],
+                        ['type' => 'button', 'href' => $resetUrl, 'label' => 'Set your password', 'variant' => 'primary'],
+                        ['type' => 'fineprint', 'text' => "This link will expire in {$expireMinutes} minutes. If it expires, request a fresh reset on the admin sign-in page."],
+                    ],
+                ];
+            })(),
+
+            'password_reset' => (static function () use ($context, $user) {
+                $resetUrl = is_string($context['reset_url'] ?? null)
+                    ? $context['reset_url']
+                    : '#';
+                $expireMinutes = (int) ($context['expire_minutes'] ?? 60);
+                $greeting = $user !== null && filled($user->name) ? "Hi {$user->name}," : 'Hi there,';
+
+                return [
+                    'severity' => null,
+                    'title' => 'Reset your Kraite password',
+                    'emailMessage' => "Reset your Kraite password at: {$resetUrl} (link expires in {$expireMinutes} minutes).",
+                    'pushoverMessage' => 'Kraite password reset link sent.',
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'emailBlocks' => [
+                        ['type' => 'paragraph', 'text' => $greeting],
+                        ['type' => 'paragraph', 'text' => 'You requested a password reset for your Kraite account. Click the button below to set a new password.'],
+                        ['type' => 'button', 'href' => $resetUrl, 'label' => 'Reset password', 'variant' => 'primary'],
+                        ['type' => 'fineprint', 'text' => "This link will expire in {$expireMinutes} minutes. If you didn't request this, you can safely ignore this email — your password won't change."],
+                    ],
                 ];
             })(),
 

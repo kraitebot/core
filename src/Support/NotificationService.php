@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Support;
 
+use Illuminate\Foundation\Auth\User as AuthUser;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Notification;
 use Kraite\Core\Models\NotificationLog;
-use Kraite\Core\Models\User;
 use Kraite\Core\Notifications\AlertNotification;
 use Throwable;
 
@@ -64,12 +64,13 @@ final class NotificationService
      * @return bool True if notification was sent, false otherwise
      */
     public static function send(
-        User $user,
+        AuthUser $user,
         string $canonical,
         array $referenceData = [],
         ?object $relatable = null,
         ?int $duration = null,
-        ?array $cacheKeys = null
+        ?array $cacheKeys = null,
+        ?array $channels = null,
     ): bool {
         return self::sendToSpecificUser(
             user: $user,
@@ -77,7 +78,8 @@ final class NotificationService
             referenceData: $referenceData,
             relatable: $relatable,
             duration: $duration,
-            cacheKeys: $cacheKeys
+            cacheKeys: $cacheKeys,
+            channels: $channels,
         );
     }
 
@@ -103,12 +105,13 @@ final class NotificationService
      * @return bool True if notification was sent, false otherwise
      */
     private static function sendToSpecificUser(
-        User $user,
+        AuthUser $user,
         string $canonical,
         array $referenceData = [],
         ?object $relatable = null,
         ?int $duration = null,
-        ?array $cacheKeys = null
+        ?array $cacheKeys = null,
+        ?array $channels = null,
     ): bool {
         // Check if notifications are globally enabled
         if (! config('kraite.notifications_enabled', true)) {
@@ -245,6 +248,8 @@ final class NotificationService
                     additionalParameters: $additionalParameters,
                     telegramMessage: $messageData['telegramMessage'] ?? null,
                     relatable: $relatable,
+                    emailBlocks: $messageData['emailBlocks'] ?? null,
+                    forceChannels: $channels,
                 )
             );
         } catch (Throwable $e) {
