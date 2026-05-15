@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.42.0 - 2026-05-15
+
+Shared `UserEmailConfirmed` event class. Pairs with `kraite.test` v0.9.0 (firing site) and `ingestion.kraite.test` v1.43.0 (`AttachPrivateBetaCoupon` listener).
+
+### Features
+
+- [NEW FEATURE] **`Kraite\Core\Events\UserEmailConfirmed`** — fired the moment a user's `email_verified_at` transitions from null to a timestamp. Lives in the shared package so the marketing site (kraite.com) and the ingestion worker (which listens for it) can both reference the same class across the Redis-backed queue. Carries the user id only; listeners refetch the User model so they see the latest DB state.
+
 ## 1.41.0 - 2026-05-15
 
 Rename onboarding canonicals from `waitlist_*` to `private_beta_*`. Marketing surface now reads "private beta" everywhere; the canonical names follow.
