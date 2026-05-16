@@ -617,28 +617,17 @@ final class KraiteSeeder extends Seeder
     }
 
     /**
-     * Seed the servers table with the current server.
+     * Seed the API execution servers.
      *
-     * The hostname is taken from the OS so subsequent `Kraite::ip()` calls
-     * resolve straight out of the DB. The IP is read from `Kraite::ip()`
-     * itself — at seed time the table is still empty, so it falls through
-     * to the cached ipify lookup and persists *this* box's real public IP
-     * without any hardcoding.
+     * Local installs register the current machine so `Kraite::ip()` resolves
+     * to the developer box. Production registers only the ingestion/workers
+     * that can perform exchange API requests and need user whitelisting.
      */
     public function seedServers(): void
     {
-        $servers = [
-            [
-                'hostname' => gethostname() ?: 'full-stack',
-                'ip_address' => Kraite::ip(),
-                'is_apiable' => true,
-                'needs_whitelisting' => true,
-                'own_queue_name' => 'default',
-                'description' => 'Full-stack server - all services',
-                'type' => 'ingestion',
-                'secret' => config('kraite.server_secrets.ingestion'),
-            ],
-        ];
+        $servers = app()->environment('production')
+            ? $this->productionApiServers()
+            : $this->localApiServer();
 
         foreach ($servers as $server) {
             DB::table('servers')->updateOrInsert(
@@ -649,6 +638,64 @@ final class KraiteSeeder extends Seeder
                 ])
             );
         }
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function localApiServer(): array
+    {
+        $hostname = gethostname() ?: 'full-stack';
+        $queueName = mb_strtolower(str_replace('-', '', $hostname));
+
+        return [[
+            'hostname' => $hostname,
+            'ip_address' => Kraite::ip(),
+            'is_apiable' => true,
+            'needs_whitelisting' => true,
+            'own_queue_name' => $queueName,
+            'description' => 'Local full-stack server - all services',
+            'type' => 'ingestion',
+            'secret' => config('kraite.server_secrets.ingestion'),
+        ]];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function productionApiServers(): array
+    {
+        $path = base_path('../.credentials/kraite/servers.json');
+
+        if (! File::exists($path)) {
+            return $this->localApiServer();
+        }
+
+        $raw = json_decode((string) File::get($path), associative: true);
+
+        if (! is_array($raw)) {
+            return $this->localApiServer();
+        }
+
+        return collect($raw)
+            ->only(['ingestion', 'worker-1', 'worker-2'])
+            ->map(static function (array $server, string $key): array {
+                $hostname = (string) ($server['hostname'] ?? $key);
+
+                return [
+                    'hostname' => $hostname,
+                    'ip_address' => (string) ($server['host'] ?? ''),
+                    'is_apiable' => true,
+                    'needs_whitelisting' => true,
+                    'own_queue_name' => $hostname,
+                    'description' => (string) ($server['name'] ?? $server['role'] ?? $hostname),
+                    'type' => $key === 'ingestion' ? 'ingestion' : 'worker',
+                    'secret' => config('kraite.server_secrets.'.$hostname),
+                ];
+            })
+            ->filter(static fn (array $server): bool => $server['ip_address'] !== '')
+            ->values()
+            ->all();
     }
 
     /**

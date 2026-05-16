@@ -53,6 +53,18 @@ Route::get('/connectivity-test/status/{blockUuid}', [ConnectivityTestController:
     ->middleware(['auth', 'throttle:30,1'])
     ->name('connectivity-test.status');
 
+// Start connectivity checks for an existing account. Used by the admin
+// console account panel; it creates a parent step and one child per API
+// execution server.
+Route::post('/connectivity-test/accounts/{account}/start', [ConnectivityTestController::class, 'startAccount'])
+    ->middleware(['auth', 'throttle:6,1'])
+    ->name('connectivity-test.accounts.start');
+
+// Send the user a per-server whitelist notification after a failed result.
+Route::post('/connectivity-test/accounts/{account}/notify-server', [ConnectivityTestController::class, 'notifyAccountServer'])
+    ->middleware(['auth', 'throttle:10,1'])
+    ->name('connectivity-test.accounts.notify-server');
+
 /**
  * Dashboard API Routes
  *

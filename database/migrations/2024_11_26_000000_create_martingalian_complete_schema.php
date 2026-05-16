@@ -468,7 +468,7 @@ return new class extends Migration
         Schema::create('servers', function (Blueprint $table) {
             $table->id();
             $table->string('hostname')->unique()->comment('Server hostname identifier');
-            $table->string('ip_address')->nullable()->comment('Server IP address');
+            $table->string('ip_address')->comment('Server IP address');
             $table->boolean('is_apiable')->default(false)->comment('Whether this server makes API calls to exchanges');
             $table->boolean('needs_whitelisting')->default(false)->comment('Whether this server IP needs to be whitelisted on trading platforms');
             $table->string('own_queue_name')->nullable()->comment('Unique queue name for sending jobs directly to this server');

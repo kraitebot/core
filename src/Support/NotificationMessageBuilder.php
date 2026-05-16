@@ -69,8 +69,9 @@ final class NotificationMessageBuilder
         $exchange = is_object($exchangeRaw) ? ($exchangeRaw->canonical ?? 'exchange') : (is_string($exchangeRaw) ? $exchangeRaw : 'exchange');
         $exchangeTitle = is_object($exchangeRaw) ? ($exchangeRaw->name ?? ucfirst($exchange)) : (is_string($exchangeRaw) ? ucfirst($exchangeRaw) : ucfirst($exchange));
 
-        // Extract IP from Engine model or legacy 'ip' key
-        $ipRaw = $context['ip'] ?? null;
+        // Extract IP from Engine model, explicit ip, or the canonical
+        // forbidden-hostname payload field.
+        $ipRaw = $context['ip'] ?? ($context['ip_address'] ?? null);
         $ip = is_string($ipRaw) ? $ipRaw : Kraite::ip();
 
         // Extract hostname from 'server' key (new) or 'hostname' key (legacy) or apiRequestLog
