@@ -2,7 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## 1.46.1 - 2026-05-15
+## 1.46.2 - 2026-05-16
+
+### Fixes
+
+- [BUG FIX] **Orphan position recovery in `CreatePositionsCommand` now runs BEFORE the `isReadyToTrade()` subscription gate.** Pre-fix, an account whose subscription had lapsed (or had not yet activated) would skip the entire per-account block, including the self-heal path for orphan `status='new'` positions whose `DispatchPositionJob` step had been swept. Result: a lapsed subscription stranded existing positions in `new` indefinitely, contradicting the code's own inline contract ("Runs unconditionally — recovering a stranded orphan doesn't compete for slot capacity, the slot is already taken"). Recovery is now invoked first; only the new-opens path remains gated by readiness. Locked by the existing `CreatePositionsCommandOrphanRecoveryTest` Pest spec (4/4 green).
+
+
 
 ### Fixes
 

@@ -128,6 +128,18 @@ final class CreatePositionsCommand extends BaseCommand
                 // 3-minute cycle. With 200+ accounts on the box, that
                 // blast radius is unacceptable.
                 try {
+                    // Self-heal first — orphan 'new' positions (their previous
+                    // DispatchPositionJob step was swept during operator
+                    // cleanup, supervisor restart, or any cleanup that lost a
+                    // step row while leaving the position behind) get re-
+                    // dispatched before we contemplate opening new slots.
+                    // Runs unconditionally, BEFORE the subscription gate —
+                    // recovering a stranded orphan doesn't compete for slot
+                    // capacity (the slot is already taken) and a lapsed
+                    // subscription must not strand existing positions; only
+                    // NEW opens are gated by readiness.
+                    $this->recoverOrphanPositionsForAccount($account);
+
                     // 3-gate per-account readiness: account.is_active +
                     // account.can_trade (set 1) + user.can_trade (set 2)
                     // + user.subscription.isActive() (set 3 — trial OR
@@ -140,16 +152,6 @@ final class CreatePositionsCommand extends BaseCommand
 
                         continue;
                     }
-
-                    // Self-heal first — orphan 'new' positions (their previous
-                    // DispatchPositionJob step was swept during operator
-                    // cleanup, supervisor restart, or any cleanup that lost a
-                    // step row while leaving the position behind) get re-
-                    // dispatched before we contemplate opening new slots.
-                    // Runs unconditionally — recovering a stranded orphan
-                    // doesn't compete for slot capacity, the slot is already
-                    // taken.
-                    $this->recoverOrphanPositionsForAccount($account);
 
                     $this->attemptOpeningPositionsForAccount($account);
                 } catch (Throwable $e) {
