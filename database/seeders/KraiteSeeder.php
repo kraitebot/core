@@ -7,11 +7,13 @@ namespace Kraite\Core\Database\Seeders;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Str;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Indicator;
 use Kraite\Core\Models\Kraite;
+use Kraite\Core\Models\ModelLog;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Models\Subscription;
 use Kraite\Core\Models\Symbol;
@@ -29,7 +31,7 @@ final class KraiteSeeder extends Seeder
     public function run(): void
     {
         // Disable ModelLog during seeding
-        \Kraite\Core\Models\ModelLog::disable();
+        ModelLog::disable();
 
         // Disable observers during seeding to prevent notification spam
         ExchangeSymbol::withoutEvents(function () {
@@ -43,7 +45,7 @@ final class KraiteSeeder extends Seeder
         });
 
         // Re-enable ModelLog after seeding
-        \Kraite\Core\Models\ModelLog::enable();
+        ModelLog::enable();
     }
 
     /**
@@ -419,23 +421,29 @@ final class KraiteSeeder extends Seeder
      */
     public function seedAdminUser(): User
     {
-        $admin = User::updateOrCreate(
-            ['email' => config('kraite.admin_user_email')],
-            [
-                'name' => config('kraite.admin_user_name'),
-                'password' => bcrypt(config('kraite.admin_user_password', 'password')),
-                'is_active' => true,
-                'is_admin' => true,
-                // Wire notification routing so user-scoped pushovers
-                // (position_opened / position_closed / position_wap_applied
-                // / position_high_profit_closed) actually deliver.
-                // Without these, AlertNotification::via() returns [] and
-                // every trading-event push silently drops.
-                'pushover_key' => config('kraite.admin_user_pushover_key')
-                    ?? config('kraite.admin_user_pushover_user_key'),
-                'notification_channels' => ['pushover', 'mail'],
-            ]
-        );
+        $admin = User::firstOrNew(['email' => config('kraite.admin_user_email')]);
+
+        if (! $admin->exists && empty($admin->uuid)) {
+            $admin->uuid = (string) Str::uuid();
+        }
+
+        $admin->fill([
+            'name' => config('kraite.admin_user_name'),
+            'password' => bcrypt(config('kraite.admin_user_password', 'password')),
+            'status' => 'active',
+            'is_active' => true,
+            'is_admin' => true,
+            // Wire notification routing so user-scoped pushovers
+            // (position_opened / position_closed / position_wap_applied
+            // / position_high_profit_closed) actually deliver.
+            // Without these, AlertNotification::via() returns [] and
+            // every trading-event push silently drops.
+            'pushover_key' => config('kraite.admin_user_pushover_key')
+                ?? config('kraite.admin_user_pushover_user_key'),
+            'notification_channels' => ['pushover', 'mail'],
+        ]);
+
+        $admin->save();
 
         return $admin;
     }
@@ -580,6 +588,13 @@ final class KraiteSeeder extends Seeder
             $engine->taapi_secret = config('kraite.api.credentials.taapi.secret');
             $engine->nowpayments_api_key = config('kraite.api.credentials.nowpayments.api_key');
             $engine->nowpayments_ipn_secret = config('kraite.api.credentials.nowpayments.ipn_secret');
+
+            $resendApiKey = config('services.resend.key');
+
+            if (filled($resendApiKey)) {
+                $engine->resend_api_key = $resendApiKey;
+            }
+
             $engine->save();
         }
     }
@@ -638,64 +653,6 @@ final class KraiteSeeder extends Seeder
                 ])
             );
         }
-    }
-
-    /**
-     * @return array<int, array<string, mixed>>
-     */
-    private function localApiServer(): array
-    {
-        $hostname = gethostname() ?: 'full-stack';
-        $queueName = mb_strtolower(str_replace('-', '', $hostname));
-
-        return [[
-            'hostname' => $hostname,
-            'ip_address' => Kraite::ip(),
-            'is_apiable' => true,
-            'needs_whitelisting' => true,
-            'own_queue_name' => $queueName,
-            'description' => 'Local full-stack server - all services',
-            'type' => 'ingestion',
-            'secret' => config('kraite.server_secrets.ingestion'),
-        ]];
-    }
-
-    /**
-     * @return array<int, array<string, mixed>>
-     */
-    private function productionApiServers(): array
-    {
-        $path = base_path('../.credentials/kraite/servers.json');
-
-        if (! File::exists($path)) {
-            return $this->localApiServer();
-        }
-
-        $raw = json_decode((string) File::get($path), associative: true);
-
-        if (! is_array($raw)) {
-            return $this->localApiServer();
-        }
-
-        return collect($raw)
-            ->only(['ingestion', 'worker-1', 'worker-2'])
-            ->map(static function (array $server, string $key): array {
-                $hostname = (string) ($server['hostname'] ?? $key);
-
-                return [
-                    'hostname' => $hostname,
-                    'ip_address' => (string) ($server['host'] ?? ''),
-                    'is_apiable' => true,
-                    'needs_whitelisting' => true,
-                    'own_queue_name' => $hostname,
-                    'description' => (string) ($server['name'] ?? $server['role'] ?? $hostname),
-                    'type' => $key === 'ingestion' ? 'ingestion' : 'worker',
-                    'secret' => config('kraite.server_secrets.'.$hostname),
-                ];
-            })
-            ->filter(static fn (array $server): bool => $server['ip_address'] !== '')
-            ->values()
-            ->all();
     }
 
     /**
@@ -1045,6 +1002,64 @@ final class KraiteSeeder extends Seeder
                 ]
             );
         }
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function localApiServer(): array
+    {
+        $hostname = gethostname() ?: 'full-stack';
+        $queueName = mb_strtolower(str_replace('-', '', $hostname));
+
+        return [[
+            'hostname' => $hostname,
+            'ip_address' => app()->environment('testing') ? '127.0.0.1' : Kraite::ip(),
+            'is_apiable' => true,
+            'needs_whitelisting' => true,
+            'own_queue_name' => $queueName,
+            'description' => 'Local full-stack server - all services',
+            'type' => 'ingestion',
+            'secret' => config('kraite.server_secrets.ingestion'),
+        ]];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function productionApiServers(): array
+    {
+        $path = base_path('../.credentials/kraite/servers.json');
+
+        if (! File::exists($path)) {
+            return $this->localApiServer();
+        }
+
+        $raw = json_decode((string) File::get($path), associative: true);
+
+        if (! is_array($raw)) {
+            return $this->localApiServer();
+        }
+
+        return collect($raw)
+            ->only(['ingestion', 'worker-1', 'worker-2'])
+            ->map(static function (array $server, string $key): array {
+                $hostname = (string) ($server['hostname'] ?? $key);
+
+                return [
+                    'hostname' => $hostname,
+                    'ip_address' => (string) ($server['host'] ?? ''),
+                    'is_apiable' => true,
+                    'needs_whitelisting' => true,
+                    'own_queue_name' => $hostname,
+                    'description' => (string) ($server['name'] ?? $server['role'] ?? $hostname),
+                    'type' => $key === 'ingestion' ? 'ingestion' : 'worker',
+                    'secret' => config('kraite.server_secrets.'.$hostname),
+                ];
+            })
+            ->filter(static fn (array $server): bool => $server['ip_address'] !== '')
+            ->values()
+            ->all();
     }
 
     /**

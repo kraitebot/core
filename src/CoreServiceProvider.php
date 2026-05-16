@@ -48,6 +48,8 @@ use Kraite\Core\Commands\Tests\TestNotificationCommand;
 use Kraite\Core\Commands\Tests\ThrottlerStressTestCommand;
 use Kraite\Core\Commands\UpdateRecvwindowSafetyDurationCommand;
 use Kraite\Core\Commands\WarmupCommand;
+use Kraite\Core\Events\UserEmailConfirmed;
+use Kraite\Core\Listeners\AttachPrivateBetaCoupon;
 use Kraite\Core\Listeners\NotificationLogListener;
 use Kraite\Core\Listeners\SendStaleStepsNotification;
 use Kraite\Core\Models\Account;
@@ -158,8 +160,8 @@ final class CoreServiceProvider extends ServiceProvider
         // listener owns the private-beta-coupon attach (gated on
         // `kraite.in_private_beta`).
         Event::listen(
-            \Kraite\Core\Events\UserEmailConfirmed::class,
-            [\Kraite\Core\Listeners\AttachPrivateBetaCoupon::class, 'handle'],
+            UserEmailConfirmed::class,
+            [AttachPrivateBetaCoupon::class, 'handle'],
         );
 
         AccountBalanceHistory::observe(AccountBalanceHistoryObserver::class);
@@ -233,6 +235,26 @@ final class CoreServiceProvider extends ServiceProvider
 
         if (file_exists($path.DIRECTORY_SEPARATOR.$file)) {
             Dotenv::createImmutable($path, $file)->safeLoad();
+            $this->syncSharedEnvironmentConfig();
+        }
+    }
+
+    protected function syncSharedEnvironmentConfig(): void
+    {
+        if (env('RESEND_API_KEY') !== null) {
+            config(['services.resend.key' => env('RESEND_API_KEY')]);
+        }
+
+        if (env('ZEPTOMAIL_MAIL_KEY') !== null) {
+            config([
+                'services.zeptomail.mail_key' => env('ZEPTOMAIL_MAIL_KEY'),
+                'services.zeptomail.endpoint' => env('ZEPTO_MAIL_ENDPOINT', 'https://api.zeptomail.com'),
+                'services.zeptomail.timeout' => env('ZEPTO_MAIL_TIMEOUT', 30),
+                'services.zeptomail.retries' => env('ZEPTO_MAIL_RETRIES', 2),
+                'services.zeptomail.retry_sleep_ms' => env('ZEPTO_MAIL_RETRY_MS', 200),
+                'services.zeptomail.track_opens' => env('ZEPTO_MAIL_TRACK_OPENS', false),
+                'services.zeptomail.track_clicks' => env('ZEPTO_MAIL_TRACK_CLICKS', false),
+            ]);
         }
     }
 

@@ -2,6 +2,10 @@
 
 declare(strict_types=1);
 
+$appUrl = mb_rtrim((string) env('APP_URL', 'https://kraite.com'), '/');
+$derivedWebsiteUrl = preg_replace('#^(https?://)admin\.#', '$1', $appUrl) ?? $appUrl;
+$websiteUrl = mb_rtrim((string) env('KRAITE_WEBSITE_URL', $derivedWebsiteUrl), '/');
+
 return [
 
     /*
@@ -39,6 +43,17 @@ return [
     | app dispatches the email (kraite.com landing, console, or admin).
     */
     'admin_url' => env('KRAITE_ADMIN_URL', 'https://admin.kraite.com'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Website URL
+    |--------------------------------------------------------------------------
+    |
+    | Public website host used for legal and marketing links rendered outside
+    | the marketing app. Defaults to APP_URL, with admin.* hosts mapped back
+    | to the public domain for local and production admin panels.
+    */
+    'website_url' => $websiteUrl,
 
     /*
     |--------------------------------------------------------------------------

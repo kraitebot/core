@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.46.3 - 2026-05-17
+
+### Fixes
+
+- [BUG FIX] `KraiteSeeder` now stamps seeded admin users with `status=active` and an explicit UUID when model events are disabled.
+- [BUG FIX] Testing seeds no longer call the public IP resolver; local API server rows use `127.0.0.1` under `APP_ENV=testing`.
+- [BUG FIX] `migrateKraiteCredentials()` now persists a configured Resend API key without clearing an existing stored key when config is empty.
+
+### Improvements
+
+- [IMPROVED] Shared environment loading now syncs Resend and ZeptoMail service config values after `.env.kraite` is loaded.
+- [IMPROVED] Email verification messages now include the raw verification URL as fallback copy.
+- [IMPROVED] Added `kraite.website_url`, derived from `APP_URL` with `admin.*` hosts mapped to the public website domain, for legal and marketing links rendered outside the marketing app.
+
 ## 1.46.2 - 2026-05-16
 
 ### Fixes

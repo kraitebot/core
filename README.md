@@ -21,6 +21,7 @@ Kraite Core is the foundational package powering the Kraite trading system. It p
 - **WebSocket streams** — real-time mark price and user data processing
 - **Market regime detection** — BTC correlation, elasticity, and cascade analysis
 - **Artisan commands** — cooldown/warmup, dispatch daemon, kline fetching, symbol discovery
+- **Shared onboarding infrastructure** — private-beta notification canonicals, Resend/ZeptoMail config sync, and public/admin URL configuration for cross-app links
 
 ## Requirements
 
@@ -28,6 +29,10 @@ Kraite Core is the foundational package powering the Kraite trading system. It p
 - Laravel 12
 - MySQL 8+
 - Redis
+
+## Shared Configuration
+
+Core loads the shared `.env.kraite` file when present and synchronizes transactional email credentials into Laravel's service config. Apps can use `config('kraite.website_url')` for public website links; admin hosts derive this from `APP_URL` by mapping `admin.kraite.*` back to `kraite.*`, with `KRAITE_WEBSITE_URL` available as an explicit override.
 
 ## Disclaimer
 

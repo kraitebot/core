@@ -1443,6 +1443,7 @@ final class NotificationMessageBuilder
                         ['type' => 'paragraph', 'text' => 'Hi there,'],
                         ['type' => 'paragraph', 'text' => 'We need you to confirm your email address, for security reasons. Click the button below to verify and we will be able to reach you again from this address.'],
                         ['type' => 'button', 'href' => $verificationUrl, 'label' => 'Verify Email', 'variant' => 'primary'],
+                        ['type' => 'paragraph', 'text' => "If the button does not work, copy and paste this link into your browser:\n{$verificationUrl}"],
                         ['type' => 'fineprint', 'text' => "If you didn't sign up for Kraite, you can safely ignore this email."],
                     ],
                 ];
