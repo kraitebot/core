@@ -6,7 +6,6 @@ namespace Kraite\Core\Jobs\Atomic\Position;
 
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\Account;
-use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\MarketRegime\BlackSwanIndex;
 use Kraite\Core\Support\MarketRegime\CrowdingMultiplier;
@@ -153,10 +152,7 @@ final class PreparePositionDataJob extends BaseQueueableJob
     public function calculateMarginWithSubscriptionCap(Account $account, string $direction): string
     {
         // Balance was stored by VerifyMinAccountBalanceJob earlier in the chain.
-        $balanceSnapshot = ApiSnapshot::getFrom($account, 'account-balance');
-        $balance = $balanceSnapshot['available-balance']
-            ?? $account->margin
-            ?? '0';
+        $balance = $account->balanceForTrading();
 
         // Direction-aware percent — LONG and SHORT sizing are tuned
         // independently on the account. Fallback 5.00 matches the

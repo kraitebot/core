@@ -15,15 +15,14 @@ trait MapsAccountBalanceQuery
         $properties = new ApiProperties;
         $properties->set('relatable', $account);
 
-        // KuCoin requires currency parameter
-        $tradingQuote = $account->tradingQuote->canonical ?? 'USDT';
-        $properties->set('options.currency', $tradingQuote);
+        // KuCoin requires currency parameter.
+        $properties->set('options.currency', $account->balanceQuote());
 
         return $properties;
     }
 
     /**
-     * Returns structured balance data for the account's trading quote.
+     * Returns structured balance data for the account's portfolio quote.
      *
      * KuCoin Futures response structure:
      * {
@@ -46,12 +45,7 @@ trait MapsAccountBalanceQuery
         $accountData = $data['data'] ?? [];
 
         if (empty($accountData)) {
-            return [
-                'wallet-balance' => '0',
-                'available-balance' => '0',
-                'cross-wallet-balance' => '0',
-                'cross-unrealized-pnl' => '0',
-            ];
+            return $this->emptyAccountBalance();
         }
 
         // KuCoin provides accountEquity (total), marginBalance, availableBalance
@@ -61,10 +55,25 @@ trait MapsAccountBalanceQuery
         $unrealisedPnl = (string) ($accountData['unrealisedPNL'] ?? '0');
 
         return [
+            'total-wallet-balance' => $accountEquity,
             'wallet-balance' => $marginBalance,
             'available-balance' => $availableBalance,
             'cross-wallet-balance' => $accountEquity,
             'cross-unrealized-pnl' => $unrealisedPnl,
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function emptyAccountBalance(): array
+    {
+        return [
+            'total-wallet-balance' => '0',
+            'wallet-balance' => '0',
+            'available-balance' => '0',
+            'cross-wallet-balance' => '0',
+            'cross-unrealized-pnl' => '0',
         ];
     }
 }

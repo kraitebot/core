@@ -15,14 +15,14 @@ trait MapsAccountBalanceQuery
         $properties = new ApiProperties;
         $properties->set('relatable', $account);
 
-        // BitGet V2 requires productType for futures
-        $properties->set('options.productType', 'USDT-FUTURES');
+        // BitGet V2 requires productType for futures.
+        $properties->set('options.productType', $this->productTypeForBalanceQuote($account->balanceQuote()));
 
         return $properties;
     }
 
     /**
-     * Returns structured balance data for the account's trading quote.
+     * Returns structured balance data for the account's portfolio quote.
      *
      * BitGet V2 response structure:
      * {
@@ -59,20 +59,15 @@ trait MapsAccountBalanceQuery
     {
         $data = json_decode((string) $response->getBody(), associative: true);
         $accountsData = $data['data'] ?? [];
+        $balanceQuote = $account->balanceQuote();
 
-        // Find USDT account data
         $accountData = collect($accountsData)
-            ->first(static function ($acc) {
-                return ($acc['marginCoin'] ?? '') === 'USDT';
+            ->first(static function ($acc) use ($balanceQuote) {
+                return ($acc['marginCoin'] ?? '') === $balanceQuote;
             });
 
         if (empty($accountData)) {
-            return [
-                'wallet-balance' => '0',
-                'available-balance' => '0',
-                'cross-wallet-balance' => '0',
-                'cross-unrealized-pnl' => '0',
-            ];
+            return $this->emptyAccountBalance();
         }
 
         // BitGet provides accountEquity (total), available, unrealizedPL
@@ -81,10 +76,34 @@ trait MapsAccountBalanceQuery
         $unrealizedPnl = (string) ($accountData['unrealizedPL'] ?? $accountData['crossedUnrealizedPL'] ?? '0');
 
         return [
+            'total-wallet-balance' => $accountEquity,
             'wallet-balance' => $accountEquity,
             'available-balance' => $available,
             'cross-wallet-balance' => $accountEquity,
             'cross-unrealized-pnl' => $unrealizedPnl,
+        ];
+    }
+
+    private function productTypeForBalanceQuote(string $balanceQuote): string
+    {
+        return match ($balanceQuote) {
+            'USDT' => 'USDT-FUTURES',
+            'USDC' => 'USDC-FUTURES',
+            default => 'COIN-FUTURES',
+        };
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function emptyAccountBalance(): array
+    {
+        return [
+            'total-wallet-balance' => '0',
+            'wallet-balance' => '0',
+            'available-balance' => '0',
+            'cross-wallet-balance' => '0',
+            'cross-unrealized-pnl' => '0',
         ];
     }
 }

@@ -28,6 +28,7 @@ use Kraite\Core\Concerns\Account\InteractsWithApis;
  * @property string|null $portfolio_quote
  * @property string|null $trading_quote
  * @property float|null $margin
+ * @property string $balance_for_trading_basis
  * @property bool $can_trade
  * @property bool $is_active
  * @property bool $on_hedge_mode
@@ -76,6 +77,7 @@ final class Account extends BaseModel
         'allow_other_orders' => 'boolean',
         'override_tp' => 'boolean',
         'override_sl' => 'boolean',
+        'balance_for_trading_basis' => 'string',
         'position_leverage_long' => 'integer',
         'position_leverage_short' => 'integer',
         'margin_mode' => 'string',
@@ -268,31 +270,25 @@ final class Account extends BaseModel
     }
 
     /**
+     * Quote currency used for portfolio-level balance queries.
+     */
+    public function balanceQuote(): string
+    {
+        $quote = $this->portfolio_quote ?: $this->trading_quote ?: 'USDT';
+
+        return mb_strtoupper((string) $quote);
+    }
+
+    /**
      * Source-of-truth balance figure for margin sizing.
      *
-     * When the account is Kraite-exclusive (both `allow_other_*=false`)
-     * the full wallet balance is fair game — Kraite knows everything
-     * locked elsewhere. The helper returns `total-wallet-balance`
-     * from the most recent `account-balance` snapshot stamped by
-     * `StoreAccountBalanceJob`.
-     *
-     * When at least one `allow_other_*=true` (the operator may also
-     * be placing positions or orders directly on the exchange) the
-     * helper returns `available-balance` — the conservative figure
-     * Binance reports as free margin remaining after locked-in
-     * orders and initial margin of all open positions. Avoids
-     * blowing the margin ratio when Kraite cannot see what the
-     * operator is doing.
-     *
-     * Cold-start fallback: when no balance snapshot exists yet, or
-     * the snapshot is missing the expected key, the helper falls
-     * back to the account's persisted `margin` column.
+     * `balance_for_trading_basis=total` uses `total-wallet-balance`.
+     * `balance_for_trading_basis=available` uses `available-balance`.
+     * Cold starts fall back to the persisted absolute `margin`.
      */
     public function balanceForTrading(): string
     {
-        $key = ($this->allow_other_positions || $this->allow_other_orders)
-            ? 'available-balance'
-            : 'total-wallet-balance';
+        $key = $this->balanceForTradingSnapshotKey();
 
         $snapshot = ApiSnapshot::getFrom($this, 'account-balance');
 
@@ -303,6 +299,13 @@ final class Account extends BaseModel
         }
 
         return (string) $value;
+    }
+
+    public function balanceForTradingSnapshotKey(): string
+    {
+        return $this->balance_for_trading_basis === 'available'
+            ? 'available-balance'
+            : 'total-wallet-balance';
     }
 
     /**

@@ -170,33 +170,6 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Health Check Authentication
-    |--------------------------------------------------------------------------
-    |
-    | Secret token for authenticating /health-check endpoint requests.
-    | Each server has its own secret; the dashboard sends the token via X-Health-Token header.
-    | Leave empty to disable authentication (not recommended in production).
-    */
-    'health_check_secret' => env('HEALTH_CHECK_SECRET'),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Indicator Batch Processing
-    |--------------------------------------------------------------------------
-    |
-    | jobs_per_index_batch: Number of parallel QueryAllIndicatorsForSymbolsChunkJob
-    |                       jobs that can run simultaneously in the same index group.
-    |                       Higher values = faster execution but more API rate limit risk.
-    |                       Default: 20 (balanced between speed and safety)
-    |                       Conservative: 10 (0% rate limiting)
-    |                       Aggressive: 30+ (faster but may hit rate limits)
-    */
-    'indicators' => [
-        'jobs_per_index_batch' => (int) env('INDICATORS_JOBS_PER_INDEX_BATCH', 20),
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
     | Token Discovery
     |--------------------------------------------------------------------------
     |

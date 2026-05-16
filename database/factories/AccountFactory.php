@@ -33,6 +33,7 @@ final class AccountFactory extends Factory
             'portfolio_quote' => 'USDT',
             'trading_quote' => 'USDT',
             'margin' => 1000.00,
+            'balance_for_trading_basis' => 'total',
             'can_trade' => true,
             'margin_percentage_long' => 5.00,
             'margin_percentage_short' => 5.00,

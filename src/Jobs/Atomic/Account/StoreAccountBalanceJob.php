@@ -17,7 +17,7 @@ use Kraite\Core\Models\ApiSystem;
  * Queries the exchange for the current account balance and stores
  * a snapshot in the account_balance_history table.
  */
-class StoreAccountBalanceJob extends BaseApiableJob
+final class StoreAccountBalanceJob extends BaseApiableJob
 {
     public Account $account;
 
@@ -27,6 +27,43 @@ class StoreAccountBalanceJob extends BaseApiableJob
     {
         $this->account = Account::findOrFail($accountId);
         $this->apiSystem = $this->account->apiSystem;
+    }
+
+    /**
+     * @param  array<string, mixed>  $balanceData
+     * @return array{
+     *     total_wallet_balance: float,
+     *     total_unrealized_profit: float,
+     *     total_maintenance_margin: float,
+     *     total_margin_balance: float,
+     * }
+     */
+    public static function historyValuesFromBalanceResult(array $balanceData): array
+    {
+        $totalWalletBalance = self::castToFloat(
+            $balanceData['total-wallet-balance']
+                ?? $balanceData['wallet-balance']
+                ?? 0
+        );
+
+        $marginBalance = self::castToFloat(
+            $balanceData['cross-wallet-balance']
+                ?? $balanceData['total-wallet-balance']
+                ?? $balanceData['wallet-balance']
+                ?? 0
+        );
+
+        return [
+            'total_wallet_balance' => $totalWalletBalance,
+            'total_unrealized_profit' => self::castToFloat($balanceData['cross-unrealized-pnl'] ?? 0),
+            'total_maintenance_margin' => self::castToFloat($balanceData['maintenance-margin'] ?? 0),
+            'total_margin_balance' => $marginBalance,
+        ];
+    }
+
+    public static function castToFloat(mixed $value): float
+    {
+        return is_numeric($value) ? (float) $value : 0.0;
     }
 
     public function assignExceptionHandler(): void
@@ -43,33 +80,19 @@ class StoreAccountBalanceJob extends BaseApiableJob
 
     public function computeApiable(): array
     {
-        $apiResponse = $this->account->apiQuery();
-        $accountData = $apiResponse->result;
+        $apiResponse = $this->account->apiQueryBalance();
+        $historyValues = self::historyValuesFromBalanceResult($apiResponse->result);
 
-        $walletBalance = $this->castToFloat($accountData['totalWalletBalance'] ?? 0);
-        $unrealizedProfit = $this->castToFloat($accountData['totalUnrealizedProfit'] ?? 0);
-        $maintMargin = $this->castToFloat($accountData['totalMaintMargin'] ?? 0);
-        $marginBalance = $this->castToFloat($accountData['totalMarginBalance'] ?? 0);
-
-        DB::transaction(function () use ($walletBalance, $unrealizedProfit, $maintMargin, $marginBalance) {
+        DB::transaction(function () use ($historyValues) {
             AccountBalanceHistory::create([
                 'account_id' => $this->account->id,
-                'total_wallet_balance' => $walletBalance,
-                'total_unrealized_profit' => $unrealizedProfit,
-                'total_maintenance_margin' => $maintMargin,
-                'total_margin_balance' => $marginBalance,
+                ...$historyValues,
             ]);
         });
 
         return [
             'account_id' => $this->account->id,
-            'total_wallet_balance' => $walletBalance,
-            'total_margin_balance' => $marginBalance,
+            ...$historyValues,
         ];
-    }
-
-    public function castToFloat(mixed $value): float
-    {
-        return is_numeric($value) ? (float) $value : 0.0;
     }
 }

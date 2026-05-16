@@ -261,17 +261,16 @@ final class RecoverPositionsCommand extends BaseCommand
     }
 
     /**
-     * Light authenticated round-trip via getAccountBalance. Verifies
+     * Light authenticated round-trip via apiQueryBalance. Verifies
      * API credentials are valid before recovery runs. Failure here
      * means the rest of the recovery is guaranteed to fail too.
      */
     protected function healthCheck(Account $account, RecoveryReport $report): bool
     {
         try {
-            $response = $account->withApi()->getAccountBalance();
-            $body = (string) $response->getBody();
+            $response = $account->apiQueryBalance();
 
-            if (mb_strlen($body) < 10) {
+            if ($response->result === []) {
                 $report->warning("Account #{$account->id}: empty balance response — credentials likely invalid");
                 $report->line('  ✗ API health-check returned empty body');
 

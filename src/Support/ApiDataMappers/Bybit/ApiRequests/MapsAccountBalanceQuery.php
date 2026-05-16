@@ -20,7 +20,7 @@ trait MapsAccountBalanceQuery
     }
 
     /**
-     * Returns structured balance data for the account's trading quote.
+     * Returns structured balance data for the account's portfolio quote.
      *
      * Response format:
      * [
@@ -36,32 +36,22 @@ trait MapsAccountBalanceQuery
     public function resolveGetBalanceResponse(Response $response, Account $account): array
     {
         $data = json_decode((string) $response->getBody(), associative: true);
-        $tradingQuote = $account->tradingQuote->canonical ?? 'USDT';
+        $balanceQuote = $account->balanceQuote();
 
         if (! isset($data['result']['list'][0])) {
-            return [
-                'wallet-balance' => '0',
-                'available-balance' => '0',
-                'cross-wallet-balance' => '0',
-                'cross-unrealized-pnl' => '0',
-            ];
+            return $this->emptyAccountBalance();
         }
 
         $accountData = $data['result']['list'][0];
         $coins = $accountData['coin'] ?? [];
 
         $quoteBalance = collect($coins)
-            ->first(static function ($item) use ($tradingQuote) {
-                return $item['coin'] === $tradingQuote;
+            ->first(static function ($item) use ($balanceQuote) {
+                return ($item['coin'] ?? null) === $balanceQuote;
             });
 
         if ($quoteBalance === null) {
-            return [
-                'wallet-balance' => '0',
-                'available-balance' => '0',
-                'cross-wallet-balance' => '0',
-                'cross-unrealized-pnl' => '0',
-            ];
+            return $this->emptyAccountBalance();
         }
 
         // Calculate available = wallet - locked (availableToWithdraw is deprecated)
@@ -70,10 +60,25 @@ trait MapsAccountBalanceQuery
         $availableBalance = bcsub($walletBalance, $locked, scale: 8);
 
         return [
+            'total-wallet-balance' => $walletBalance,
             'wallet-balance' => $walletBalance,
             'available-balance' => $availableBalance,
             'cross-wallet-balance' => $walletBalance,
             'cross-unrealized-pnl' => $quoteBalance['unrealisedPnl'] ?? '0',
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function emptyAccountBalance(): array
+    {
+        return [
+            'total-wallet-balance' => '0',
+            'wallet-balance' => '0',
+            'available-balance' => '0',
+            'cross-wallet-balance' => '0',
+            'cross-unrealized-pnl' => '0',
         ];
     }
 }

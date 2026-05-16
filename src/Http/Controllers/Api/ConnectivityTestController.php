@@ -18,13 +18,6 @@ use Kraite\Core\Support\Connectivity\AccountServerConnectivityService;
  */
 final class ConnectivityTestController extends Controller
 {
-    public function start(Request $request): JsonResponse
-    {
-        return response()->json([
-            'error' => 'Raw credential connectivity tests have been replaced by account connectivity tests.',
-        ], 410);
-    }
-
     public function startAccount(Account $account, AccountServerConnectivityService $connectivity): JsonResponse
     {
         return response()->json($connectivity->start($account));

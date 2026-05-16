@@ -7,7 +7,6 @@ namespace Kraite\Core\Jobs\Lifecycles\Position;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Position;
-use Kraite\Core\Support\Proxies\JobProxy;
 
 /**
  * ReplacePositionOrdersJob (Orchestrator)

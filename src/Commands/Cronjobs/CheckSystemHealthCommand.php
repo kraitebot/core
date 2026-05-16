@@ -443,7 +443,7 @@ final class CheckSystemHealthCommand extends BaseCommand
                     signal: "balance_stale_account_{$account->id}",
                     severity: 'high',
                     title: "Account balance history stale (#{$account->id})",
-                    detail: 'No `account_balance_history` row newer than '.self::BALANCE_STALENESS_MINUTES."min for account #{$account->id} ({$account->name}). PnL + sizing math reading stale numbers.",
+                    detail: 'No `account_balance_history` row newer than '.self::BALANCE_STALENESS_MINUTES."min for account #{$account->id} ({$account->name}). Projections and wallet-history surfaces may read stale numbers.",
                 );
                 $alerts++;
             } catch (Throwable $e) {
