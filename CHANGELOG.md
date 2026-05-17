@@ -16,6 +16,13 @@ All notable changes to this project will be documented in this file.
 - [IMPROVED] Email verification messages now include the raw verification URL as fallback copy.
 - [IMPROVED] Added `kraite.website_url`, derived from `APP_URL` with `admin.*` hosts mapped to the public website domain, for legal and marketing links rendered outside the marketing app.
 
+### Removed (dead-code sweep)
+
+- [REMOVED] **`DashboardApiController` (818-line stub)** plus its four routes (`GET /api/dashboard/{data,stats,positions,positions/{id}}`). The controller returned hardcoded fake data and had no consumer frontend calling it.
+- [REMOVED] **`ConnectivityTestController::start()` tombstone** and its `POST /api/connectivity-test/start` route. The method returned HTTP 410 Gone unconditionally; the account-based connectivity flow (`startAccount`/`status`/`notifyAccountServer`) replaces it.
+- [REMOVED] **Two unread config keys** in `config/kraite.php`: `kraite.health_check_secret` (defined via `env('HEALTH_CHECK_SECRET')` but never read by any consumer) and `kraite.indicators.jobs_per_index_batch` (defined via env with no readers).
+- [REMOVED] **Three unused imports** scrubbed: `ApiSystemObserver` (`use Kraite\Core\Models\ApiSystem`), `IndicatorObserver` (`use Kraite\Core\Models\Indicator`), and `ReplacePositionOrdersJob` (`use Kraite\Core\Support\Proxies\JobProxy`).
+
 ## 1.46.2 - 2026-05-16
 
 ### Fixes
