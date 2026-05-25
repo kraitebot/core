@@ -47,6 +47,7 @@ use Kraite\Core\Commands\SafeToRestartCommand;
 use Kraite\Core\Commands\Tests\TestNotificationCommand;
 use Kraite\Core\Commands\Tests\ThrottlerStressTestCommand;
 use Kraite\Core\Commands\UpdateRecvwindowSafetyDurationCommand;
+use Kraite\Core\Commands\VerifyFleetTopologyCommand;
 use Kraite\Core\Commands\WarmupCommand;
 use Kraite\Core\Events\UserEmailConfirmed;
 use Kraite\Core\Listeners\AttachPrivateBetaCoupon;
@@ -99,6 +100,7 @@ final class CoreServiceProvider extends ServiceProvider
             RecoverPositionsCommand::class,
             BackfillOriginalPricesCommand::class,
             UpdateRecvwindowSafetyDurationCommand::class,
+            VerifyFleetTopologyCommand::class,
             BacktestTokenCommand::class,
             AnalyseBscsCommand::class,
             CheckDriftsCommand::class,

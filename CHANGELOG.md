@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+- [NEW FEATURE] **`kraite:verify-fleet-topology` artisan command.** Asserts every key in `config('kraite.horizon.workers')` has a matching `servers.hostname` row. Without that alignment, StepRouter cannot map a banned IP back to the hostname that belongs to a config key — ban filtering silently fails for the drifted worker and the rotation engine becomes a no-op. Detects two drift directions: config keys with no servers row (the load-bearing case) and apiable server rows with no config block (operational hygiene — orphan workers that will never receive any dispatched steps). Flags: `--fail-on-drift` (exit code 1 on drift; used by `deploy.sh` after `config:cache` and before `horizon:terminate` so a broken deploy aborts before workers respawn against the stale state), `--quiet-on-success` (suppresses the OK line for cron / boot invocations).
 - [NEW FEATURE] **`Kraite\Core\Support\StepRouter`** — dispatch-time queue resolver registered with step-dispatcher v1.13.0's `setQueueResolver()` hook. Replaces the pickup-time rotation engine from v1.47.0. At dispatch time the router:
   - Strips any known-hostname suffix from the step's `queue` field to recover the logical category (e.g. `positions-eos` → `positions` on a retry)
   - Reads the candidate worker list for that logical queue from `config('kraite.queue_subscriptions')`
