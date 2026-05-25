@@ -225,11 +225,79 @@ final class CoreServiceProvider extends ServiceProvider
         // the target exchange.
         //
         // Registered late in boot() so the Server / Account / ForbiddenHostname
-        // models + the kraite.queue_subscriptions config are all available
+        // models + the kraite.horizon.workers config are all available
         // by the time the first dispatch tick can fire.
         StepDispatcher::setQueueResolver(static function (Step $step): ?string {
             return app(StepRouter::class)->resolveQueueName($step);
         });
+
+        $this->syncHorizonEnvironmentsFromKraiteConfig();
+    }
+
+    /**
+     * Compose `config('horizon.environments')` from `config('kraite.horizon')`
+     * at boot time. Can't happen inline inside config/horizon.php because
+     * Laravel loads config files in alphabetical order — horizon.php (h)
+     * loads BEFORE kraite.php (k), so an inline transformer reading from
+     * kraite.* would always see an empty array. Deferring to ServiceProvider
+     * boot guarantees every config file is loaded by the time we run.
+     *
+     * Single-source-of-truth invariant: both Horizon (via `horizon.environments`)
+     * and `StepRouter` (via `kraite.horizon.workers`) read derived views of the
+     * same topology. The drift check `kraite:verify-fleet-topology` asserts the
+     * derived data agrees with the `servers` table — without that, banned-IP
+     * filtering silently no-ops for the drifted worker.
+     */
+    private function syncHorizonEnvironmentsFromKraiteConfig(): void
+    {
+        $workers = config('kraite.horizon.workers', []);
+        $defaults = config('kraite.horizon.defaults', []);
+
+        if (! is_array($workers) || $workers === []) {
+            return;
+        }
+
+        $environments = [];
+        $physicalQueues = [];
+
+        foreach ($workers as $hostname => $logicalQueues) {
+            if (! is_array($logicalQueues)) {
+                continue;
+            }
+
+            $supervisors = [];
+
+            foreach ($logicalQueues as $logical => $overrides) {
+                // Physical queue name: per-hostname suffix, except for the
+                // hostname's own queue (logical name == hostname → no
+                // double-suffixing). Matches StepRouter::buildPhysicalQueue
+                // exactly so the dispatcher and Horizon agree on naming.
+                $physical = $logical === $hostname ? $hostname : "{$logical}-{$hostname}";
+
+                $supervisors["{$logical}-supervisor"] = array_merge(
+                    $defaults,
+                    ['queue' => [$physical]],
+                    is_array($overrides) ? $overrides : [],
+                );
+
+                $physicalQueues[] = $physical;
+            }
+
+            $environments[$hostname] = $supervisors;
+        }
+
+        config(['horizon.environments' => $environments]);
+
+        // Extend step-dispatcher.queues.valid with every derived physical
+        // queue so StepObserver's saving() hook accepts them. Without this
+        // the resolver writes `step.queue='positions-eos'` and the observer
+        // silently demotes it to `default` because 'positions-eos' isn't
+        // on the allowlist — the dispatch then pushes to the wrong queue
+        // and no worker consumes it.
+        $existingValid = (array) config('step-dispatcher.queues.valid', []);
+        $merged = array_values(array_unique(array_merge($existingValid, $physicalQueues)));
+
+        config(['step-dispatcher.queues.valid' => $merged]);
     }
 
     public function register(): void
