@@ -454,6 +454,30 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'account_all_workers_blacklisted' => (static function () use ($exchangeTitle, $accountName) {
+                return [
+                    'severity' => NotificationSeverity::Critical,
+                    'title' => '🚨 URGENT — Account Deactivated, Portfolio Unmanaged',
+                    'emailMessage' => "🚨 ACCOUNT DEACTIVATED — YOUR PORTFOLIO IS UNMANAGED\n\n".
+                        "Every Kraite worker server IP is currently blacklisted on {$exchangeTitle} for your account \"{$accountName}\".\n\n".
+                        "The system cannot communicate with the exchange at all to manage your open positions, so the account has been disabled to stop further failed dispatches.\n\n".
+                        "⚠️ YOUR OPEN POSITIONS REMAIN ON THE EXCHANGE BUT ARE NOT BEING MANAGED.\n".
+                        "No new orders will be placed. No take-profits will be re-calculated. No stop-losses will be re-adjusted. Until you intervene, the strategy is frozen and the positions are exposed to market moves with no automated response.\n\n".
+                        "🔧 HOW TO RECOVER:\n\n".
+                        "1. Log into {$exchangeTitle} and verify your API key is valid and has the correct permissions (Futures trading, IP whitelisting).\n".
+                        "2. Add EVERY Kraite worker IP to your API key whitelist (see the IP list in your account settings).\n".
+                        "3. Once the whitelist is fixed, re-activate the account in the admin panel.\n".
+                        "4. The first cron tick after re-activation will verify connectivity end-to-end and resume management.\n\n".
+                        '⏱️ Until you complete these steps, the account stays disabled and the system will not touch your positions.',
+                    'pushoverMessage' => "🚨 {$exchangeTitle} ACCOUNT DEACTIVATED\n".
+                        "Account: {$accountName}\n".
+                        "Every worker IP is blacklisted — positions are unmanaged.\n".
+                        'Fix API key + whitelist + re-activate now.',
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                ];
+            })(),
+
             'server_account_blocked' => (static function () use ($context, $exchangeTitle, $ip, $hostname, $accountName) {
                 // Extract details
                 $errorCode = is_string($context['error_code'] ?? null) ? $context['error_code'] : 'N/A';

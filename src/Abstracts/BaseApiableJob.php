@@ -8,9 +8,13 @@ use Exception;
 use Kraite\Core\Concerns\BaseApiableJob\HandlesApiJobExceptions;
 use Kraite\Core\Concerns\BaseApiableJob\HandlesApiJobLifecycle;
 use Kraite\Core\Exceptions\NonNotifiableException;
+use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ForbiddenHostname;
+use Kraite\Core\Models\Server;
+use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\Proxies\ApiThrottlerProxy;
 use StepDispatcher\Models\Step;
+use StepDispatcher\States\Failed;
 use Throwable;
 
 abstract class BaseApiableJob extends BaseQueueableJob
@@ -30,47 +34,93 @@ abstract class BaseApiableJob extends BaseQueueableJob
 
         $this->assignExceptionHandler();
 
-        // Is this hostname forbidden for this API system and account?
         $apiSystemCanonical = $this->exceptionHandler->getApiSystem();
-        $apiSystem = \Kraite\Core\Models\ApiSystem::where('canonical', $apiSystemCanonical)->firstOrFail();
+        $apiSystem = ApiSystem::where('canonical', $apiSystemCanonical)->firstOrFail();
         $accountId = $this->exceptionHandler->account->id;
         $ipAddress = \Kraite\Core\Models\Kraite::ip();
 
-        // Check forbidden status based on account type:
-        // - Admin accounts (transient, id = NULL): Check system-wide ban only
-        // - User accounts (real, id != NULL): Check both account-specific AND system-wide bans
+        // Load every active ban touching this (account, api_system) pair —
+        // both account-scoped rows and system-wide rows. One query, walked
+        // in PHP for the type-based branches below.
         //
-        // Active bans are those where:
-        // - forbidden_until is NULL (permanent/user-fixable) OR
-        // - forbidden_until is in the future (temporary ban still active)
-        $activeBanCondition = static function ($query) {
-            $query->whereNull('forbidden_until')
-                ->orWhere('forbidden_until', '>', now());
-        };
+        // Active = forbidden_until is NULL (no expiry) or > now (window
+        // still open). Rotation treats both as blocking.
+        $activeBans = ForbiddenHostname::query()
+            ->where('api_system_id', $apiSystem->id)
+            ->where(static function ($query) use ($accountId): void {
+                if ($accountId === null) {
+                    $query->whereNull('account_id');
 
-        if ($accountId === null) {
-            // Admin account - check system-wide ban only
-            $isForbidden = ForbiddenHostname::query()
-                ->where('api_system_id', $apiSystem->id)
-                ->where('ip_address', $ipAddress)
-                ->whereNull('account_id')
-                ->where($activeBanCondition)
-                ->exists();
-        } else {
-            // User account - check both account-specific AND system-wide bans
-            $isForbidden = ForbiddenHostname::query()
-                ->where('api_system_id', $apiSystem->id)
-                ->where('ip_address', $ipAddress)
-                ->where(static function ($query) use ($accountId) {
-                    $query->where('account_id', $accountId)
-                        ->orWhereNull('account_id');
-                })
-                ->where($activeBanCondition)
-                ->exists();
+                    return;
+                }
+                $query->where('account_id', $accountId)->orWhereNull('account_id');
+            })
+            ->where(static function ($query): void {
+                $query->whereNull('forbidden_until')
+                    ->orWhere('forbidden_until', '>', now());
+            })
+            ->get();
+
+        // account_blocked = bad/revoked/disabled API key. Switching IP cannot
+        // help — the credentials themselves are the problem. Deactivate the
+        // account immediately so the cron stops fanning to it and the user
+        // is alerted that their portfolio is unmanaged. Fires regardless of
+        // whether the ban was discovered on this worker or another.
+        $hasAccountBlocked = $activeBans->contains(
+            static fn (ForbiddenHostname $ban): bool => $ban->type === ForbiddenHostname::TYPE_ACCOUNT_BLOCKED
+        );
+
+        if ($hasAccountBlocked) {
+            $this->deactivateAccountAndFail($apiSystem);
+
+            return;
         }
 
-        if ($isForbidden) {
-            // Place back the job in the queue;
+        // Rotation-eligible bans are IP-bound (each fleet IP has its own
+        // whitelist status / rate-limit budget / penalty-box status on the
+        // exchange). The current worker may be blacklisted while siblings
+        // are still clean — re-route rather than burn retries locally.
+        $rotationBannedIps = $activeBans
+            ->whereIn('type', [
+                ForbiddenHostname::TYPE_IP_NOT_WHITELISTED,
+                ForbiddenHostname::TYPE_IP_RATE_LIMITED,
+                ForbiddenHostname::TYPE_IP_BANNED,
+            ])
+            ->pluck('ip_address')
+            ->unique()
+            ->all();
+
+        if (in_array($ipAddress, $rotationBannedIps, true)) {
+            $cleanWorkers = Server::query()
+                ->where('is_apiable', true)
+                ->where('needs_whitelisting', true)
+                ->whereNotNull('own_queue_name')
+                ->whereNotIn('ip_address', $rotationBannedIps)
+                ->get();
+
+            if ($cleanWorkers->isNotEmpty()) {
+                $target = $cleanWorkers->random();
+                $this->rotateToQueue((string) $target->own_queue_name);
+
+                return;
+            }
+
+            // No clean worker exists. Terminal cascade is reserved for
+            // permanent bans (ip_not_whitelisted) — those need user action
+            // to clear and won't recover on their own. Temporary bans
+            // (ip_rate_limited / ip_banned with a future expiry) just need
+            // to wait out the window; preserve the original retry behaviour
+            // so the step naturally retries once the ban auto-expires.
+            $hasPermanentBan = $activeBans->contains(
+                static fn (ForbiddenHostname $ban): bool => $ban->type === ForbiddenHostname::TYPE_IP_NOT_WHITELISTED
+            );
+
+            if ($hasPermanentBan) {
+                $this->deactivateAccountAndFail($apiSystem);
+
+                return;
+            }
+
             $this->retryJob();
 
             return;
@@ -166,29 +216,6 @@ abstract class BaseApiableJob extends BaseQueueableJob
         }
 
         return true;
-    }
-
-    /**
-     * Spread the reschedule so concurrent workers don't all land on the
-     * same dispatch_after.
-     *
-     * The throttler math `last_dispatch + min_delay` produces an identical
-     * target instant for every worker racing the cache at the same time —
-     * they all compute the same "earliest-allowed" moment regardless of
-     * when they actually checked. Without jitter the dispatcher releases
-     * them as a single herd, the throttler admits one, and the rest pile
-     * onto the next identical target. The cycle traps throughput well
-     * below the configured cap.
-     *
-     * Added jitter is 0–30% of the base wait with a 50 ms floor so even
-     * tiny deficits gain breathing room. Jitter only pushes the reschedule
-     * later, never earlier, so it cannot cause 429s.
-     */
-    private function applyThrottleJitter(int $msToWait): int
-    {
-        $jitterMax = max(50, (int) ($msToWait * 0.3));
-
-        return $msToWait + random_int(0, $jitterMax);
     }
 
     /**
@@ -322,7 +349,7 @@ abstract class BaseApiableJob extends BaseQueueableJob
             }
 
             $apiSystemCanonical = $this->exceptionHandler->getApiSystem();
-            $apiSystem = \Kraite\Core\Models\ApiSystem::where('canonical', $apiSystemCanonical)->first();
+            $apiSystem = ApiSystem::where('canonical', $apiSystemCanonical)->first();
 
             if (! $apiSystem) {
                 return $diagnostics;
@@ -361,6 +388,93 @@ abstract class BaseApiableJob extends BaseQueueableJob
     }
 
     /**
+     * Terminal sink for the rotation engine. Fires in two cases:
+     *  1. The exchange returned account_blocked (bad API key — no IP rotation
+     *     can fix it).
+     *  2. Every apiable worker IP is blacklisted (rotation exhausted).
+     *
+     * Disables the account so downstream cronjobs / dispatchers stop fanning
+     * steps to it, marks the current step Failed, and fires a critical
+     * "portfolio at risk" notification to the account owner so they know
+     * to investigate immediately — the system can no longer manage their
+     * open positions until they intervene on the exchange side.
+     */
+    private function deactivateAccountAndFail(ApiSystem $apiSystem): void
+    {
+        $account = $this->exceptionHandler->account;
+        $reason = sprintf(
+            'All worker IPs blacklisted on %s — fix whitelist/API key and reactivate',
+            $apiSystem->name
+        );
+
+        $wasActive = $account->is_active;
+
+        if ($wasActive) {
+            $account->update([
+                'is_active' => false,
+                'disabled_reason' => $reason,
+                'disabled_at' => now(),
+            ]);
+
+            // Loud user notification — distinct from the per-ban
+            // ForbiddenHostnameObserver notifications. The portfolio is
+            // unmanaged until the user intervenes, so this fires at
+            // Critical severity and bypasses Pushover quiet hours.
+            // Throttled by (account_id, api_system) to one-per-hour to
+            // avoid spam if rotation triggers across many concurrent
+            // steps for the same account, while still re-notifying if
+            // the user re-activates and the same failure happens again
+            // an hour later.
+            $owner = $account->user;
+            if ($owner !== null) {
+                NotificationService::send(
+                    user: $owner,
+                    canonical: 'account_all_workers_blacklisted',
+                    referenceData: [
+                        'apiSystem' => $apiSystem,
+                        'account' => $account,
+                        'api_system' => $apiSystem->canonical,
+                        'account_id' => $account->id,
+                        'account_name' => $account->name,
+                    ],
+                    relatable: $account,
+                    cacheKeys: [
+                        'account_id' => $account->id,
+                        'api_system' => $apiSystem->canonical,
+                    ]
+                );
+            }
+        }
+
+        $this->step->update(['error_message' => $reason]);
+        $this->step->state->transitionTo(Failed::class);
+        $this->stepStatusUpdated = true;
+    }
+
+    /**
+     * Spread the reschedule so concurrent workers don't all land on the
+     * same dispatch_after.
+     *
+     * The throttler math `last_dispatch + min_delay` produces an identical
+     * target instant for every worker racing the cache at the same time —
+     * they all compute the same "earliest-allowed" moment regardless of
+     * when they actually checked. Without jitter the dispatcher releases
+     * them as a single herd, the throttler admits one, and the rest pile
+     * onto the next identical target. The cycle traps throughput well
+     * below the configured cap.
+     *
+     * Added jitter is 0–30% of the base wait with a 50 ms floor so even
+     * tiny deficits gain breathing room. Jitter only pushes the reschedule
+     * later, never earlier, so it cannot cause 429s.
+     */
+    private function applyThrottleJitter(int $msToWait): int
+    {
+        $jitterMax = max(50, (int) ($msToWait * 0.3));
+
+        return $msToWait + random_int(0, $jitterMax);
+    }
+
+    /**
      * Format a single ForbiddenHostname row as a triage-friendly string.
      */
     private function buildBanDiagnostic(ForbiddenHostname $ban, string $exchangeName, string $ipAddress): string
@@ -370,20 +484,15 @@ abstract class BaseApiableJob extends BaseQueueableJob
         $untilSuffix = $until !== null ? " until {$until}" : '';
 
         return match ($ban->type) {
-            ForbiddenHostname::TYPE_IP_NOT_WHITELISTED =>
-                "IP {$ipAddress} is not whitelisted on {$exchangeName} ({$scope}). Add this IP to the API key whitelist.",
+            ForbiddenHostname::TYPE_IP_NOT_WHITELISTED => "IP {$ipAddress} is not whitelisted on {$exchangeName} ({$scope}). Add this IP to the API key whitelist.",
 
-            ForbiddenHostname::TYPE_IP_RATE_LIMITED =>
-                "IP {$ipAddress} is rate-limited on {$exchangeName} ({$scope}){$untilSuffix}. Auto-recovers when the window expires.",
+            ForbiddenHostname::TYPE_IP_RATE_LIMITED => "IP {$ipAddress} is rate-limited on {$exchangeName} ({$scope}){$untilSuffix}. Auto-recovers when the window expires.",
 
-            ForbiddenHostname::TYPE_IP_BANNED =>
-                "IP {$ipAddress} is banned on {$exchangeName} ({$scope}){$untilSuffix}. Contact {$exchangeName} support if persistent.",
+            ForbiddenHostname::TYPE_IP_BANNED => "IP {$ipAddress} is banned on {$exchangeName} ({$scope}){$untilSuffix}. Contact {$exchangeName} support if persistent.",
 
-            ForbiddenHostname::TYPE_ACCOUNT_BLOCKED =>
-                "Account #{$ban->account_id} is blocked on {$exchangeName}. Check API key validity and permissions.",
+            ForbiddenHostname::TYPE_ACCOUNT_BLOCKED => "Account #{$ban->account_id} is blocked on {$exchangeName}. Check API key validity and permissions.",
 
-            default =>
-                "Forbidden hostname on {$exchangeName} ({$scope}, type={$ban->type}, ip={$ipAddress}){$untilSuffix}.",
+            default => "Forbidden hostname on {$exchangeName} ({$scope}, type={$ban->type}, ip={$ipAddress}){$untilSuffix}.",
         };
     }
 }

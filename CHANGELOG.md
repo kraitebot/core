@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.47.0 - 2026-05-25
+
+### Features
+
+- [NEW FEATURE] **Worker-IP rotation engine in `BaseApiableJob::compute()`**. When an API job runs on a worker whose public IP is blacklisted on the exchange for the target (account, api_system), the step is now re-routed onto a clean worker's per-hostname queue via `Step::rotateToQueue()` (step-dispatcher ≥ v1.12.3) — rather than retrying locally against an IP that cannot succeed. The "lives" of a step shift from retry-count to IPs-exhausted: each fleet IP is one attempt, and the step only fails when every apiable worker is banned. Source of truth is the `servers` table (`is_apiable=1, needs_whitelisting=1, own_queue_name=…`). Picks a random clean worker each rotation cycle.
+- [NEW FEATURE] **Terminal deactivation cascade.** When `account_blocked` is detected (bad API key — no IP rotation can save it) or every worker IP is blacklisted for an account, `BaseApiableJob` flips `accounts.is_active=0` with `disabled_reason="All worker IPs blacklisted on {Exchange} — fix whitelist/API key and reactivate"` so downstream cronjobs / dispatchers stop fanning steps to the account. The current step transitions to `Failed` instead of retrying. Temporary bans (rate-limited / IP-banned with a future expiry) still retry naturally because they auto-recover on window expiry; only permanent bans (`ip_not_whitelisted` + `account_blocked`) trigger the deactivation path.
+- [NEW FEATURE] **`account_all_workers_blacklisted` notification canonical** (Critical severity, throttled 1h per account-api_system pair). Fires alongside the deactivation cascade. Email + Pushover copy emphasises "YOUR PORTFOLIO IS UNMANAGED" and walks the user through the recovery checklist (verify API key validity + permissions, add every worker IP to the whitelist, re-activate the account in the admin panel). Distinct from the per-ban `ForbiddenHostnameObserver` notifications — that one says "this IP is blacklisted", this one says "we've given up on this account because every IP is".
+
+### Behaviour changes
+
+- [IMPROVED] **`forbidIpNotWhitelisted` and `forbidAccountBlocked` now stamp a 1-hour `forbidden_until` on the `forbidden_hostnames` row** instead of `null` ("sticky until proof of repair"). The rotation engine treats these rows as the source-of-truth blacklist and needs a natural re-probe cadence — without expiry, a single mis-whitelisted IP locks out forever until manual operator intervention. When the user fixes the underlying issue, the next successful authenticated call inside the hour self-heals the record via the existing success-path cleanup; if unresolved, the next failed call simply refreshes the TTL via `updateOrCreate` (no duplicate user notification).
+
 ## 1.46.3 - 2026-05-17
 
 ### Fixes

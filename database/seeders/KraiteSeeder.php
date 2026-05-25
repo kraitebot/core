@@ -815,6 +815,19 @@ final class KraiteSeeder extends Seeder
                 'cache_duration' => 3600,
                 'cache_key' => ['account_id', 'api_system'],
             ],
+            [
+                'canonical' => 'account_all_workers_blacklisted',
+                'title' => 'URGENT — Account Deactivated, Portfolio Unmanaged',
+                'description' => 'Every worker server IP is blacklisted on the exchange for your account. The system has deactivated the account because it cannot communicate with the exchange to manage your open positions.',
+                'detailed_description' => 'This notification fires when the worker-IP rotation engine has exhausted every apiable worker for an account — every fleet IP is either not whitelisted on your API key or has been blocked by the exchange. The system can no longer place, modify, or close orders on this account, so it has been disabled to stop further failed dispatches. '.
+                    'YOUR OPEN POSITIONS REMAIN ON THE EXCHANGE BUT ARE NOT BEING MANAGED. '.
+                    'To recover: (1) verify your API key is valid and has the correct permissions, (2) add every Kraite worker IP listed in the email to your API key whitelist, (3) re-activate the account in the admin panel. The first cron tick after re-activation will verify connectivity end-to-end.',
+                'usage_reference' => 'BaseApiableJob::deactivateAccountAndFail',
+                'default_severity' => 'critical',
+                'verified' => 1,
+                'cache_duration' => 3600,
+                'cache_key' => ['account_id', 'api_system'],
+            ],
             // Trading-lifecycle notifications — emitted from the position
             // workflow at key state transitions. Most ship at Pushover
             // priority -1 (low / silent) so day-to-day flow doesn't

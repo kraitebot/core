@@ -119,16 +119,18 @@ trait ApiExceptionHelpers
         $errorData = $this->extractHttpErrorCodes($exception);
 
         // IP-not-whitelisted is user-action-required: the operator must
-        // add this IP on the exchange's whitelist. Pre-fix, the record
-        // auto-expired after 24h, which produced a daily retry storm
-        // against an exchange that already rejected the IP. Make the
-        // block sticky — only a successful authenticated call (which
-        // self-heals via the account/api/IP tuple in the exception
-        // helpers) or an explicit operator clear should remove it.
+        // add this IP on the exchange's whitelist. Stamped with a 1-hour
+        // TTL so the worker-IP rotation engine has a natural re-probe
+        // cadence — without an expiry, a single mis-whitelisted IP locks
+        // out forever until an operator manually clears the row. When the
+        // user fixes the whitelist, the next successful authenticated
+        // call inside this hour self-heals the record via the success-
+        // path cleanup; if the issue is unresolved, the next failed call
+        // simply refreshes the TTL via updateOrCreate (no spam notification).
         $this->createForbiddenRecord(
             type: ForbiddenHostname::TYPE_IP_NOT_WHITELISTED,
             accountId: $this->account->id, // Account-specific
-            forbiddenUntil: null, // Sticky until proof of repair
+            forbiddenUntil: now()->addHour(),
             errorCode: (string) ($errorData['status_code'] ?? ''),
             errorMessage: $errorData['message'] ?? null
         );
@@ -185,17 +187,17 @@ trait ApiExceptionHelpers
     {
         $errorData = $this->extractHttpErrorCodes($exception);
 
-        // Account-blocked = invalid / revoked / disabled API key.
-        // Recovery requires the user to regenerate or reactivate the
-        // key on the exchange — a daily auto-retry against known-bad
-        // credentials does nothing useful and probes the exchange's
-        // auth surface. Make sticky; the success-path self-heal in
-        // ApiExceptionHelpers cleans the record on the next valid
-        // call after the user re-credentials.
+        // Account-blocked = invalid / revoked / disabled API key. Stamped
+        // with a 1-hour TTL so the worker-IP rotation engine has a natural
+        // re-probe cadence and so an account that gets re-credentialled is
+        // automatically unblocked within an hour without needing the
+        // success-path self-heal to fire (which it can't on a permanently
+        // banned IP). Duplicate detections refresh the TTL via
+        // updateOrCreate without a fresh user notification.
         $this->createForbiddenRecord(
             type: ForbiddenHostname::TYPE_ACCOUNT_BLOCKED,
             accountId: $this->account->id, // Account-specific
-            forbiddenUntil: null, // Sticky until credentials repaired
+            forbiddenUntil: now()->addHour(),
             errorCode: (string) ($errorData['status_code'] ?? ''),
             errorMessage: $errorData['message'] ?? null
         );
