@@ -143,15 +143,77 @@ final class StepRouter
 
     /**
      * List of hostnames eligible for serving a given logical queue,
-     * read from `config('kraite.queue_subscriptions.{logical}')`.
+     * derived from `config('kraite.horizon.workers')`. The workers config
+     * is the single source of truth for fleet topology — both this
+     * candidate-set view AND `config/horizon.php`'s supervisor block
+     * read from it, eliminating the drift risk of a two-map design.
+     *
+     * Per-hostname queues (where logical name == hostname) are NOT
+     * included in any candidate set — those are targeted dispatches,
+     * not subscriptions.
+     *
+     * Result is memoised per-process so repeated dispatches under high
+     * fan-out (e.g. 200-account balance cron) don't re-walk the config
+     * array on every call.
      *
      * @return array<int, string>
      */
     public function candidatesFor(string $logical): array
     {
-        $candidates = config("kraite.queue_subscriptions.{$logical}", []);
+        $map = $this->candidateMap();
 
-        return is_array($candidates) ? array_values($candidates) : [];
+        return $map[$logical] ?? [];
+    }
+
+    /**
+     * Build (and memoise) the inverse map of `kraite.horizon.workers`:
+     * logical_queue → [hostnames]. Per-hostname queues are skipped
+     * (they aren't a routing target, just a worker's direct mailbox).
+     *
+     * The cache is keyed by a content hash of the workers config so
+     * mutating `config(['kraite.horizon.workers' => ...])` mid-test
+     * forces a rebuild — important for the integration test suite
+     * which seeds different topologies per test.
+     *
+     * @return array<string, array<int, string>>
+     */
+    private function candidateMap(): array
+    {
+        static $cache = [];
+
+        $workers = config('kraite.horizon.workers', []);
+
+        if (! is_array($workers)) {
+            return [];
+        }
+
+        $key = md5(serialize($workers));
+
+        if (isset($cache[$key])) {
+            return $cache[$key];
+        }
+
+        $map = [];
+
+        foreach ($workers as $hostname => $logicalQueues) {
+            if (! is_array($logicalQueues)) {
+                continue;
+            }
+
+            foreach ($logicalQueues as $logical => $_overrides) {
+                // Skip per-hostname targeted queues — those aren't a
+                // routing candidate, just a worker's direct mailbox
+                // (used during account onboarding connectivity tests).
+                if ($logical === $hostname) {
+                    continue;
+                }
+
+                $map[$logical] ??= [];
+                $map[$logical][] = $hostname;
+            }
+        }
+
+        return $cache[$key] = $map;
     }
 
     /**
@@ -196,22 +258,20 @@ final class StepRouter
     }
 
     /**
-     * Cached per-call list of known hostnames — used for suffix stripping
-     * in `extractLogicalQueue`. Stored statically per-request rather than
-     * re-queried per call to keep the resolver's per-dispatch overhead
-     * bounded under high-fanout workloads (e.g. 200-account balance fan).
+     * List of known hostnames used for suffix stripping in
+     * `extractLogicalQueue`. Re-queried per call so test pollution
+     * (RefreshDatabase wiping the Server table between tests) can't
+     * leave stale hostnames in a process-level cache.
+     *
+     * The query is a single indexed pluck on a small table (~5 rows in
+     * production), so the per-dispatch overhead is negligible even
+     * under high-fanout workloads (e.g. 200-account balance cron fan).
      *
      * @return array<int, string>
      */
     private function knownHostnames(): array
     {
-        static $cached = null;
-
-        if ($cached === null) {
-            $cached = Server::query()->pluck('hostname')->all();
-        }
-
-        return $cached;
+        return Server::query()->pluck('hostname')->all();
     }
 
     /**
