@@ -8,13 +8,9 @@ use Exception;
 use Kraite\Core\Concerns\BaseApiableJob\HandlesApiJobExceptions;
 use Kraite\Core\Concerns\BaseApiableJob\HandlesApiJobLifecycle;
 use Kraite\Core\Exceptions\NonNotifiableException;
-use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ForbiddenHostname;
-use Kraite\Core\Models\Server;
-use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\Proxies\ApiThrottlerProxy;
 use StepDispatcher\Models\Step;
-use StepDispatcher\States\Failed;
 use Throwable;
 
 abstract class BaseApiableJob extends BaseQueueableJob
@@ -34,102 +30,19 @@ abstract class BaseApiableJob extends BaseQueueableJob
 
         $this->assignExceptionHandler();
 
-        $apiSystemCanonical = $this->exceptionHandler->getApiSystem();
-        $apiSystem = ApiSystem::where('canonical', $apiSystemCanonical)->firstOrFail();
-        $accountId = $this->exceptionHandler->account->id;
-        $ipAddress = \Kraite\Core\Models\Kraite::ip();
-
-        // Load every active ban touching this (account, api_system) pair —
-        // both account-scoped rows and system-wide rows. One query, walked
-        // in PHP for the type-based branches below.
+        // Pre-flight ban routing now happens at dispatch time inside
+        // Kraite\Core\Support\StepRouter, registered as the step-dispatcher
+        // queue resolver in CoreServiceProvider::boot(). compute() is now
+        // purely the execute path: any banned-IP scenario is filtered out
+        // BEFORE the step lands on this worker, and any "all eligible
+        // workers exhausted" condition is converted into a Failed step at
+        // dispatch time with the deactivation cascade already fired.
         //
-        // Active = forbidden_until is NULL (no expiry) or > now (window
-        // still open). Rotation treats both as blocking.
-        $activeBans = ForbiddenHostname::query()
-            ->where('api_system_id', $apiSystem->id)
-            ->where(static function ($query) use ($accountId): void {
-                if ($accountId === null) {
-                    $query->whereNull('account_id');
-
-                    return;
-                }
-                $query->where('account_id', $accountId)->orWhereNull('account_id');
-            })
-            ->where(static function ($query): void {
-                $query->whereNull('forbidden_until')
-                    ->orWhere('forbidden_until', '>', now());
-            })
-            ->get();
-
-        // account_blocked = bad/revoked/disabled API key. Switching IP cannot
-        // help — the credentials themselves are the problem. Deactivate the
-        // account immediately so the cron stops fanning to it and the user
-        // is alerted that their portfolio is unmanaged. Fires regardless of
-        // whether the ban was discovered on this worker or another.
-        $hasAccountBlocked = $activeBans->contains(
-            static fn (ForbiddenHostname $ban): bool => $ban->type === ForbiddenHostname::TYPE_ACCOUNT_BLOCKED
-        );
-
-        if ($hasAccountBlocked) {
-            $this->deactivateAccountAndFail($apiSystem);
-
-            return;
-        }
-
-        // Rotation-eligible bans are IP-bound (each fleet IP has its own
-        // whitelist status / rate-limit budget / penalty-box status on the
-        // exchange). The current worker may be blacklisted while siblings
-        // are still clean — re-route rather than burn retries locally.
-        $rotationBannedIps = $activeBans
-            ->whereIn('type', [
-                ForbiddenHostname::TYPE_IP_NOT_WHITELISTED,
-                ForbiddenHostname::TYPE_IP_RATE_LIMITED,
-                ForbiddenHostname::TYPE_IP_BANNED,
-            ])
-            ->pluck('ip_address')
-            ->unique()
-            ->all();
-
-        if (in_array($ipAddress, $rotationBannedIps, true)) {
-            $cleanWorkers = Server::query()
-                ->where('is_apiable', true)
-                ->where('needs_whitelisting', true)
-                ->whereNotNull('own_queue_name')
-                ->whereNotIn('ip_address', $rotationBannedIps)
-                ->get();
-
-            if ($cleanWorkers->isNotEmpty()) {
-                $target = $cleanWorkers->random();
-                $this->rotateToQueue((string) $target->own_queue_name);
-
-                return;
-            }
-
-            // No clean worker exists. Terminal cascade is reserved for
-            // permanent bans (ip_not_whitelisted) — those need user action
-            // to clear and won't recover on their own. Temporary bans
-            // (ip_rate_limited / ip_banned with a future expiry) just need
-            // to wait out the window; preserve the original retry behaviour
-            // so the step naturally retries once the ban auto-expires.
-            $hasPermanentBan = $activeBans->contains(
-                static fn (ForbiddenHostname $ban): bool => $ban->type === ForbiddenHostname::TYPE_IP_NOT_WHITELISTED
-            );
-
-            if ($hasPermanentBan) {
-                $this->deactivateAccountAndFail($apiSystem);
-
-                return;
-            }
-
-            $this->retryJob();
-
-            return;
-        }
-
+        // The only remaining responsibility here is calling computeApiable
+        // and routing exceptions through the API-specific handler chain.
         try {
             return $this->computeApiable();
         } catch (Throwable $e) {
-            // Let the API-specific exception handler deal with the error.
             $this->handleApiException($e);
         }
     }
@@ -385,70 +298,6 @@ abstract class BaseApiableJob extends BaseQueueableJob
         }
 
         return $diagnostics;
-    }
-
-    /**
-     * Terminal sink for the rotation engine. Fires in two cases:
-     *  1. The exchange returned account_blocked (bad API key — no IP rotation
-     *     can fix it).
-     *  2. Every apiable worker IP is blacklisted (rotation exhausted).
-     *
-     * Disables the account so downstream cronjobs / dispatchers stop fanning
-     * steps to it, marks the current step Failed, and fires a critical
-     * "portfolio at risk" notification to the account owner so they know
-     * to investigate immediately — the system can no longer manage their
-     * open positions until they intervene on the exchange side.
-     */
-    private function deactivateAccountAndFail(ApiSystem $apiSystem): void
-    {
-        $account = $this->exceptionHandler->account;
-        $reason = sprintf(
-            'All worker IPs blacklisted on %s — fix whitelist/API key and reactivate',
-            $apiSystem->name
-        );
-
-        $wasActive = $account->is_active;
-
-        if ($wasActive) {
-            $account->update([
-                'is_active' => false,
-                'disabled_reason' => $reason,
-                'disabled_at' => now(),
-            ]);
-
-            // Loud user notification — distinct from the per-ban
-            // ForbiddenHostnameObserver notifications. The portfolio is
-            // unmanaged until the user intervenes, so this fires at
-            // Critical severity and bypasses Pushover quiet hours.
-            // Throttled by (account_id, api_system) to one-per-hour to
-            // avoid spam if rotation triggers across many concurrent
-            // steps for the same account, while still re-notifying if
-            // the user re-activates and the same failure happens again
-            // an hour later.
-            $owner = $account->user;
-            if ($owner !== null) {
-                NotificationService::send(
-                    user: $owner,
-                    canonical: 'account_all_workers_blacklisted',
-                    referenceData: [
-                        'apiSystem' => $apiSystem,
-                        'account' => $account,
-                        'api_system' => $apiSystem->canonical,
-                        'account_id' => $account->id,
-                        'account_name' => $account->name,
-                    ],
-                    relatable: $account,
-                    cacheKeys: [
-                        'account_id' => $account->id,
-                        'api_system' => $apiSystem->canonical,
-                    ]
-                );
-            }
-        }
-
-        $this->step->update(['error_message' => $reason]);
-        $this->step->state->transitionTo(Failed::class);
-        $this->stepStatusUpdated = true;
     }
 
     /**

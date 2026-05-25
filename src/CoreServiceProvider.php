@@ -83,8 +83,11 @@ use Kraite\Core\Observers\PositionObserver;
 use Kraite\Core\Observers\SymbolObserver;
 use Kraite\Core\Observers\UserObserver;
 use Kraite\Core\Support\NotificationService;
+use Kraite\Core\Support\StepRouter;
 use Schema;
 use StepDispatcher\Events\StaleStepsDetected;
+use StepDispatcher\Models\Step;
+use StepDispatcher\Support\StepDispatcher;
 use Throwable;
 
 final class CoreServiceProvider extends ServiceProvider
@@ -207,6 +210,23 @@ final class CoreServiceProvider extends ServiceProvider
 
         Queue::failing(static function (): void {
             ModelLog::setCurrentStep(null);
+        });
+
+        // Dispatch-time queue routing. The framework calls this hook in
+        // DispatchesJobs::dispatchSingleStep() right before pushing onto
+        // Redis. The router (Kraite\Core\Support\StepRouter) inspects
+        // the step's logical queue + the active ban set for the related
+        // (account, api_system) pair and returns the physical per-hostname
+        // queue (e.g. positions-eos). Throws NoCleanWorkerException with
+        // a side-effect cascade (account deactivation + portfolio-at-risk
+        // notification) when every eligible worker IP is blacklisted on
+        // the target exchange.
+        //
+        // Registered late in boot() so the Server / Account / ForbiddenHostname
+        // models + the kraite.queue_subscriptions config are all available
+        // by the time the first dispatch tick can fire.
+        StepDispatcher::setQueueResolver(static function (Step $step): ?string {
+            return app(StepRouter::class)->resolveQueueName($step);
         });
     }
 

@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.48.0 - 2026-05-25
+
+### Features
+
+- [NEW FEATURE] **`Kraite\Core\Support\StepRouter`** — dispatch-time queue resolver registered with step-dispatcher v1.13.0's `setQueueResolver()` hook. Replaces the pickup-time rotation engine from v1.47.0. At dispatch time the router:
+  - Strips any known-hostname suffix from the step's `queue` field to recover the logical category (e.g. `positions-eos` → `positions` on a retry)
+  - Reads the candidate worker list for that logical queue from `config('kraite.queue_subscriptions')`
+  - Extracts the account context from `step.arguments.accountId` (or `step.relatable_id` when the step relates to an Account)
+  - Loads active `forbidden_hostnames` for the (account, api_system) pair (both account-scoped and system-wide rows)
+  - If an `account_blocked` ban exists → fires the deactivation cascade and throws `StepDispatcher\Exceptions\NoCleanWorkerException`
+  - Otherwise filters out workers whose IP appears in rotation-eligible bans (`ip_not_whitelisted`, `ip_rate_limited`, `ip_banned`)
+  - Picks a random clean worker → returns the physical per-hostname queue (e.g. `positions-eos`)
+  - If no clean worker exists AND a permanent ban (`ip_not_whitelisted`) is in the set → fires the deactivation cascade and throws
+  - If no clean worker exists but only temporary bans are present → returns `null` (step-dispatcher leaves `step.queue` as-is, existing retry mechanics take over until the temporary ban expires)
+  Registered in `CoreServiceProvider::boot()` after the Queue listeners. Sync steps (`queue=sync`) never reach the router — step-dispatcher bypasses the hook for them. Orchestrator (no-account) steps skip the ban filter and route to any eligible worker for the logical queue.
+
+### Behaviour changes
+
+- [IMPROVED] **`BaseApiableJob::compute()` simplified to the execute path only.** Pre-flight ban detection + rotation logic shipped in v1.47.0 has been removed — that responsibility moved to dispatch time inside `StepRouter` per the v1.13.0 design. `compute()` now just asserts the exception handler exists, assigns it, and calls `computeApiable()` wrapped in the API-specific exception chain. The `deactivateAccountAndFail()` private method was removed in lockstep (its caller is gone); the equivalent cascade lives in `StepRouter::deactivateAccountAndNotify()`.
+
+### Removed
+
+- [REMOVED] **The v1.47.0 rotation engine in `BaseApiableJob`** has been deleted in this release. The same outcomes (rotate banned IP, deactivate on exhaustion, loud notification) are achieved by `StepRouter` at dispatch time. Pickup-time rotation conflicted with the priority promotion path (`RecoverStaleStepsCommand` overrides the queue column on stuck Dispatched steps, breaking IP isolation); dispatch-time routing has no such conflict because the routing decision is made before the step ever enters the Redis queue.
+
 ## 1.47.0 - 2026-05-25
 
 ### Features
