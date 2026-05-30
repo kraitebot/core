@@ -215,6 +215,12 @@ return [
                 'type' => 'worker',
                 'description' => 'Worker — positions / orders / priority',
             ],
+            'hemera' => [
+                'ip_address' => '77.42.68.254',
+                'is_apiable' => true,
+                'type' => 'worker',
+                'description' => 'Worker — positions / orders / priority',
+            ],
             'tyche' => [
                 'ip_address' => '204.168.135.246',
                 'is_apiable' => true,
