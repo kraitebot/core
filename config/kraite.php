@@ -149,6 +149,81 @@ return [
         'ingestion' => env('SERVER_SECRET_INGESTION'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Fleet — canonical hostname → IP map (matches servers table)
+    |--------------------------------------------------------------------------
+    |
+    | Single source of truth for the production fleet roster. Sibling to
+    | `kraite.horizon.workers` (which only describes Horizon supervisor
+    | topology). Read by `KraiteSeeder::seedServers()` to populate the
+    | `servers` table on every fresh seed, and indirectly by the deploy-time
+    | drift gate `kraite:verify-fleet-topology` which checks that every
+    | `kraite.horizon.workers` key has a matching `servers.hostname` row.
+    |
+    | Why this lives alongside `horizon.workers` instead of inside it: the
+    | two domains describe different things. `horizon.workers` describes
+    | per-supervisor process counts. `fleet.servers` describes physical
+    | hosts (IPs, roles, apiable flag). Hyperion belongs in `fleet.servers`
+    | (it's a host) but NOT in `horizon.workers` (it runs no Horizon).
+    | Keeping them separate keeps each block small + obviously-purposed.
+    |
+    | Adding a worker = one edit here (new hostname row) AND one edit in
+    | `horizon.workers` (supervisor block). The drift gate at deploy step
+    | 10 catches half-edits.
+    |
+    | `is_apiable`: true for hosts that make outbound exchange API calls
+    | (the workers + the ingestion box's WS daemons). False for storage-
+    | only hosts (hyperion = MySQL + Redis). The drift gate rejects orphan
+    | apiable rows (server provisioned but no horizon.workers block).
+    */
+    'fleet' => [
+        'servers' => [
+            'local' => [
+                'ip_address' => '127.0.0.1',
+                'is_apiable' => true,
+                'type' => 'local',
+                'description' => 'Local dev box (Bruno\'s Mac)',
+            ],
+            'hyperion' => [
+                'ip_address' => '135.181.93.226',
+                'is_apiable' => false,
+                'type' => 'database',
+                'description' => 'Database (MySQL) + Redis',
+            ],
+            'athena' => [
+                'ip_address' => '37.27.243.164',
+                'is_apiable' => true,
+                'type' => 'ingestion',
+                'description' => 'Ingestion + web (admin, kraite.com, syntax)',
+            ],
+            'eos' => [
+                'ip_address' => '204.168.137.153',
+                'is_apiable' => true,
+                'type' => 'worker',
+                'description' => 'Worker — positions / orders / priority',
+            ],
+            'iris' => [
+                'ip_address' => '204.168.138.83',
+                'is_apiable' => true,
+                'type' => 'worker',
+                'description' => 'Worker — positions / orders / priority',
+            ],
+            'nyx' => [
+                'ip_address' => '204.168.129.189',
+                'is_apiable' => true,
+                'type' => 'worker',
+                'description' => 'Worker — positions / orders / priority',
+            ],
+            'tyche' => [
+                'ip_address' => '204.168.135.246',
+                'is_apiable' => true,
+                'type' => 'worker',
+                'description' => 'Worker — indicators + cronjobs (isolated from trading queues)',
+            ],
+        ],
+    ],
+
     /**
      * Small safety tolerance to lower the leverage bracket in case is
      * falls inside that percentage gap, to avoid last limit order rejections.

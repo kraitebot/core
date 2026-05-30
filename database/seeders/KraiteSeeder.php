@@ -632,25 +632,41 @@ final class KraiteSeeder extends Seeder
     }
 
     /**
-     * Seed the API execution servers.
+     * Seed the fleet roster into the `servers` table.
      *
-     * Local installs register the current machine so `Kraite::ip()` resolves
-     * to the developer box. Production registers only the ingestion/workers
-     * that can perform exchange API requests and need user whitelisting.
+     * Reads the canonical hostname → metadata map from
+     * `config('kraite.fleet.servers')` and writes one row per entry. Same
+     * roster on every environment (local, testing, production) — the table
+     * is the source of truth that `StepRouter` uses to translate banned IPs
+     * back to hostnames during ban filtering, and the deploy-time drift
+     * gate `kraite:verify-fleet-topology` checks that every
+     * `kraite.horizon.workers` key has a matching row here. Keeping the
+     * roster constant across envs means the drift gate behaves the same
+     * everywhere, no env-conditional skips.
+     *
+     * `secret` is sourced from `kraite.server_secrets.<hostname>` when set
+     * (typically only ingestion has one in production). `own_queue_name`
+     * always equals the hostname — the physical per-hostname queue name
+     * (matches `StepRouter::buildPhysicalQueue()` when the logical name
+     * coincides with the hostname).
      */
     public function seedServers(): void
     {
-        $servers = app()->environment('production')
-            ? $this->productionApiServers()
-            : $this->localApiServer();
-
-        foreach ($servers as $server) {
+        foreach (config('kraite.fleet.servers', []) as $hostname => $meta) {
             DB::table('servers')->updateOrInsert(
-                ['hostname' => $server['hostname']],
-                array_merge($server, [
+                ['hostname' => $hostname],
+                [
+                    'hostname' => $hostname,
+                    'ip_address' => (string) ($meta['ip_address'] ?? ''),
+                    'is_apiable' => (bool) ($meta['is_apiable'] ?? false),
+                    'needs_whitelisting' => (bool) ($meta['is_apiable'] ?? false),
+                    'own_queue_name' => $hostname,
+                    'description' => (string) ($meta['description'] ?? $hostname),
+                    'type' => (string) ($meta['type'] ?? 'worker'),
+                    'secret' => config('kraite.server_secrets.'.$hostname),
                     'created_at' => now(),
                     'updated_at' => now(),
-                ])
+                ]
             );
         }
     }
@@ -1015,64 +1031,6 @@ final class KraiteSeeder extends Seeder
                 ]
             );
         }
-    }
-
-    /**
-     * @return array<int, array<string, mixed>>
-     */
-    private function localApiServer(): array
-    {
-        $hostname = gethostname() ?: 'full-stack';
-        $queueName = mb_strtolower(str_replace('-', '', $hostname));
-
-        return [[
-            'hostname' => $hostname,
-            'ip_address' => app()->environment('testing') ? '127.0.0.1' : Kraite::ip(),
-            'is_apiable' => true,
-            'needs_whitelisting' => true,
-            'own_queue_name' => $queueName,
-            'description' => 'Local full-stack server - all services',
-            'type' => 'ingestion',
-            'secret' => config('kraite.server_secrets.ingestion'),
-        ]];
-    }
-
-    /**
-     * @return array<int, array<string, mixed>>
-     */
-    private function productionApiServers(): array
-    {
-        $path = base_path('../.credentials/kraite/servers.json');
-
-        if (! File::exists($path)) {
-            return $this->localApiServer();
-        }
-
-        $raw = json_decode((string) File::get($path), associative: true);
-
-        if (! is_array($raw)) {
-            return $this->localApiServer();
-        }
-
-        return collect($raw)
-            ->only(['ingestion', 'worker-1', 'worker-2'])
-            ->map(static function (array $server, string $key): array {
-                $hostname = (string) ($server['hostname'] ?? $key);
-
-                return [
-                    'hostname' => $hostname,
-                    'ip_address' => (string) ($server['host'] ?? ''),
-                    'is_apiable' => true,
-                    'needs_whitelisting' => true,
-                    'own_queue_name' => $hostname,
-                    'description' => (string) ($server['name'] ?? $server['role'] ?? $hostname),
-                    'type' => $key === 'ingestion' ? 'ingestion' : 'worker',
-                    'secret' => config('kraite.server_secrets.'.$hostname),
-                ];
-            })
-            ->filter(static fn (array $server): bool => $server['ip_address'] !== '')
-            ->values()
-            ->all();
     }
 
     /**
