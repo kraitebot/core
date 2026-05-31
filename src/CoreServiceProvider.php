@@ -219,7 +219,7 @@ final class CoreServiceProvider extends ServiceProvider
         // Redis. The router (Kraite\Core\Support\StepRouter) inspects
         // the step's logical queue + the active ban set for the related
         // (account, api_system) pair and returns the physical per-hostname
-        // queue (e.g. positions-eos). Throws NoCleanWorkerException with
+        // queue (e.g. eos-positions). Throws NoCleanWorkerException with
         // a side-effect cascade (account deactivation + portfolio-at-risk
         // notification) when every eligible worker IP is blacklisted on
         // the target exchange.
@@ -268,11 +268,11 @@ final class CoreServiceProvider extends ServiceProvider
             $supervisors = [];
 
             foreach ($logicalQueues as $logical => $overrides) {
-                // Physical queue name: per-hostname suffix, except for the
+                // Physical queue name: per-hostname prefix, except for the
                 // hostname's own queue (logical name == hostname → no
-                // double-suffixing). Matches StepRouter::buildPhysicalQueue
+                // double-prefixing). Matches StepRouter::buildPhysicalQueue
                 // exactly so the dispatcher and Horizon agree on naming.
-                $physical = $logical === $hostname ? $hostname : "{$logical}-{$hostname}";
+                $physical = $logical === $hostname ? $hostname : "{$hostname}-{$logical}";
 
                 $supervisors["{$logical}-supervisor"] = array_merge(
                     $defaults,
@@ -290,8 +290,8 @@ final class CoreServiceProvider extends ServiceProvider
 
         // Extend step-dispatcher.queues.valid with every derived physical
         // queue so StepObserver's saving() hook accepts them. Without this
-        // the resolver writes `step.queue='positions-eos'` and the observer
-        // silently demotes it to `default` because 'positions-eos' isn't
+        // the resolver writes `step.queue='eos-positions'` and the observer
+        // silently demotes it to `default` because 'eos-positions' isn't
         // on the allowlist — the dispatch then pushes to the wrong queue
         // and no worker consumes it.
         $existingValid = (array) config('step-dispatcher.queues.valid', []);

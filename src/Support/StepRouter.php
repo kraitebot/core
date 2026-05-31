@@ -18,7 +18,7 @@ use StepDispatcher\Models\Step;
  * `StepDispatcher::setQueueResolver()` in `CoreServiceProvider::boot()`.
  *
  * Responsibility: when step-dispatcher is about to push a step onto Redis,
- * this class picks the physical per-hostname queue (e.g. `positions-eos`)
+ * this class picks the physical per-hostname queue (e.g. `eos-positions`)
  * based on the step's logical category and the current ban set for the
  * step's (account, api_system) pair. Ineligible workers (whose IPs appear
  * in active `forbidden_hostnames` rows) are filtered out of the candidate
@@ -123,18 +123,18 @@ final class StepRouter
 
     /**
      * Pull the logical queue name out of `step.queue`, stripping any
-     * known-hostname suffix introduced by a previous resolver pass
-     * (e.g. `positions-eos` → `positions` on a retry).
+     * known-hostname prefix introduced by a previous resolver pass
+     * (e.g. `eos-positions` → `positions` on a retry).
      */
     public function extractLogicalQueue(Step $step): string
     {
         $queue = $step->queue ?? 'default';
 
         foreach ($this->knownHostnames() as $hostname) {
-            $suffix = '-'.$hostname;
+            $prefix = $hostname.'-';
 
-            if (str_ends_with($queue, $suffix)) {
-                return mb_substr($queue, 0, -mb_strlen($suffix));
+            if (str_starts_with($queue, $prefix)) {
+                return mb_substr($queue, mb_strlen($prefix));
             }
         }
 
@@ -170,10 +170,21 @@ final class StepRouter
      * logical_queue → [hostnames]. Per-hostname queues are skipped
      * (they aren't a routing target, just a worker's direct mailbox).
      *
-     * The cache is keyed by a content hash of the workers config so
-     * mutating `config(['kraite.horizon.workers' => ...])` mid-test
-     * forces a rebuild — important for the integration test suite
-     * which seeds different topologies per test.
+     * The candidate pool is env-aware:
+     *   - `local`       → only the `local` worker key (if present)
+     *   - `production`  → all worker keys EXCEPT `local`
+     *   - other (e.g. `testing`) → no filter; the seeded config wins
+     *
+     * Without this filter the dispatcher on a Mac dev box would happily
+     * pick a production hostname (e.g. `eos`), push a job onto
+     * `eos-positions`, and no local Horizon supervisor would ever
+     * consume it — recover-stale then promotes the dispatched step to
+     * `priority` and the loop accumulates orphan Redis jobs.
+     *
+     * The cache is keyed by a content hash of the workers config AND
+     * the resolved environment so mutating either mid-test forces a
+     * rebuild — important for the integration test suite which seeds
+     * different topologies per test.
      *
      * @return array<string, array<int, string>>
      */
@@ -187,7 +198,10 @@ final class StepRouter
             return [];
         }
 
-        $key = md5(serialize($workers));
+        $environment = $this->resolvedEnvironment();
+        $workers = $this->filterWorkersForEnvironment($workers, $environment);
+
+        $key = md5(serialize($workers).'|'.$environment);
 
         if (isset($cache[$key])) {
             return $cache[$key];
@@ -217,6 +231,42 @@ final class StepRouter
     }
 
     /**
+     * The environment label that drives candidate-pool selection. We
+     * read HORIZON_ENV first (set per-host on every prod box to its
+     * own hostname like `eos`, `athena`) and fall back to APP_ENV so
+     * Bruno's local Mac (no HORIZON_ENV) resolves to `local`.
+     */
+    private function resolvedEnvironment(): string
+    {
+        return (string) (env('HORIZON_ENV') ?? env('APP_ENV', 'production'));
+    }
+
+    /**
+     * Strip worker keys that don't belong on the current box.
+     *
+     * @param  array<string, mixed>  $workers
+     * @return array<string, mixed>
+     */
+    private function filterWorkersForEnvironment(array $workers, string $environment): array
+    {
+        if ($environment === 'local') {
+            return array_intersect_key($workers, ['local' => true]);
+        }
+
+        if ($environment === 'testing') {
+            return $workers;
+        }
+
+        // Production-style envs (HORIZON_ENV = athena | eos | iris | …
+        // or APP_ENV=production). Pool excludes the `local` developer
+        // worker so the dispatcher never targets a queue no prod box
+        // is subscribed to.
+        unset($workers['local']);
+
+        return $workers;
+    }
+
+    /**
      * Compose the physical queue name. If the logical name already
      * equals the chosen hostname (e.g. `Step::create(['queue' => 'eos'])`
      * targeting the per-hostname queue directly), we don't double-suffix.
@@ -227,7 +277,7 @@ final class StepRouter
             return $hostname;
         }
 
-        return "{$logical}-{$hostname}";
+        return "{$hostname}-{$logical}";
     }
 
     /**
