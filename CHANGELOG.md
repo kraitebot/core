@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.51.2 - 2026-06-01
+
+### Improvements
+
+- [IMPROVED] **`kraite.horizon` block added to package config (full workers map).** Mirrors the structure that previously lived only in the ingestion project's `config/kraite.php`. Without this, web apps (admin / console / kraite.com) that don't ship their own project-level `config/kraite.php` would boot with no `kraite.horizon.workers` available — the `CoreServiceProvider::syncHorizonEnvironmentsFromKraiteConfig()` transformer would silently produce no environments for `HORIZON_ENV=pheme` and the pheme Horizon supervisor would consume nothing. The ingestion project keeps its own override for the same block (small duplication, asserted aligned by `kraite:verify-fleet-topology --fail-on-drift`).
+- [IMPROVED] **`horizon.workers.pheme` block included.** Two-queue subscription: `pheme-web` (2 procs — web-originated jobs) + `pheme` (1 proc — per-hostname connectivity probe slot, kept for symmetry even though pheme makes no exchange API calls). The StepRouter candidate map is built off logical-queue keys, so listing only `pheme-web` here guarantees pheme is never picked for `positions / orders / priority / cronjobs / indicators / user-data-stream`. The architecture is self-enforcing: pheme stays out of the trading dispatch path by virtue of what's missing from its workers block, not by a separate guard.
+
 ## 1.51.1 - 2026-06-01
 
 ### Improvements

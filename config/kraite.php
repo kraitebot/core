@@ -838,4 +838,87 @@ return [
         'W', 'ENA', 'ETHFI', 'STRK', 'ZRO',
         'TAO', 'KAS', 'ORDI', '1000SATS', 'WLD',
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Horizon — Supervisor Topology (single source of truth)
+    |--------------------------------------------------------------------------
+    |
+    | Read at boot by `CoreServiceProvider::syncHorizonEnvironmentsFromKraiteConfig()`
+    | — the transformer picks the block matching `HORIZON_ENV` and writes it
+    | into `config('horizon.environments.<env>')` so a Horizon supervisor
+    | started under that env consumes exactly the queues declared here.
+    |
+    | Why this lives in the package and not just in the ingestion project
+    | config: web apps (admin, console, kraite.com) load the package config
+    | by default (no project-level `config/kraite.php`). If the workers
+    | block were only in ingestion, admin's Horizon transformer would see
+    | nothing for `HORIZON_ENV=pheme` and the supervisor would boot with
+    | an empty queue list. Single source of truth here keeps every app
+    | aware of the full fleet topology.
+    |
+    | The ingestion project's own `config/kraite.php` mirrors this block —
+    | small duplication kept on purpose so ingestion never depends on the
+    | package config landing first. The `kraite:verify-fleet-topology` drift
+    | gate at deploy step 10 asserts the two stay aligned.
+    */
+    'horizon' => [
+        'defaults' => [
+            'connection' => 'redis',
+            'timeout' => 0,
+            'sleep' => 1,
+            'tries' => 5,
+            'backoff' => 10,
+            'memory' => 256,
+        ],
+        'workers' => [
+            'local' => [
+                'positions' => ['processes' => 2],
+                'orders' => ['processes' => 5],
+                'priority' => ['processes' => 2],
+                'cronjobs' => ['processes' => 2],
+                'indicators' => ['processes' => 5],
+                'user-data-stream' => ['processes' => 1],
+                'local' => ['processes' => 1],
+            ],
+            'athena' => [
+                'user-data-stream' => ['processes' => 5],
+                'athena' => ['processes' => 1],
+            ],
+            'pheme' => [
+                'pheme-web' => ['processes' => 2],
+                'pheme' => ['processes' => 1],
+            ],
+            'eos' => [
+                'positions' => ['processes' => 5],
+                'orders' => ['processes' => 8],
+                'priority' => ['processes' => 3],
+                'eos' => ['processes' => 1],
+            ],
+            'iris' => [
+                'positions' => ['processes' => 5],
+                'orders' => ['processes' => 8],
+                'priority' => ['processes' => 3],
+                'iris' => ['processes' => 1],
+            ],
+            'nyx' => [
+                'positions' => ['processes' => 5],
+                'orders' => ['processes' => 8],
+                'priority' => ['processes' => 3],
+                'nyx' => ['processes' => 1],
+            ],
+            'hemera' => [
+                'positions' => ['processes' => 5],
+                'orders' => ['processes' => 8],
+                'priority' => ['processes' => 3],
+                'hemera' => ['processes' => 1],
+            ],
+            'tyche' => [
+                'indicators' => ['processes' => 20],
+                'cronjobs' => ['processes' => 20],
+                'priority' => ['processes' => 5],
+                'tyche' => ['processes' => 5],
+            ],
+        ],
+    ],
 ];
