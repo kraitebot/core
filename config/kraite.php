@@ -195,7 +195,13 @@ return [
                 'ip_address' => '37.27.243.164',
                 'is_apiable' => true,
                 'type' => 'ingestion',
-                'description' => 'Ingestion + web (admin, kraite.com, syntax)',
+                'description' => 'Ingestion (scheduler + dispatch-daemon + WS daemons + user-data Horizon). Web stack moved to pheme 2026-06-01.',
+            ],
+            'pheme' => [
+                'ip_address' => '62.238.38.113',
+                'is_apiable' => false,
+                'type' => 'web',
+                'description' => 'Web (admin + console + kraite.com + syntax) — nginx + php8.5-fpm. No exchange API calls; no step-router consumer.',
             ],
             'eos' => [
                 'ip_address' => '204.168.137.153',

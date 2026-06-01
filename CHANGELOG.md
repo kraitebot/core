@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.51.1 - 2026-06-01
+
+### Improvements
+
+- [IMPROVED] **`kraite.fleet.servers.pheme` added.** New `web` role entry pointing at `62.238.38.113`, `is_apiable: false`. The dedicated web host took the `admin / console / kraite.com / syntax` vhosts off athena on 2026-06-01 — fleet.servers now reflects that split so `kraite:verify-fleet-topology` doesn't trip on a missing-config gap once the deferred `horizon.workers.pheme` block lands.
+- [IMPROVED] **Athena `fleet.servers` entry updated.** Description trimmed to ingestion-only (scheduler + dispatch-daemon + WS daemons + user-data Horizon). Web role line removed.
+
 ## 1.48.0 - 2026-05-25
 
 ### Features
