@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.51.3 - 2026-06-05
+
+### Bug fixes
+
+- [FIXED] **`horizon.workers.pheme` logical queue renamed `pheme-web` → `web`.** The `{hostname}-{logical}` physical-queue composer only skips the prefix when the logical name equals the hostname exactly, so logical `pheme-web` composed to physical `pheme-pheme-web` — while every doc, operator runbook, and Redis inspection referred to `pheme-web`. Logical `web` now composes to physical `pheme-web`, matching the documented name. Until pheme's per-app Horizons restart on this version they keep subscribing to the old `pheme-pheme-web` physical (all web queues are empty, so nothing strands). Pairs with ingestion 1.53.3, which carries the same rename in the project-level override.
+
 ## 1.51.2 - 2026-06-01
 
 ### Improvements

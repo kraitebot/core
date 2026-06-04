@@ -886,7 +886,10 @@ return [
                 'athena' => ['processes' => 1],
             ],
             'pheme' => [
-                'pheme-web' => ['processes' => 2],
+                // Logical `web` composes to physical `pheme-web` via the
+                // {hostname}-{logical} convention — naming it `pheme-web`
+                // here would double-prefix to `pheme-pheme-web`.
+                'web' => ['processes' => 2],
                 'pheme' => ['processes' => 1],
             ],
             'eos' => [
