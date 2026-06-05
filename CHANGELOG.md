@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.51.4 - 2026-06-05
+
+### Bug fixes
+
+- [FIXED] **Dispatch daemon idle gate reads DB truth per prefix instead of the default-prefix flag file.** `kraite:dispatch-daemon`'s loop gated on `StepDispatcher::isActive()` outside any prefix ambient — it only ever saw the default `active.flag`. When the default prefix drained (cron steps finish in seconds) the daemon slept with trading steps still Pending; trading work only moved in the seconds after a scheduler cron recreated the flag, turning position open/close ladders into a one-hop-per-minute crawl (~6 min per open). The flags are also per-machine, so worker-created child steps could never wake athena's daemon. The gate now checks `StepDispatcher::hasActiveSteps()` per prefix (sub-ms EXISTS against the shared DB — prefix-correct and fleet-correct) and ticks each prefix independently. Verified live: index hops dropped from 27-60s to 1-4s. Pairs with brunocfalcao/step-dispatcher 1.13.3 (the StepObserver priority-queue clobber). Deploy-notes entries 69-70.
+
 ## 1.51.3 - 2026-06-05
 
 ### Bug fixes
