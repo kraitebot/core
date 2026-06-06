@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.51.8 - 2026-06-06
+
+### Bug fixes
+
+- [FIXED] **Per-IP notification subjects are now unique — fixes mail-provider dedup.** The four per-IP canonicals (`server_ip_not_whitelisted`, `server_ip_rate_limited`, `server_ip_banned`, `server_ip_forbidden`) all carried an identical hardcoded title; the IP lived only in the body. During an IP-rotation event the engine correctly bans each of the four trading workers and fires one alert per IP, but with identical subjects + same sender within seconds, mail providers (Gmail) collapse the duplicates — the operator saw 2 of 4. The title now embeds the IP (and hostname), so every alert has a distinct subject and all arrive. deploy-notes entry 72.
+
 ## 1.51.7 - 2026-06-06
 
 ### Bug fixes

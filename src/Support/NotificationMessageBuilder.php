@@ -127,7 +127,7 @@ final class NotificationMessageBuilder
 
             'server_ip_forbidden' => [
                 'severity' => NotificationSeverity::Critical,
-                'title' => 'Server IP Forbidden by Exchange',
+                'title' => "Server IP Forbidden by Exchange — {$ip} ({$hostname})",
                 'emailMessage' => "🚨 CRITICAL: Server IP forbidden by {$exchangeTitle}\n\nServer IP: [COPY]{$ip}[/COPY]\nHostname: {$hostname}\nHTTP Code: {$httpCode}\n".($vendorCode ? "Vendor Code: {$vendorCode}\n" : '')."\n".($accountInfo ? "Last request from account: {$accountInfo}\n\n" : '')."The exchange has banned our server IP. This is typically caused by:\n• Repeated rate limit violations (HTTP 418 for Binance - auto-ban 2 min to 3 days)\n• Server/IP-level restrictions (HTTP 403 with specific vendor codes)\n\nIMPACT:\n• All API requests from this server to {$exchangeTitle} are blocked\n• Jobs automatically retry on other workers if available\n• Affects all accounts using this exchange on this worker\n\nRESOLUTION:\n\nFor HTTP 418 (temporary ban):\n• System will auto-retry after ban period expires\n• Review rate limiting patterns to prevent future bans\n\nFor HTTP 403 (permanent restrictions):\n• Contact exchange support with server IP and timestamp\n• May require IP whitelisting or rotation\n\nMonitor recent API errors:\n[CMD]SELECT created_at, http_response_code, path, response FROM api_request_logs WHERE api_system_id = (SELECT id FROM api_systems WHERE canonical = '{$exchange}') AND http_response_code >= 400 ORDER BY created_at DESC LIMIT 20;[/CMD]",
                 'pushoverMessage' => "🚨 {$exchangeTitle} forbidden server {$hostname} ({$ip}) - HTTP {$httpCode}",
                 'actionUrl' => null,
@@ -160,7 +160,7 @@ final class NotificationMessageBuilder
 
                 return [
                     'severity' => NotificationSeverity::High,
-                    'title' => 'Server IP Temporarily Rate Limited',
+                    'title' => "Server IP Temporarily Rate Limited — {$ip} ({$hostname})",
                     'emailMessage' => "⚠️ Server IP Temporarily Rate Limited\n\n".
                         "The server IP has been temporarily rate-limited by {$exchangeTitle}.\n\n".
                         "📊 DETAILS:\n\n".
@@ -192,7 +192,7 @@ final class NotificationMessageBuilder
 
                 return [
                     'severity' => NotificationSeverity::Critical,
-                    'title' => 'Server IP Permanently Banned',
+                    'title' => "Server IP Permanently Banned — {$ip} ({$hostname})",
                     'emailMessage' => "🚨 CRITICAL: Server IP Permanently Banned\n\n".
                         "The server IP has been permanently banned by {$exchangeTitle}.\n\n".
                         "📊 DETAILS:\n\n".
@@ -434,7 +434,7 @@ final class NotificationMessageBuilder
             'server_ip_not_whitelisted' => (static function () use ($exchangeTitle, $ip, $accountName) {
                 return [
                     'severity' => NotificationSeverity::High,
-                    'title' => 'Please Whitelist Our Server IP',
+                    'title' => "Please Whitelist Our Server IP — {$ip}",
                     'emailMessage' => "Hi!\n\n".
                         "We noticed that your {$exchangeTitle} API key requires IP whitelisting. ".
                         "To ensure uninterrupted service, please add our server IP to your API key whitelist.\n\n".
