@@ -918,8 +918,15 @@ final class KraiteSeeder extends Seeder
                 'usage_reference' => 'Concerns/Position/HasStatuses::updateToFailed',
                 'default_severity' => 'high',
                 'verified' => 1,
-                'cache_duration' => 60,
-                'cache_key' => ['position'],
+                // Throttle per-account for 1h. The previous per-position key
+                // (60s) never actually deduped: each failure is a distinct
+                // position id, so a sustained opening outage emailed the
+                // operator on every 3-min cron tick. Keying on the account
+                // collapses an outage to one alert/hour (2026-06-06 go-live:
+                // an IP-whitelist propagation window produced 3 emails in 6
+                // minutes across positions 1-4).
+                'cache_duration' => 3600,
+                'cache_key' => ['account'],
             ],
             [
                 'canonical' => 'position_residual_detected',

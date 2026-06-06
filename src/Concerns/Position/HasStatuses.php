@@ -150,7 +150,12 @@ trait HasStatuses
                 'token_blocked' => $tokenBlocked,
             ],
             relatable: $this,
-            cacheKeys: ['position' => $this->id],
+            // Throttle key is per-account (matches the notification's
+            // cache_key=['account'] / 3600s): a sustained opening outage
+            // collapses to one alert/hour instead of one per failed
+            // position id. The failing position's identity still rides in
+            // referenceData for the operator.
+            cacheKeys: ['account' => $this->account_id],
         );
     }
 }

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.51.7 - 2026-06-06
+
+### Bug fixes
+
+- [FIXED] **`position_opening_failed` notification throttle keyed per-account (was per-position).** The KraiteSeeder definition + `HasStatuses::updateToFailed` dispatch used `cache_key=['position']` / 60s — but every failure carries a fresh position id, so the throttle never actually deduped: a sustained opening outage emailed the operator on every 3-minute create-positions tick. Now `cache_key=['account']` / 3600s → one alert per account per hour. Surfaced 2026-06-06 (go-live: a futures-permission-blocked API key produced 3 emails across positions 1-4 in 6 minutes).
+
 ## 1.51.6 - 2026-06-06
 
 ### Features
