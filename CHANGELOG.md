@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.51.6 - 2026-06-06
+
+### Features
+
+- [NEW FEATURE] **`ProfitableTokensBacktestApprovalSeeder`.** Backfills `was_backtesting_approved = true` for the 141 tokens that closed at least one position in profit on the operator's live Binance account (12-month REALIZED_PNL extraction, 1,242 closed positions, generated 2026-06-06). Flips the Binance/USDT rows via Eloquent so `ExchangeSymbolObserver` propagates approval cross-exchange — equivalent to batched operator approval. Idempotent; missing/delisted tokens are reported and skipped. Replaces the approvals lost in the 2026-05-31 `migrate:fresh` ahead of production go-live.
+
 ## 1.51.5 - 2026-06-06
 
 ### Features
