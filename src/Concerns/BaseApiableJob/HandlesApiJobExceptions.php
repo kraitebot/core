@@ -294,6 +294,30 @@ trait HandlesApiJobExceptions
                 return;
             }
 
+            // Re-check the cooldown INSIDE the lock. The outer Cache::has
+            // check is a fast path, but concurrent sibling failures (a
+            // LONG order on one worker + a SHORT on another both firing
+            // -4061 in the same millisecond) BOTH pass it before either
+            // stamps the key — then they serialise here on lockForUpdate.
+            // Without this inner guard the second job blind-inverts the
+            // value the first just set, oscillating on_hedge_mode
+            // 0→1→0 and landing back on the WRONG mode. With it, the
+            // second job sees the cooldown the first committed and
+            // no-ops — the "second instance sees the post-flip state"
+            // contract this method always claimed. (Live go-live
+            // incident 2026-06-06: BAS long + 1000FLOKI short flipped
+            // twice in one second, netting back to one-way against a
+            // hedge-mode Binance account, so every order kept -4061ing.)
+            if (Cache::has($cooldownKey)) {
+                Log::warning('position_mode_auto_flip_skipped', [
+                    'reason' => 'cooldown_active_post_lock',
+                    'account_id' => $locked->id,
+                    'job_class' => static::class,
+                ]);
+
+                return;
+            }
+
             $previous = (bool) $locked->on_hedge_mode;
             $next = ! $previous;
 

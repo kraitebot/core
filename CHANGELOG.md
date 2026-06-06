@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.51.9 - 2026-06-06
+
+### Bug fixes
+
+- [FIXED] **Position-mode auto-flip no longer oscillates under concurrent -4061s.** `HandlesApiJobExceptions::autoFlipPositionMode()` checked its 10-minute anti-oscillation cooldown OUTSIDE the `lockForUpdate` transaction. When a LONG and a SHORT order open on two workers and both hit `-4061` in the same second, both passed the cooldown check before either stamped it, then blind-inverted `on_hedge_mode` 0→1→0 — netting back to the wrong mode and locking out further flips for 10 minutes. The cooldown is now re-checked INSIDE the lock, so the second serialised job sees the first's stamp and no-ops. First-live-go-live incident (2026-06-06): BAS long + 1000FLOKI short. Regression test added. deploy-notes entry 73.
+
 ## 1.51.8 - 2026-06-06
 
 ### Bug fixes
