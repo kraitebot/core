@@ -35,6 +35,16 @@ final class PositionObserver
             return;
         }
 
+        // Deferred retention: with a configured trail retention window the
+        // immediate purge is skipped — the diagnostic trail survives long
+        // enough for the nightly DB backup to capture it, and the
+        // `kraite:cron-purge-position-trails` sweeper dispatches the
+        // janitor once `closed_at` ages past the window. Retention 0
+        // keeps the original purge-on-close behavior.
+        if ((int) config('kraite.positions.trail_retention_hours', 0) > 0) {
+            return;
+        }
+
         // The position lifecycle ran through `trading_steps`, so the
         // janitor that purges its breadcrumb trail must also run under
         // the trading prefix — otherwise its `DELETE FROM steps WHERE

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.51.5 - 2026-06-06
+
+### Features
+
+- [NEW FEATURE] **Configurable position-trail retention (`kraite.positions.trail_retention_hours`, env `KRAITE_TRAIL_RETENTION_HOURS`, default 0).** At 0 the breadcrumb janitor (`PurgePositionTrailJob`) keeps firing the instant a position closes — unchanged behavior. At N > 0 `PositionObserver` skips the immediate purge and the new `kraite:cron-purge-position-trails` sweeper command (`--hours-to-keep` override, `--dry-run`) dispatches the janitor only for closed positions whose `closed_at` aged past the window AND that still carry trail rows (idempotent, trail-existence-driven selection). Purpose: let the periodic DB backups capture the diagnostic trail before reclamation — production intent is 24h. `cancelled` / `failed` exits keep their forensic trail forever, mirroring the existing janitor contract.
+
 ## 1.51.4 - 2026-06-05
 
 ### Bug fixes

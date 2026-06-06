@@ -32,6 +32,15 @@ return [
     'admin_user_pushover_key' => env('ADMIN_USER_PUSHOVER_KEY'),
     'admin_user_telegram_chat_id' => env('ADMIN_USER_TELEGRAM_CHAT_ID'),
 
+    'positions' => [
+        // Hours a cleanly-closed position keeps its diagnostic breadcrumb
+        // trail (model_logs, api_request_logs, api_snapshots) before the
+        // janitor reclaims it. 0 = purge immediately on close. Production
+        // sets 24 so the nightly DB backup captures the trail first; the
+        // deferred purge is swept by `kraite:cron-purge-position-trails`.
+        'trail_retention_hours' => (int) env('KRAITE_TRAIL_RETENTION_HOURS', 0),
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | Admin URL — canonical password-reset host
