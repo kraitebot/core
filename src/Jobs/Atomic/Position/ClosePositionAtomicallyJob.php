@@ -70,7 +70,18 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
                 ->first();
 
             if ($dailyIndicator && $currentPrice) {
-                $closePrice = $dailyIndicator->data['close'] ?? null;
+                // The TAAPI `candle` indicator is queried with results=2, so
+                // OHLCV fields arrive as arrays ordered oldest→newest ("most
+                // recent value returned last"). Take the most recent close.
+                // A single-result query would return a scalar, so both shapes
+                // are normalised here before the numeric comparison below.
+                $rawClose = $dailyIndicator->data['close'] ?? null;
+
+                if (is_array($rawClose)) {
+                    $closePrice = $rawClose[array_key_last($rawClose)] ?? null;
+                } else {
+                    $closePrice = $rawClose;
+                }
 
                 if ($closePrice && Math::gt((string) $closePrice, '0')) {
                     // Calculate price change percentage: |current - close| / close * 100
