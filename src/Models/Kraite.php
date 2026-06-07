@@ -15,6 +15,12 @@ use RuntimeException;
  * @property int $id
  * @property bool $allow_opening_positions
  * @property bool $is_cooling_down
+ * @property bool|null $can_trade
+ * @property bool|null $notifications_enabled
+ * @property string|null $td_correlation_type
+ * @property bool|null $corr_enabled
+ * @property bool|null $elast_enabled
+ * @property int|null $trail_retention_hours
  * @property string|null $binance_api_key
  * @property string|null $binance_api_secret
  * @property string|null $bybit_api_key
@@ -52,6 +58,11 @@ final class Kraite extends BaseModel
     protected $casts = [
         'allow_opening_positions' => 'boolean',
         'is_cooling_down' => 'boolean',
+        'can_trade' => 'boolean',
+        'notifications_enabled' => 'boolean',
+        'corr_enabled' => 'boolean',
+        'elast_enabled' => 'boolean',
+        'trail_retention_hours' => 'integer',
 
         'top_up_minimum_when_covered_usdt' => 'decimal:4',
 

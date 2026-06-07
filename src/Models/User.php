@@ -23,6 +23,7 @@ use NotificationChannels\Pushover\PushoverChannel;
 use NotificationChannels\Pushover\PushoverReceiver;
 use NotificationChannels\Telegram\TelegramChannel;
 use RuntimeException;
+use SensitiveParameter;
 
 /**
  * @property int $id
@@ -36,6 +37,7 @@ use RuntimeException;
  * @property string|null $pushover_key
  * @property string|null $telegram_chat_id
  * @property array<int, string> $notification_channels
+ * @property bool|null $notifications_enabled
  * @property array|null $behaviours
  * @property Carbon|null $last_logged_in_at
  * @property Carbon|null $previous_logged_in_at
@@ -67,22 +69,6 @@ final class User extends Authenticatable
      */
     public bool $is_virtual = false;
 
-    /**
-     * Auto-stamp `uuid` at create time so callers never have to remember it.
-     * The column is the public-facing identifier used in URLs that need to
-     * leak nothing about row count or creation order — e.g. the
-     * `admin.kraite.com/register/{uuid}` registration-completion page that
-     * a private-beta confirmer lands on after clicking their verify link.
-     */
-    protected static function booted(): void
-    {
-        static::creating(function (self $user): void {
-            if (empty($user->uuid)) {
-                $user->uuid = (string) Str::uuid();
-            }
-        });
-    }
-
     protected $guarded = [];
 
     protected $hidden = [
@@ -108,6 +94,7 @@ final class User extends Authenticatable
         'password' => 'hashed',
         'pushover_key' => 'encrypted',
         'notification_channels' => 'array',
+        'notifications_enabled' => 'boolean',
         'behaviours' => 'array',
     ];
 
@@ -364,9 +351,9 @@ final class User extends Authenticatable
      *
      * @param  string  $token
      */
-    public function sendPasswordResetNotification(#[\SensitiveParameter] $token): void
+    public function sendPasswordResetNotification(#[SensitiveParameter] $token): void
     {
-        $resetUrl = rtrim((string) config('kraite.admin_url'), '/').'/reset-password/'.$token.'?email='.urlencode($this->getEmailForPasswordReset());
+        $resetUrl = mb_rtrim((string) config('kraite.admin_url'), '/').'/reset-password/'.$token.'?email='.urlencode($this->getEmailForPasswordReset());
         $expireMinutes = (int) config('auth.passwords.'.config('auth.defaults.passwords').'.expire', 60);
 
         NotificationService::send(
@@ -486,6 +473,22 @@ final class User extends Authenticatable
         }
 
         return parent::save($options);
+    }
+
+    /**
+     * Auto-stamp `uuid` at create time so callers never have to remember it.
+     * The column is the public-facing identifier used in URLs that need to
+     * leak nothing about row count or creation order — e.g. the
+     * `admin.kraite.com/register/{uuid}` registration-completion page that
+     * a private-beta confirmer lands on after clicking their verify link.
+     */
+    protected static function booted(): void
+    {
+        self::creating(function (self $user): void {
+            if (empty($user->uuid)) {
+                $user->uuid = (string) Str::uuid();
+            }
+        });
     }
 
     protected static function newFactory()

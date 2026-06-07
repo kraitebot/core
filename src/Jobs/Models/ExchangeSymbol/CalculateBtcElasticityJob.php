@@ -46,8 +46,8 @@ final class CalculateBtcElasticityJob extends BaseQueueableJob
     {
         $config = config('kraite.elasticity');
 
-        // Skip if elasticity is disabled
-        if (! $config['enabled']) {
+        // Skip if elasticity is disabled (singleton flag wins, else config)
+        if (! Kraite::elasticityComputationEnabled()) {
             return ['skipped' => true, 'reason' => 'Elasticity calculation disabled in config'];
         }
 

@@ -12,8 +12,8 @@ use Kraite\Core\Jobs\Atomic\ExchangeSymbol\CopyDirectionToOtherExchangesJob;
 use Kraite\Core\Jobs\Atomic\ExchangeSymbol\QueryAndStoreSupportAndResistanceJob;
 use Kraite\Core\Jobs\Models\Indicator\QuerySymbolIndicatorsJob;
 use Kraite\Core\Models\ExchangeSymbol;
-use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\IndicatorHistory;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\TradeConfiguration;
 use StepDispatcher\Models\Step;
 
@@ -542,9 +542,8 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
             ],
         ]);
 
-        // INDEX 5-6: BTC correlation (only when enabled)
-        $correlationConfig = config('kraite.correlation');
-        if ($correlationConfig && ($correlationConfig['enabled'] ?? false)) {
+        // INDEX 5-6: BTC correlation (only when enabled — singleton flag wins, else config)
+        if (Kraite::correlationComputationEnabled()) {
             // INDEX 5: Check klines, spawn child block to fetch if missing
             Step::create([
                 'class' => CheckKLinesForCorrelationJob::class,

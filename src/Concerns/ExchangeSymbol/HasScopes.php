@@ -6,6 +6,7 @@ namespace Kraite\Core\Concerns\ExchangeSymbol;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Query\Builder as QueryBuilder;
+use Kraite\Core\Models\Kraite;
 
 trait HasScopes
 {
@@ -17,7 +18,7 @@ trait HasScopes
      */
     public function scopeTradeable(Builder $query): Builder
     {
-        $correlationType = config('kraite.token_discovery.correlation_type', 'rolling');
+        $correlationType = Kraite::correlationType();
         $correlationColumn = 'btc_correlation_'.$correlationType;
 
         // Apply tradeable conditions to the main symbol

@@ -243,11 +243,23 @@ final class AccountFinancials
     }
 
     /**
-     * Per-day trade PnL aggregate sourced from `positions`. Filters
-     * to clean closes only — `status='closed'` AND `closed_at`
-     * inside the window AND a non-null `profit_percentage`.
-     * Cancelled / failed / still-active positions are ignored, so
-     * the resulting numbers reflect actual trading outcomes.
+     * Per-day trade PnL aggregate sourced from `positions.pnl` — the
+     * exchange-reported net PnL (realized PnL minus trading fees and
+     * funding), i.e. the actual money the trade moved. Filters to
+     * clean closes only — `status='closed'` AND `closed_at` inside
+     * the window AND a non-null exchange PnL. Cancelled / failed /
+     * still-active positions are ignored.
+     *
+     * History of this method:
+     *   - `profit_percentage / 100 × margin` — assumed `margin` was the
+     *     notional; it's the per-slot wallet allocation (wallet / slots),
+     *     several × the real notional, so it inflated every figure (~4×).
+     *   - signed `(close − open) × quantity` — price-true, but ignores
+     *     fees and funding, overstating net by the round-trip cost
+     *     (observed +$0.62 over 70 trades on 2026-06-07: $8.78 vs the
+     *     exchange's $8.16).
+     *   - `SUM(pnl)` (current) — the exchange's own net figure, exact,
+     *     fee/funding-inclusive, and WAP-safe (no entry-price recon).
      *
      * @return array<string, string> YYYY-MM-DD → bcmath-scaled per-day PnL.
      */
@@ -255,12 +267,11 @@ final class AccountFinancials
     {
         $rows = DB::table('positions')
             ->select(DB::raw('DATE(closed_at) AS d'))
-            ->selectRaw('SUM(profit_percentage / 100 * margin) AS pnl')
+            ->selectRaw('SUM(pnl) AS pnl')
             ->where('account_id', $this->account->id)
             ->where('status', 'closed')
             ->whereNotNull('closed_at')
-            ->whereNotNull('profit_percentage')
-            ->whereNotNull('margin')
+            ->whereNotNull('pnl')
             ->whereBetween('closed_at', [
                 $window->start->toDateTimeString(),
                 $window->end->toDateTimeString(),

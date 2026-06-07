@@ -8,6 +8,7 @@ use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\Candle;
 use Kraite\Core\Models\ExchangeSymbol;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\TokenMapper;
 use StepDispatcher\Models\Step;
 
@@ -39,7 +40,7 @@ final class CheckKLinesForCorrelationJob extends BaseQueueableJob
     {
         $config = config('kraite.correlation');
 
-        if (! $config || ! ($config['enabled'] ?? false)) {
+        if (! Kraite::correlationComputationEnabled()) {
             return ['skipped' => true, 'reason' => 'Correlation disabled'];
         }
 

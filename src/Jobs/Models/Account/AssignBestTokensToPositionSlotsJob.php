@@ -282,7 +282,7 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
         return [
             'btc_direction' => $btcExchangeSymbol?->direction,
             'btc_timeframe' => $btcExchangeSymbol?->indicators_timeframe,
-            'btc_biased_restriction' => config('kraite.token_discovery.btc_biased_restriction', true),
+            'btc_biased_restriction' => $this->account->usesBtcBiasRestriction(),
         ];
     }
 

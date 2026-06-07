@@ -257,13 +257,15 @@ return [
     |--------------------------------------------------------------------------
     |
     | slow_query_threshold_ms:  Log queries slower than this (in milliseconds).
-    | can_trade:                Global kill-switch. If false, the bot NEVER places live orders.
-    | can_open_positions:       If false, existing positions can be managed/closed, but no new ones open.
-    | notifications_enabled:    If false, no notifications will be sent (useful for testing).
+    | notifications_enabled:    Global notifications master switch. Promoted to
+    |                           the kraite singleton (Kraite::notificationsEnabled());
+    |                           this is the fallback default. NULL column → this value.
+    |
+    | NOTE: the former can_trade / can_open_positions env toggles were removed —
+    | the master trading kill now lives on the kraite singleton (kraite.can_trade,
+    | normally-open) and new-open gating on kraite.allow_opening_positions.
     */
     'slow_query_threshold_ms' => env('SLOW_QUERY_THRESHOLD_MS', 2500),
-    'can_trade' => env('CAN_TRADE', false),
-    'can_open_positions' => env('CAN_OPEN_POSITIONS', false),
     'notifications_enabled' => env('NOTIFICATIONS_ENABLED', true),
     'prefix_hostname_on_notifications' => env('PREFIX_HOSTNAME_ON_NOTIFICATIONS', false),
     'can_dispatch_steps' => env('CAN_DISPATCH_STEPS', false),
@@ -890,8 +892,15 @@ return [
                 'user-data-stream' => ['processes' => 1],
                 'local' => ['processes' => 1],
             ],
+            // Ingestion box (scheduler + dispatch-daemon + Binance WS
+            // daemons). Also a second indicators consumer: athena's public
+            // IP joins tyche's as a candidate for the kline/indicator lane
+            // so StepRouter spreads the per-IP Bybit burst across two IPs
+            // (cuts retCode 10006) and can rotate off a rate-limited tyche
+            // IP. Sized at 10 vs tyche's 20 to protect the scheduler.
             'athena' => [
                 'user-data-stream' => ['processes' => 5],
+                'indicators' => ['processes' => 10],
                 'athena' => ['processes' => 1],
             ],
             'pheme' => [

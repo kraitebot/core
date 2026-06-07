@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Commands\Cronjobs;
 
 use Kraite\Core\Jobs\Atomic\Position\PurgePositionTrailJob;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use StepDispatcher\Models\Step;
@@ -47,7 +48,7 @@ final class CronPurgePositionTrailsCommand extends BaseCommand
     {
         $hours = $this->option('hours-to-keep') !== null
             ? max(0, (int) $this->option('hours-to-keep'))
-            : max(0, (int) config('kraite.positions.trail_retention_hours', 0));
+            : max(0, Kraite::trailRetentionHours());
 
         $dryRun = (bool) $this->option('dry-run');
 

@@ -8,6 +8,7 @@ use Illuminate\Foundation\Auth\User as AuthUser;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
+use Kraite\Core\Enums\NotificationSeverity;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Notification;
 use Kraite\Core\Models\NotificationLog;
@@ -113,8 +114,9 @@ final class NotificationService
         ?array $cacheKeys = null,
         ?array $channels = null,
     ): bool {
-        // Check if notifications are globally enabled
-        if (! config('kraite.notifications_enabled', true)) {
+        // Tier 1 — global master switch. Singleton column wins, else
+        // config. false here suppresses every notification, no exceptions.
+        if (! Kraite::notificationsEnabled()) {
             return false;
         }
 
@@ -206,6 +208,18 @@ final class NotificationService
         }
 
         if (! $messageData) {
+            return false;
+        }
+
+        // Tier 2 — per-user toggle. With the global switch on, a user can
+        // opt out of their own notifications, EXCEPT Critical-severity ones
+        // which are always delivered to the account user. A NULL/absent
+        // flag counts as enabled, so existing users keep receiving until
+        // they explicitly opt out. The virtual admin (Kraite::admin()) has
+        // no column set → null → always receives.
+        $isCritical = ($messageData['severity'] ?? null) === NotificationSeverity::Critical;
+
+        if (! $isCritical && ($user->notifications_enabled ?? true) === false) {
             return false;
         }
 

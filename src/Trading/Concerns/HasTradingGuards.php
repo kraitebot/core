@@ -35,11 +35,27 @@ trait HasTradingGuards
             return false;
         }
 
+        // Global master kill — the first gate. Used for BSCS / black-swan
+        // trading suspension. The kill is normally-open: NULL = trading
+        // allowed (current behaviour preserved on deploy). Only an explicit
+        // `can_trade = false` on the singleton suspends ALL new opens
+        // fleet-wide, taking effect on the next cron tick with no deploy.
+        // The legacy env CAN_TRADE (default false) is intentionally NOT the
+        // fallback here — using it would halt trading the moment this gate
+        // ships. The DB column is the single source of truth.
+        if (($engine->can_trade ?? true) === false) {
+            return false;
+        }
+
         if (! $engine->allow_opening_positions) {
             return false;
         }
 
-        if (BlackSwanIndex::current()->shouldBlockOpens()) {
+        // BSCS / black-swan open-suspension — per-account opt-out. An
+        // account with respect_bscs=false keeps opening even while the
+        // cooldown is active ("don't wait for BSCS"); the master kill and
+        // allow_opening_positions above still bind it.
+        if ($this->account->respectsBscs() && BlackSwanIndex::current()->shouldBlockOpens()) {
             return false;
         }
 

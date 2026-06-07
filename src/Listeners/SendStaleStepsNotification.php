@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Listeners;
 
+use Kraite\Core\Jobs\Atomic\System\VerifyDispatcherGroupDrainedJob;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\NotificationService;
 use StepDispatcher\Events\StaleStepsDetected;
+use StepDispatcher\Models\Step;
 use StepDispatcher\Support\RuntimeContext;
+use StepDispatcher\Support\Steps;
 
 /**
  * Kraite-side adapter for StepDispatcher's StaleStepsDetected event.
@@ -79,6 +82,27 @@ final class SendStaleStepsNotification
                 duration: 600,
                 cacheKeys: ['group' => $referenceData['group']],
             );
+
+            // Non-critical follow-up: re-check in 15 minutes whether this
+            // group drained on its own and tell the admin the outcome
+            // (recovered vs still stalled). The recheck step lives in the
+            // DEFAULT prefix — decoupled from the possibly-wedged prefix —
+            // and carries the target prefix so the job probes the right
+            // step table. Throttled by the same per-group cache window as
+            // the alert above, so a flapping group spawns at most one
+            // pending recheck per window.
+            Steps::usingPrefix('', function () use ($referenceData, $watchdogPrefix): void {
+                Step::create([
+                    'class' => VerifyDispatcherGroupDrainedJob::class,
+                    'queue' => 'cronjobs',
+                    'arguments' => [
+                        'group' => $referenceData['group'],
+                        'prefix' => mb_rtrim($watchdogPrefix, '_'),
+                        'pendingAtAlert' => (int) $referenceData['pending_count'],
+                    ],
+                    'dispatch_after' => now()->addMinutes(15),
+                ]);
+            });
 
             return;
         }

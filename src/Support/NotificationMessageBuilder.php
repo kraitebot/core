@@ -335,6 +335,39 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'dispatcher_group_drain_recheck' => (static function () use ($context, $hostname) {
+                $group = is_string($context['group'] ?? null) ? $context['group'] : 'N/A';
+                $drained = (bool) ($context['drained'] ?? false);
+                $pendingNow = is_int($context['pending_now'] ?? null) ? $context['pending_now'] : 0;
+                $pendingAtAlert = is_int($context['pending_at_alert'] ?? null) ? $context['pending_at_alert'] : 0;
+
+                if ($drained) {
+                    return [
+                        'severity' => NotificationSeverity::Info,
+                        'title' => "Dispatcher Group '{$group}' Recovered",
+                        'emailMessage' => "✅ Follow-up: dispatcher group '{$group}' DRAINED on its own.\n\n".
+                            "• Pending now: 0 (was {$pendingAtAlert} at the stall alert)\n".
+                            "• Server: {$hostname}\n\n".
+                            'The earlier CRITICAL stall self-resolved within 15 minutes — no action needed.',
+                        'pushoverMessage' => "✅ Group '{$group}' drained (was {$pendingAtAlert} pending). Self-recovered, no action.",
+                        'actionUrl' => null,
+                        'actionLabel' => null,
+                    ];
+                }
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'title' => "Dispatcher Group '{$group}' STILL Stalled",
+                    'emailMessage' => "⚠️ Follow-up: dispatcher group '{$group}' is STILL stalled 15 minutes after the first alert.\n\n".
+                        "• Pending now: {$pendingNow} (was {$pendingAtAlert})\n".
+                        "• Server: {$hostname}\n\n".
+                        'The stall did NOT self-resolve — manual intervention likely needed. Inspect the wedged group (see the original CRITICAL alert for the SQL probes).',
+                    'pushoverMessage' => "⚠️ Group '{$group}' STILL stalled after 15min. Pending: {$pendingNow}. Investigate.",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                ];
+            })(),
+
             'exchange_symbol_no_taapi_data' => (static function () use ($context) {
                 // Support both new format ('exchangeSymbol') and legacy format ('exchange_symbol')
                 $exchangeSymbol = $context['exchangeSymbol'] ?? ($context['exchange_symbol'] ?? null);

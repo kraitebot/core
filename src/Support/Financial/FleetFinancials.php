@@ -421,14 +421,18 @@ final class FleetFinancials
             return [];
         }
 
+        // Exchange-reported net PnL (`positions.pnl`) — realized minus fees
+        // and funding. Mirrors the AccountFinancials source: it superseded
+        // price-true `(close − open) × quantity` (overstated by the omitted
+        // round-trip cost) which itself superseded `profit_percentage / 100
+        // × margin` (margin = per-slot allocation, not notional → ~4× high).
         $rows = DB::table('positions')
             ->select(DB::raw('DATE(closed_at) AS d'))
-            ->selectRaw('SUM(profit_percentage / 100 * margin) AS pnl')
+            ->selectRaw('SUM(pnl) AS pnl')
             ->whereIn('account_id', $accountIds)
             ->where('status', 'closed')
             ->whereNotNull('closed_at')
-            ->whereNotNull('profit_percentage')
-            ->whereNotNull('margin')
+            ->whereNotNull('pnl')
             ->whereBetween('closed_at', [
                 $window->start->toDateTimeString(),
                 $window->end->toDateTimeString(),

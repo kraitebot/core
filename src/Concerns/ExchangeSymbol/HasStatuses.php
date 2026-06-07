@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Concerns\ExchangeSymbol;
 
 use Carbon\CarbonInterface;
+use Kraite\Core\Models\Kraite;
 
 trait HasStatuses
 {
@@ -56,7 +57,6 @@ trait HasStatuses
 
         return null;
     }
-
 
     /**
      * Check if this exchange symbol is valid for trading.
@@ -131,7 +131,7 @@ trait HasStatuses
         }
 
         // Must have correlation data for the symbol's concluded timeframe
-        $correlationType = config('kraite.token_discovery.correlation_type', 'rolling');
+        $correlationType = Kraite::correlationType();
         $correlationField = 'btc_correlation_'.$correlationType;
         $correlationData = $this->{$correlationField};
 

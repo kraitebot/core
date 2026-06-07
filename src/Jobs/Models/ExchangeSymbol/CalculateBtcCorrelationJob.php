@@ -42,8 +42,8 @@ final class CalculateBtcCorrelationJob extends BaseQueueableJob
     {
         $config = config('kraite.correlation');
 
-        // Skip if correlation is disabled
-        if (! $config['enabled']) {
+        // Skip if correlation is disabled (singleton flag wins, else config)
+        if (! Kraite::correlationComputationEnabled()) {
             return ['skipped' => true, 'reason' => 'Correlation calculation disabled in config'];
         }
 

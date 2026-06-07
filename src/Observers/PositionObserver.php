@@ -6,6 +6,7 @@ namespace Kraite\Core\Observers;
 
 use Illuminate\Support\Str;
 use Kraite\Core\Jobs\Atomic\Position\PurgePositionTrailJob;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Support\Steps;
@@ -41,7 +42,7 @@ final class PositionObserver
         // `kraite:cron-purge-position-trails` sweeper dispatches the
         // janitor once `closed_at` ages past the window. Retention 0
         // keeps the original purge-on-close behavior.
-        if ((int) config('kraite.positions.trail_retention_hours', 0) > 0) {
+        if (Kraite::trailRetentionHours() > 0) {
             return;
         }
 

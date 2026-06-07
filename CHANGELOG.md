@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.52.0 - 2026-06-07
+
+### Features
+
+- Per-account `respect_bscs` flag — accounts may open positions without waiting on the BlackSwan (BSCS) cooldown gate. Defaults true (honour BSCS).
+- Runtime-configurable settings on the `kraite` singleton: `can_trade` master kill-switch, `notifications_enabled`, `td_correlation_type`, correlation/elasticity computation toggles, and trail-retention hours — all read with safe normally-open fallbacks.
+- Per-account token-discovery gates: `use_correlation_sign_filter`, `use_btc_bias_restriction`.
+- Global→account notification cascade — a global gate silences all sends when off; when on, each user's `notifications_enabled` decides, except Critical alerts which always reach the account user.
+- Dispatcher-group drain-recheck follow-up: when a group stalls, a non-critical `VerifyDispatcherGroupDrainedJob` is injected +15min out to report whether the group drained (Info) or is still stalled (High).
+- athena added as a second `indicators` consumer (10 procs) — a second public IP on the kline/indicator lane so StepRouter spreads the per-IP Bybit kline burst (retCode 10006) across two IPs and can rotate off a rate-limited IP.
+
+### Bug fixes
+
+- Daily/fleet PnL aggregates now sum the exchange-reported `positions.pnl` (realized net of fees + funding) instead of the inflated `profit_percentage / 100 × margin` (margin was the per-slot wallet allocation, not notional — ~4× high).
+
+### Config
+
+- Removed the dead `CAN_TRADE` / `CAN_OPEN_POSITIONS` env keys (superseded by the `kraite` singleton master kill-switch).
+
 ## 1.51.9 - 2026-06-06
 
 ### Bug fixes

@@ -249,7 +249,7 @@ trait HasTokenDiscovery
          * - Binance/Bybit/BitGet: Direct min_notional
          * - KuCoin: kucoin_lot_size * kucoin_multiplier * current_price
          */
-        $correlationType = config('kraite.token_discovery.correlation_type', 'rolling');
+        $correlationType = KraiteSettings::correlationType();
         $correlationField = 'btc_correlation_'.$correlationType;
 
         $this->availableExchangeSymbols = $this->availableExchangeSymbols->filter(static function ($symbol) use ($correlationField) {
@@ -339,7 +339,7 @@ trait HasTokenDiscovery
          */
         $btcDirection = $btcExchangeSymbol?->direction;
         $btcTimeframe = $btcExchangeSymbol?->indicators_timeframe;
-        $btcBiasedRestriction = config('kraite.token_discovery.btc_biased_restriction', true);
+        $btcBiasedRestriction = $this->usesBtcBiasRestriction();
 
         /*
          * If BTC has NO direction and btc_biased_restriction=true:
@@ -621,9 +621,9 @@ trait HasTokenDiscovery
          * ─────────────────────────────────────────────────────────────────────────────────
          */
 
-        $correlationType = config('kraite.token_discovery.correlation_type', 'rolling');
+        $correlationType = KraiteSettings::correlationType();
         $correlationField = 'btc_correlation_'.$correlationType;
-        $requireMatchingSign = config('kraite.token_discovery.require_matching_correlation_sign', true);
+        $requireMatchingSign = $this->usesCorrelationSignFilter();
 
         /*
          * Determine desired correlation sign:
@@ -771,7 +771,7 @@ trait HasTokenDiscovery
          * × correlation stability × batch diversification.
          */
 
-        $correlationType = config('kraite.token_discovery.correlation_type', 'rolling');
+        $correlationType = KraiteSettings::correlationType();
         $correlationField = 'btc_correlation_'.$correlationType;
 
         $candidates = $this->availableExchangeSymbols
