@@ -208,12 +208,10 @@ final class ComputeMarketRegimeJob extends BaseQueueableJob
         // The 4-week observation window per spec requires the gate to be
         // observed but never enforced — operators read the dashboard, eyeball
         // the score against actual market regime, and tune thresholds before
-        // any flag flips trading flow off. Phase 2 will switch this to:
-        //
-        //   $score >= $kraite->bscs_block_threshold
-        //       && ! ($kraite->bscs_override_until?->isFuture() ?? false)
-        //
-        // and wire HasTradingGuards::canOpenPositions() to read it.
+        // any flag flips trading flow off. Open-blocking is now driven by
+        // the bscs_cooldown_until cooldown (armed by AnalyseBscsJob) and
+        // read by HasTradingGuards::canOpenPositions(); there is no
+        // operator override (removed Phase 3).
         $kraite->updateSaving([
             'bscs_score' => $score,
             'bscs_band' => $band->value,

@@ -889,7 +889,6 @@ final class NotificationMessageBuilder
                         "Existing positions untouched (no auto-close, no SL move).\n\n".
                         "If the score is still high when the cooldown expires, another {$hours}h window arms automatically. ".
                         "If recovered, the gate releases and you'll receive a `market_regime_recovered` notification.\n\n".
-                        "Operator escape hatch: set `bscs_override_until` on the kraite singleton to a future timestamp to force opens through.\n\n".
                         "Server: {$hostname}",
                     'pushoverMessage' => "BSCS Critical {$score}/100 — opens paused for {$hours}h",
                     'actionUrl' => null,
@@ -931,7 +930,6 @@ final class NotificationMessageBuilder
                         "Existing positions untouched.\n\n".
                         'Detector cadence is 1 minute on 15m klines for BTC + 4 alts; this is faster than the hourly BSCS compute would have noticed. '.
                         "Cooldown will release automatically; if cascade keeps firing, the next detector run is silent (no spam).\n\n".
-                        "Operator escape hatch: set `bscs_override_until` on the kraite singleton to a future timestamp to force opens through.\n\n".
                         "Server: {$hostname}",
                     'pushoverMessage' => "Market shock ({$rules}) — opens paused {$hours}h. BTC 15m {$btc15m}% / 1h {$btc1h}%",
                     'actionUrl' => null,

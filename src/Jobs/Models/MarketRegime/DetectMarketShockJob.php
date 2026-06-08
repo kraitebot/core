@@ -26,7 +26,6 @@ use Throwable;
  *
  * State machine:
  *
- *   - operator override active   → noop_override_active
  *   - cooldown already active    → cooldown_already_active (silent;
  *                                  no re-arm, no duplicate notification —
  *                                  cascade signal will keep firing every
@@ -69,10 +68,6 @@ final class DetectMarketShockJob extends BaseQueueableJob
     public function compute(): array
     {
         $index = BlackSwanIndex::current();
-
-        if ($index->isOverrideActive()) {
-            return ['action' => 'noop_override_active'];
-        }
 
         $btcBars = $this->loadBars('BTC');
         if ($btcBars === null) {

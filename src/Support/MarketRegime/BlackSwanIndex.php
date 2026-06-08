@@ -23,19 +23,17 @@ use Kraite\Core\Models\MarketRegimeSnapshot;
  *     to decide whether the global opens-gate is closed.
  *   - Admin dashboard widget calls `toArray()` for the live regime
  *     panel (current score, band, cooldown remaining, sub-signal grid
- *     pulled from the latest snapshot, override status, freshness).
+ *     pulled from the latest snapshot, freshness).
  *
  * Resolution rule for `shouldBlockOpens()`:
  *
- *   if  bscs_override_until > now()  → false  (operator escape hatch wins)
- *   elif bscs_cooldown_until > now() → true   (system cooldown active)
- *   else                              → false (no block)
+ *   if  bscs_cooldown_until > now() → true   (system cooldown active)
+ *   else                            → false  (no block)
  *
- * The override beats the cooldown so an operator can manually force
- * opens through during a system-set cooldown window if they decide the
- * regime is mis-reading the market — same shape as the spec's manual-
- * override clause but applied to the cooldown gate instead of the
- * legacy `bscs_block_active` flag.
+ * Critical is ABSOLUTE — the operator override (`bscs_override_until`)
+ * was removed in Phase 3, so an armed cooldown can no longer be bypassed
+ * by anyone. BSCS still computes hourly and the system reacts off the
+ * coefficient automatically.
  *
  * @see ~/docs/kraite/black-swan-logic.md
  */
@@ -46,7 +44,6 @@ final class BlackSwanIndex
         private readonly ?RegimeBand $band,
         private readonly ?CarbonImmutable $syncedAt,
         private readonly ?CarbonImmutable $cooldownUntil,
-        private readonly ?CarbonImmutable $overrideUntil,
         private readonly int $blockThreshold,
         private readonly int $freshnessMaxSeconds,
         private readonly ?int $cooldownThreshold,
@@ -70,7 +67,6 @@ final class BlackSwanIndex
             band: $kraite?->bscs_band !== null ? RegimeBand::tryFrom((string) $kraite->bscs_band) : null,
             syncedAt: self::immutable($kraite?->bscs_synced_at),
             cooldownUntil: self::immutable($kraite?->bscs_cooldown_until),
-            overrideUntil: self::immutable($kraite?->bscs_override_until),
             blockThreshold: (int) ($kraite?->bscs_block_threshold ?? 80),
             freshnessMaxSeconds: (int) ($kraite?->bscs_freshness_max_seconds ?? 6900),
             cooldownThreshold: isset($config['threshold']) ? (int) $config['threshold'] : null,
@@ -99,32 +95,18 @@ final class BlackSwanIndex
         return $this->cooldownUntil;
     }
 
-    public function overrideUntil(): ?CarbonImmutable
-    {
-        return $this->overrideUntil;
-    }
-
     public function isCooldownActive(): bool
     {
         return $this->cooldownUntil !== null && $this->cooldownUntil->isFuture();
     }
 
-    public function isOverrideActive(): bool
-    {
-        return $this->overrideUntil !== null && $this->overrideUntil->isFuture();
-    }
-
     /**
-     * The system gate. Override beats cooldown so the operator escape
-     * hatch always wins. No cooldown = open. Wired into
-     * `HasTradingGuards::canOpenPositions()` as the BSCS check.
+     * The system gate. An armed cooldown blocks; no cooldown = open. There
+     * is no operator override (removed Phase 3) — Critical is absolute.
+     * Wired into `HasTradingGuards::canOpenPositions()` as the BSCS check.
      */
     public function shouldBlockOpens(): bool
     {
-        if ($this->isOverrideActive()) {
-            return false;
-        }
-
         // Stale-hard fails OPEN: the cooldown timestamp could be hours
         // out-of-date and we'd rather miss a pause than lock out the
         // autonomous bot on a broken signal. AnalyseBscsJob fires the
@@ -239,8 +221,6 @@ final class BlackSwanIndex
             'should_block_opens' => $this->shouldBlockOpens(),
             'cooldown_active' => $this->isCooldownActive(),
             'cooldown_until' => $this->cooldownUntil?->toIso8601String(),
-            'override_active' => $this->isOverrideActive(),
-            'override_until' => $this->overrideUntil?->toIso8601String(),
             'block_threshold' => $this->blockThreshold,
             'freshness_max_seconds' => $this->freshnessMaxSeconds,
             'cooldown_threshold' => $this->cooldownThreshold,

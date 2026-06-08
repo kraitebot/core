@@ -18,10 +18,9 @@ trait HasTradingGuards
      *
      *   2. `BlackSwanIndex::shouldBlockOpens()` — system cooldown driven
      *      by `AnalyseBscsJob`. Returns true while `bscs_cooldown_until`
-     *      is in the future, AND no operator override is active. The
-     *      override (`bscs_override_until` in the future) flips the
-     *      cooldown off temporarily so an operator can manually force
-     *      opens through during a regime they've assessed as safe.
+     *      is in the future. Critical is ABSOLUTE — there is no
+     *      per-account opt-out and no operator override (both removed in
+     *      Phase 3); the cooldown blocks every account uniformly.
      *
      * Existing positions are never touched — this gate only affects new
      * `kraite:cron-create-positions` cycles. WAP, sync, close, lifecycle
@@ -51,11 +50,12 @@ trait HasTradingGuards
             return false;
         }
 
-        // BSCS / black-swan open-suspension — per-account opt-out. An
-        // account with respect_bscs=false keeps opening even while the
-        // cooldown is active ("don't wait for BSCS"); the master kill and
-        // allow_opening_positions above still bind it.
-        if ($this->account->respectsBscs() && BlackSwanIndex::current()->shouldBlockOpens()) {
+        // BSCS / black-swan open-suspension — ABSOLUTE. A Critical-armed
+        // cooldown blocks new opens for every account; there is no
+        // per-account opt-out and no operator override (both removed in
+        // Phase 3). The master kill and allow_opening_positions above
+        // still bind first.
+        if (BlackSwanIndex::current()->shouldBlockOpens()) {
             return false;
         }
 

@@ -35,10 +35,6 @@ use Throwable;
  *   4. cooldown still in the future
  *      → no-op (already armed, nothing to do).
  *
- *   5. operator override active (`bscs_override_until > now()`)
- *      → no-op (escape hatch wins, don't arm a cooldown that the
- *        gate would ignore anyway — also avoids a phantom notification).
- *
  * @see BlackSwanIndex
  * @see ~/docs/kraite/black-swan-logic.md
  */
@@ -70,10 +66,6 @@ final class AnalyseBscsJob extends BaseQueueableJob
             $this->notifyComputeStale($index);
 
             return $this->result('noop_compute_stale', $index->score(), $index->cooldownUntil()?->toIso8601String());
-        }
-
-        if ($index->isOverrideActive()) {
-            return $this->result('noop_override_active', $index->score(), $index->cooldownUntil()?->toIso8601String());
         }
 
         $threshold = (int) (config('kraite.market_regime.cooldown.threshold', 80));

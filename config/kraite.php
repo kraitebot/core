@@ -733,6 +733,25 @@ return [
             'upper_bound' => (int) env('MARKET_REGIME_FRAGILE_UPPER', 79),
             'max_reduction_pct' => (int) env('MARKET_REGIME_FRAGILE_MAX_REDUCTION', 50),
         ],
+        // Phase 3 — regime-scaled risk. Two discrete per-band ramps,
+        // applied at position-open only, that STACK with the
+        // FragileMarginMultiplier above:
+        //   - leverage_ratio scales the determined leverage down so the
+        //     liquidation cliff moves further from entry as risk rises.
+        //   - count_ratio scales the per-direction position-count cap so
+        //     fewer correlated stop-losses can fire together in a drawdown.
+        // Calm is always 1.0 (full). Critical (>= block_threshold) blocks
+        // opens entirely — its leverage ratio is never observed and its
+        // count ratio is 0.0. Both ramps floor the result; leverage also
+        // clamps to a minimum of 1x.
+        'leverage_ratio' => [
+            'elevated' => (float) env('MARKET_REGIME_LEVERAGE_ELEVATED', 0.66),
+            'fragile' => (float) env('MARKET_REGIME_LEVERAGE_FRAGILE', 0.50),
+        ],
+        'count_ratio' => [
+            'elevated' => (float) env('MARKET_REGIME_COUNT_ELEVATED', 0.75),
+            'fragile' => (float) env('MARKET_REGIME_COUNT_FRAGILE', 0.50),
+        ],
         // Phase 2.1C — directional crowding multiplier. Downscales margin
         // on the side of the book that already carries >= `threshold`
         // share of the total notional exposure. Empty side stays NEUTRAL
@@ -741,18 +760,16 @@ return [
             'threshold' => (float) env('MARKET_REGIME_CROWDING_THRESHOLD', 0.70),
             'max_reduction_pct' => (float) env('MARKET_REGIME_CROWDING_MAX_REDUCTION', 50),
         ],
-        'override' => [
-            'default_hours' => (int) env('MARKET_REGIME_OVERRIDE_DEFAULT_HOURS', 4),
-            'max_hours' => (int) env('MARKET_REGIME_OVERRIDE_MAX_HOURS', 24),
-        ],
         // Fast cascade-in-progress detector. Distinct from BSCS (slow,
         // hourly) — runs every minute on 15m klines for BTC + 4 alts to
         // catch cliffs that the BSCS hourly cron would only see at the
         // next :50 tick. When any rule fires, arms the SHARED
         // `bscs_cooldown_until` column for `cooldown_hours` (default
-        // 24h, same as BSCS). Notification: `market_shock_circuit_breaker`
-        // — fires once per fresh arming, silent re-arm while a cooldown
-        // is already active to avoid double-pinging.
+        // 1h — a short pause to ride out an in-progress cascade, then
+        // resume; the slow BSCS-score cooldown below stays 24h).
+        // Notification: `market_shock_circuit_breaker` — fires once per
+        // fresh arming, silent re-arm while a cooldown is already active
+        // to avoid double-pinging.
         'shock' => [
             'thresholds' => [
                 'btc_15m_pct' => (float) env('MARKET_SHOCK_BTC_15M_PCT', -3.0),
@@ -761,7 +778,7 @@ return [
                 'corr_1h' => (float) env('MARKET_SHOCK_CORR_1H', 0.85),
                 'magnitude_pct' => (float) env('MARKET_SHOCK_MAGNITUDE_PCT', 3.0),
             ],
-            'cooldown_hours' => (int) env('MARKET_SHOCK_COOLDOWN_HOURS', 24),
+            'cooldown_hours' => (int) env('MARKET_SHOCK_COOLDOWN_HOURS', 1),
         ],
 
         // Cooldown wired to `kraite:cron-analyse-bscs`. When the latest
@@ -848,6 +865,18 @@ return [
         'ENS', 'DYDX', 'BLUR', 'JTO', 'PYTH',
         'W', 'ENA', 'ETHFI', 'STRK', 'ZRO',
         'TAO', 'KAS', 'ORDI', '1000SATS', 'WLD',
+        // Widened +50 (2026-06-08) — broader candidate pool on localhost
+        // so token discovery has more LONG/SHORT setups to choose from.
+        'TON', 'BCH', 'XLM', 'EOS', 'NEO',
+        'IOTA', 'KAVA', 'FLOW', 'EGLD', 'ROSE',
+        'ZIL', 'ENJ', 'ANKR', 'ZEC', 'DASH',
+        'GMX', 'LRC', 'MASK', 'APE', 'GMT',
+        'JASMY', '1INCH', 'SUSHI', 'BAND', 'API3',
+        'ARKM', 'AEVO', 'ALT', 'MANTA', 'DYM',
+        'PIXEL', 'PORTAL', 'XAI', 'ACE', 'NOT',
+        'IO', 'DOGS', 'TURBO', 'NEIRO', 'POPCAT',
+        'MEW', 'BOME', 'MEME', 'TWT', 'MAGIC',
+        'ID', 'SSV', 'TRB', 'UMA', 'YGG',
     ],
 
     /*

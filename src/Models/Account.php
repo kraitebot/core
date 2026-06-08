@@ -34,7 +34,6 @@ use Kraite\Core\Concerns\Account\InteractsWithApis;
  * @property bool $on_hedge_mode
  * @property bool|null $use_correlation_sign_filter
  * @property bool|null $use_btc_bias_restriction
- * @property bool $respect_bscs
  * @property int $position_leverage_long
  * @property int $position_leverage_short
  * @property string $margin_mode
@@ -80,7 +79,6 @@ final class Account extends BaseModel
         'allow_other_orders' => 'boolean',
         'use_correlation_sign_filter' => 'boolean',
         'use_btc_bias_restriction' => 'boolean',
-        'respect_bscs' => 'boolean',
         'override_tp' => 'boolean',
         'override_sl' => 'boolean',
         'balance_for_trading_basis' => 'string',

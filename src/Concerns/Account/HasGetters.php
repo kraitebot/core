@@ -99,17 +99,4 @@ trait HasGetters
         return $this->use_btc_bias_restriction
             ?? (bool) config('kraite.token_discovery.btc_biased_restriction', true);
     }
-
-    /**
-     * Whether this account honours the global BSCS / BlackSwan
-     * open-suspension cooldown. True (default) = wait for the gate to
-     * clear like everyone else. False = keep opening positions even while
-     * BSCS is suspending opens fleet-wide; the master kill
-     * (Kraite::canTrade()) and allow_opening_positions still apply.
-     * Defaults to true for in-memory accounts with no column set.
-     */
-    public function respectsBscs(): bool
-    {
-        return $this->respect_bscs ?? true;
-    }
 }

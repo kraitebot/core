@@ -6,11 +6,14 @@ namespace Kraite\Core\Jobs\Models\Account;
 
 use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseQueueableJob;
+use Kraite\Core\Enums\RegimeBand;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Models\Symbol;
+use Kraite\Core\Support\MarketRegime\BlackSwanIndex;
+use Kraite\Core\Support\MarketRegime\RegimeCountMultiplier;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Trading\Kraite;
 
@@ -141,11 +144,23 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
         $canOpenLongs = $engine->canOpenLongs();
         $canOpenShorts = $engine->canOpenShorts();
 
+        // Phase 3 — regime risk snapshot, read OUTSIDE the lock. The score
+        // drives the per-direction count cap (RegimeCountMultiplier) and is
+        // stamped on each opened position (band + direction, e.g.
+        // "elevated-long") for later analysis of how regime-born positions
+        // perform.
+        $bscsScore = BlackSwanIndex::current()->score();
+        $countRatio = RegimeCountMultiplier::for($bscsScore);
+        $bscsBand = $bscsScore !== null ? RegimeBand::fromScore($bscsScore)->value : null;
+
         return DB::transaction(function () use (
             $exchangeLongs,
             $exchangeShorts,
             $canOpenLongs,
-            $canOpenShorts
+            $canOpenShorts,
+            $countRatio,
+            $bscsScore,
+            $bscsBand
         ): array {
             // Pessimistic lock on the accounts row — every concurrent
             // AssignBest run for this account serialises here.
@@ -159,8 +174,14 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
             $currentLongs = max($exchangeLongs, $dbLongs);
             $currentShorts = max($exchangeShorts, $dbShorts);
 
-            $maxLongs = $lockedAccount->total_positions_long;
-            $maxShorts = $lockedAccount->total_positions_short;
+            // Phase 3 count ramp — scale the per-direction cap down by the
+            // current BSCS regime, floored. Gate only: availableSlots clamps
+            // at 0, so an over-cap account (regime tightened while positions
+            // were already open) simply opens nothing new and lets attrition
+            // bring the count under the cap — existing positions are never
+            // force-closed.
+            $maxLongs = (int) floor($lockedAccount->total_positions_long * $countRatio);
+            $maxShorts = (int) floor($lockedAccount->total_positions_short * $countRatio);
 
             $availableLongSlots = max(0, $maxLongs - $currentLongs);
             $availableShortSlots = max(0, $maxShorts - $currentShorts);
@@ -173,6 +194,8 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
                         'account_id' => $lockedAccount->id,
                         'direction' => 'LONG',
                         'status' => 'new',
+                        'bscs_band' => $bscsBand !== null ? $bscsBand.'-long' : null,
+                        'bscs_score' => $bscsScore,
                     ]);
                     $createdPositions[] = ['id' => $position->id, 'direction' => 'LONG'];
                 }
@@ -184,6 +207,8 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
                         'account_id' => $lockedAccount->id,
                         'direction' => 'SHORT',
                         'status' => 'new',
+                        'bscs_band' => $bscsBand !== null ? $bscsBand.'-short' : null,
+                        'bscs_score' => $bscsScore,
                     ]);
                     $createdPositions[] = ['id' => $position->id, 'direction' => 'SHORT'];
                 }

@@ -44,6 +44,8 @@ final class Position extends BaseModel
         'indicators_values' => 'array',
 
         'quantity' => 'string',
+
+        'bscs_score' => 'integer',
     ];
 
     public function logMutators(): array

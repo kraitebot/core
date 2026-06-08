@@ -6,6 +6,8 @@ namespace Kraite\Core\Jobs\Atomic\Position;
 
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\MarketRegime\BlackSwanIndex;
+use Kraite\Core\Support\MarketRegime\RegimeLeverageMultiplier;
 use Kraite\Core\Support\Math;
 
 /**
@@ -22,10 +24,15 @@ use Kraite\Core\Support\Math;
  * - leverage <= bracket's initialLeverage
  * - leverage <= account's max leverage setting
  *
+ * The bracket/account result is then scaled DOWN by the Phase 3 regime
+ * leverage ramp (`RegimeLeverageMultiplier`) so the liquidation cliff
+ * moves further from entry as the BSCS regime worsens — floored and
+ * clamped to a minimum of 1x.
+ *
  * Must run AFTER PreparePositionDataJob (margin must be set).
  * Must run BEFORE SetLeverageJob (determines what leverage to set on exchange).
  */
-class DetermineLeverageJob extends BaseQueueableJob
+final class DetermineLeverageJob extends BaseQueueableJob
 {
     public Position $position;
 
@@ -63,25 +70,31 @@ class DetermineLeverageJob extends BaseQueueableJob
         $brackets = $exchangeSymbol->leverage_brackets;
 
         if (empty($brackets)) {
-            // No brackets available - fall back to account's max leverage
-            $this->position->updateSaving(['leverage' => $accountMaxLeverage]);
+            // No brackets available - fall back to account's max leverage,
+            // then apply the regime ramp on top of it.
+            $ramp = $this->applyRegimeLeverageRamp($accountMaxLeverage);
+            $this->position->updateSaving(['leverage' => $ramp['leverage']]);
 
             return [
                 'position_id' => $this->position->id,
                 'symbol' => $exchangeSymbol->parsed_trading_pair,
                 'direction' => $direction,
                 'margin' => $margin,
-                'leverage' => $accountMaxLeverage,
+                'base_leverage' => $accountMaxLeverage,
+                'regime_ratio' => $ramp['ratio'],
+                'bscs_score' => $ramp['bscs_score'],
+                'leverage' => $ramp['leverage'],
                 'reason' => 'no_brackets_available',
-                'message' => "No leverage brackets found, using account max: {$accountMaxLeverage}x",
+                'message' => "No leverage brackets found, account max {$accountMaxLeverage}x → regime-scaled {$ramp['leverage']}x",
             ];
         }
 
-        // Determine optimal leverage
+        // Determine optimal leverage from brackets, then scale it down by
+        // the current BSCS regime.
         $result = $this->getMaxLeverageForMargin($margin, $brackets, $accountMaxLeverage);
+        $ramp = $this->applyRegimeLeverageRamp($result['leverage']);
 
-        // Update position with determined leverage
-        $this->position->updateSaving(['leverage' => $result['leverage']]);
+        $this->position->updateSaving(['leverage' => $ramp['leverage']]);
 
         return [
             'position_id' => $this->position->id,
@@ -89,11 +102,36 @@ class DetermineLeverageJob extends BaseQueueableJob
             'direction' => $direction,
             'margin' => $margin,
             'account_max_leverage' => $accountMaxLeverage,
-            'leverage' => $result['leverage'],
+            'base_leverage' => $result['leverage'],
+            'regime_ratio' => $ramp['ratio'],
+            'bscs_score' => $ramp['bscs_score'],
+            'leverage' => $ramp['leverage'],
             'notional' => $result['notional'],
             'bracket' => $result['bracket'],
             'reason' => $result['reason'],
-            'message' => "Leverage determined: {$result['leverage']}x (notional: {$result['notional']})",
+            'message' => "Leverage determined: base {$result['leverage']}x → regime-scaled {$ramp['leverage']}x (notional: {$result['notional']})",
+        ];
+    }
+
+    /**
+     * Apply the Phase 3 regime leverage ramp on top of the
+     * bracket/account-determined base leverage. The scaled value is
+     * floored and clamped to a minimum of 1x so it can never reach an
+     * invalid 0. Calm regime returns the base unchanged.
+     *
+     * @return array{base: int, ratio: float, leverage: int, bscs_score: int|null}
+     */
+    public function applyRegimeLeverageRamp(int $baseLeverage): array
+    {
+        $score = BlackSwanIndex::current()->score();
+        $ratio = RegimeLeverageMultiplier::for($score);
+        $scaledLeverage = max(1, (int) floor($baseLeverage * $ratio));
+
+        return [
+            'base' => $baseLeverage,
+            'ratio' => $ratio,
+            'leverage' => $scaledLeverage,
+            'bscs_score' => $score,
         ];
     }
 
