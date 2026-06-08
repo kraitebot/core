@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Support;
 
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Foundation\Auth\User as AuthUser;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
+use Kraite\Core\Enums\NotificationLogStatus;
 use Kraite\Core\Enums\NotificationSeverity;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Notification;
@@ -177,10 +179,17 @@ final class NotificationService
                 // Use $relatable if provided, otherwise use $user as the throttle relatable
                 $throttleRelatable = $relatable ?? $user;
 
+                // Only actually-delivered rows count toward the throttle window.
+                // This is a no-op for non-threshold notifications (every row they
+                // write is passed_threshold=true), but it stops a threshold's
+                // recorded-only "held" rows from being mistaken for a recent
+                // delivery — otherwise a notification with both a throttle window
+                // and a threshold could never accumulate enough to breach.
                 $isThrottled = NotificationLog::query()
                     ->where('canonical', $canonical)
                     ->where('relatable_type', get_class($throttleRelatable))
                     ->where('relatable_id', $throttleRelatable->id)
+                    ->where('passed_threshold', true)
                     ->where('created_at', '>', now()->subSeconds($throttleDuration))
                     ->exists();
 
@@ -189,6 +198,25 @@ final class NotificationService
                     return false;
                 }
             }
+        }
+
+        // Notification Threshold — opt-in escalation gate layered on top of the
+        // throttler. For a notification flagged has_threshold, an occurrence is
+        // only physically delivered once it has recurred
+        // threshold_max_notifications times within a rolling
+        // threshold_max_duration_minutes window. Sub-threshold occurrences are
+        // still recorded in notification_logs (passed_threshold=false) but not
+        // sent. A misconfigured threshold (missing/zero count or window) is
+        // treated as "no threshold" and sends normally — fail-open, consistent
+        // with the rest of this service. Anything without a threshold falls
+        // straight through to the unchanged send path below.
+        if ($notification
+            && $notification->has_threshold
+            && (int) $notification->threshold_max_notifications >= 1
+            && (int) $notification->threshold_max_duration_minutes >= 1
+            && ! self::breachesThreshold($notification, $relatable, $user)
+        ) {
+            return false;
         }
 
         // Build notification message from canonical template. Builder
@@ -325,5 +353,183 @@ final class NotificationService
 
         // Final format: {canonical}-{construction}
         return "{$canonical}-{$construction}";
+    }
+
+    /**
+     * Evaluate the notification threshold for the current occurrence.
+     *
+     * Returns true when the occurrence BREACHES the threshold (the caller should
+     * proceed to send for real) and false when it is sub-threshold (this method
+     * has already recorded the held occurrence in notification_logs and the
+     * caller must NOT send).
+     *
+     * Counting model: only "held" rows (passed_threshold=false) accumulate
+     * toward the next breach — they are written exactly one-per-occurrence by
+     * this service, so the count is occurrence-accurate even when a delivered
+     * occurrence fans out to several per-channel rows. Re-earn resets via a
+     * cache anchor holding the id high-water mark at each breach: only held rows
+     * with a higher id (and still inside the rolling window) count toward the
+     * next breach, so after a breach the counter starts fresh and the admin is
+     * alerted on every Nth occurrence, never the lone ones. The anchor is a row
+     * id rather than a timestamp so sub-second bursts can't collide, and it
+     * lives in the same cache store the throttler uses, so the reset is
+     * consistent across worker servers.
+     */
+    private static function breachesThreshold(Notification $notification, ?object $relatable, AuthUser $user): bool
+    {
+        $windowMinutes = (int) $notification->threshold_max_duration_minutes;
+
+        [$relatableType, $relatableId] = self::resolveThresholdRelatable($relatable);
+
+        $breachCacheKey = sprintf(
+            'notification_threshold_breach:%d:%s:%s',
+            $notification->id,
+            $relatableType ?? '',
+            $relatableId ?? ''
+        );
+
+        // Serialize the read-count → decide → advance-anchor sequence across
+        // worker servers. Without it two workers can both read pending = N-1,
+        // both breach, and the admin gets a duplicate alert at the very moment
+        // this feature exists to suppress one. The lock is scoped per
+        // (notification, relatable). If it can't be acquired in time we evaluate
+        // anyway — a rare double alert beats blocking the notification path
+        // (fail-open, consistent with the rest of this service).
+        $lock = Cache::lock($breachCacheKey.':lock', 10);
+
+        try {
+            return $lock->block(5, static function () use ($notification, $user, $breachCacheKey, $windowMinutes, $relatableType, $relatableId): bool {
+                return self::evaluateThresholdBreach($notification, $user, $breachCacheKey, $windowMinutes, $relatableType, $relatableId);
+            });
+        } catch (LockTimeoutException) {
+            return self::evaluateThresholdBreach($notification, $user, $breachCacheKey, $windowMinutes, $relatableType, $relatableId);
+        }
+    }
+
+    /**
+     * Count → decide → record step of the threshold, run inside the breach lock
+     * (see breachesThreshold). Returns true on breach (the caller delivers) and
+     * false on a held occurrence (recorded here, not delivered).
+     *
+     * Re-earn anchor: the id high-water mark of held rows at the last breach.
+     * Using the monotonic row id (not a timestamp) keeps the reset immune to
+     * sub-second bursts where several occurrences share the same created_at
+     * second. Held in the same cache store the throttler uses, so the reset is
+     * consistent across worker servers.
+     */
+    private static function evaluateThresholdBreach(
+        Notification $notification,
+        AuthUser $user,
+        string $breachCacheKey,
+        int $windowMinutes,
+        ?string $relatableType,
+        int|string|null $relatableId
+    ): bool {
+        $maxNotifications = (int) $notification->threshold_max_notifications;
+
+        $anchorId = (int) (Cache::get($breachCacheKey) ?? 0);
+        $windowStart = now()->subMinutes($windowMinutes);
+
+        $heldQuery = NotificationLog::query()
+            ->where('notification_id', $notification->id)
+            ->where('passed_threshold', false)
+            ->when(
+                $relatableType === null,
+                static function ($query) {
+                    $query->whereNull('relatable_type')->whereNull('relatable_id');
+                },
+                static function ($query) use ($relatableType, $relatableId) {
+                    $query->where('relatable_type', $relatableType)->where('relatable_id', $relatableId);
+                }
+            );
+
+        // Occurrences held since the last breach, still inside the rolling window.
+        $pendingCount = (clone $heldQuery)
+            ->where('id', '>', $anchorId)
+            ->where('created_at', '>', $windowStart)
+            ->count();
+
+        // The current occurrence is the (pending + 1)th since the last reset.
+        if ($pendingCount + 1 >= $maxNotifications) {
+            // Breach — consume the cycle's held rows by advancing the anchor to
+            // the current high-water mark, then let the caller deliver for real.
+            // TTL kept just over the window so a quiet stretch naturally re-arms.
+            $highWaterMark = (int) ((clone $heldQuery)->max('id') ?? $anchorId);
+            Cache::put($breachCacheKey, $highWaterMark, now()->addMinutes($windowMinutes + 1));
+
+            return true;
+        }
+
+        self::recordThresholdHeld($notification, $user, $relatableType, $relatableId);
+
+        return false;
+    }
+
+    /**
+     * Record a sub-threshold occurrence: logged for audit, deliberately not
+     * sent. Mirrors the relatable resolution used by NotificationLogListener so
+     * held rows sit in the same scope as the eventual delivered rows.
+     *
+     * Failure-containment: a write failure here must never break the caller —
+     * the worst case is a slightly under-counted threshold, not a crashed job.
+     */
+    private static function recordThresholdHeld(
+        Notification $notification,
+        AuthUser $user,
+        ?string $relatableType,
+        int|string|null $relatableId
+    ): void {
+        try {
+            NotificationLog::create([
+                'notification_id' => $notification->id,
+                'canonical' => $notification->canonical,
+                'user_id' => $user->id ?? null,
+                'relatable_type' => $relatableType,
+                'relatable_id' => $relatableId,
+                'channel' => 'none',
+                'recipient' => 'none',
+                'sent_at' => now(),
+                'status' => NotificationLogStatus::ThresholdHeld->value,
+                'passed_threshold' => false,
+            ]);
+        } catch (Throwable $e) {
+            Log::warning('[NotificationService] Failed to record threshold-held occurrence', [
+                'canonical' => $notification->canonical,
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Resolve a relatable into the (type, id) tuple used to scope the threshold
+     * count. Matches NotificationLogListener::resolveRelatableTuple so the held
+     * rows written here and the delivered rows written by the listener share
+     * one scope. A null relatable scopes to the system-level bucket.
+     *
+     * @return array{string|null, int|string|null}
+     */
+    private static function resolveThresholdRelatable(?object $relatable): array
+    {
+        if ($relatable === null) {
+            return [null, null];
+        }
+
+        if (method_exists($relatable, 'getMorphClass')) {
+            return [$relatable->getMorphClass(), $relatable->getKey()];
+        }
+
+        if (property_exists($relatable, 'id')) {
+            return [$relatable::class, $relatable->id];
+        }
+
+        // A relatable we can't key (no morph class, no id) collapses to the
+        // system-level bucket, where it would share a threshold counter with
+        // every other null-scoped notification. Surface it so a caller passing
+        // an unkeyable object is caught rather than silently mis-counted.
+        Log::warning('[NotificationService] Threshold relatable could not be keyed; scoping to system-level bucket', [
+            'relatable_class' => $relatable::class,
+        ]);
+
+        return [null, null];
     }
 }

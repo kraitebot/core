@@ -25,6 +25,14 @@ enum NotificationLogStatus: string
     case SoftBounced = 'soft bounced';
     case HardBounced = 'hard bounced';
 
+    /**
+     * Recorded for audit but deliberately not delivered: the occurrence was
+     * logged (it passed the throttler) but had not yet breached its
+     * notification threshold, so the physical send was held back. Pairs with
+     * `notification_logs.passed_threshold = false`.
+     */
+    case ThresholdHeld = 'threshold held';
+
     public function isBounce(): bool
     {
         return $this === self::SoftBounced || $this === self::HardBounced;

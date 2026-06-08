@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace Kraite\Core\Models;
 
 use Database\Factories\NotificationLogFactory;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
+use Illuminate\Support\Carbon;
 use Kraite\Core\Enums\NotificationLogStatus;
 
 /**
@@ -31,26 +33,27 @@ use Kraite\Core\Enums\NotificationLogStatus;
  * @property string $channel
  * @property string $recipient
  * @property string|null $message_id
- * @property \Illuminate\Support\Carbon $sent_at
- * @property \Illuminate\Support\Carbon|null $opened_at
- * @property \Illuminate\Support\Carbon|null $soft_bounced_at
- * @property \Illuminate\Support\Carbon|null $hard_bounced_at
+ * @property Carbon $sent_at
+ * @property Carbon|null $opened_at
+ * @property Carbon|null $soft_bounced_at
+ * @property Carbon|null $hard_bounced_at
  * @property string $status
+ * @property bool $passed_threshold
  * @property array<string, mixed>|null $http_headers_sent
  * @property array<string, mixed>|null $http_headers_received
  * @property array<string, mixed>|null $gateway_response
  * @property string|null $content_dump
  * @property string|null $raw_email_content
  * @property string|null $error_message
- * @property \Illuminate\Support\Carbon $created_at
- * @property \Illuminate\Support\Carbon $updated_at
+ * @property Carbon $created_at
+ * @property Carbon $updated_at
  * @property-read Notification|null $notification
  * @property-read User|null $user
  * @property-read Model|null $relatable
  */
 final class NotificationLog extends Model
 {
-    /** @use HasFactory<\Database\Factories\NotificationLogFactory> */
+    /** @use HasFactory<NotificationLogFactory> */
     use HasFactory;
 
     use HasUuids;
@@ -65,6 +68,7 @@ final class NotificationLog extends Model
         'http_headers_sent' => 'array',
         'http_headers_received' => 'array',
         'gateway_response' => 'array',
+        'passed_threshold' => 'boolean',
     ];
 
     /**
@@ -110,10 +114,10 @@ final class NotificationLog extends Model
     /**
      * Scope query to specific canonical.
      *
-     * @param  \Illuminate\Database\Eloquent\Builder<static>  $query
-     * @return \Illuminate\Database\Eloquent\Builder<static>
+     * @param  Builder<static>  $query
+     * @return Builder<static>
      */
-    public function scopeByCanonical(\Illuminate\Database\Eloquent\Builder $query, string $canonical): \Illuminate\Database\Eloquent\Builder
+    public function scopeByCanonical(Builder $query, string $canonical): Builder
     {
         return $query->where('canonical', $canonical);
     }
@@ -121,10 +125,10 @@ final class NotificationLog extends Model
     /**
      * Scope query to specific channel.
      *
-     * @param  \Illuminate\Database\Eloquent\Builder<static>  $query
-     * @return \Illuminate\Database\Eloquent\Builder<static>
+     * @param  Builder<static>  $query
+     * @return Builder<static>
      */
-    public function scopeByChannel(\Illuminate\Database\Eloquent\Builder $query, string $channel): \Illuminate\Database\Eloquent\Builder
+    public function scopeByChannel(Builder $query, string $channel): Builder
     {
         return $query->where('channel', $channel);
     }
@@ -132,10 +136,10 @@ final class NotificationLog extends Model
     /**
      * Scope query to specific status.
      *
-     * @param  \Illuminate\Database\Eloquent\Builder<static>  $query
-     * @return \Illuminate\Database\Eloquent\Builder<static>
+     * @param  Builder<static>  $query
+     * @return Builder<static>
      */
-    public function scopeByStatus(\Illuminate\Database\Eloquent\Builder $query, string $status): \Illuminate\Database\Eloquent\Builder
+    public function scopeByStatus(Builder $query, string $status): Builder
     {
         return $query->where('status', $status);
     }
@@ -143,10 +147,10 @@ final class NotificationLog extends Model
     /**
      * Scope query to failed notifications.
      *
-     * @param  \Illuminate\Database\Eloquent\Builder<static>  $query
-     * @return \Illuminate\Database\Eloquent\Builder<static>
+     * @param  Builder<static>  $query
+     * @return Builder<static>
      */
-    public function scopeFailed(\Illuminate\Database\Eloquent\Builder $query): \Illuminate\Database\Eloquent\Builder
+    public function scopeFailed(Builder $query): Builder
     {
         return $query->where('status', NotificationLogStatus::Failed->value);
     }
@@ -154,10 +158,10 @@ final class NotificationLog extends Model
     /**
      * Scope query to delivered notifications.
      *
-     * @param  \Illuminate\Database\Eloquent\Builder<static>  $query
-     * @return \Illuminate\Database\Eloquent\Builder<static>
+     * @param  Builder<static>  $query
+     * @return Builder<static>
      */
-    public function scopeDelivered(\Illuminate\Database\Eloquent\Builder $query): \Illuminate\Database\Eloquent\Builder
+    public function scopeDelivered(Builder $query): Builder
     {
         return $query->where('status', NotificationLogStatus::Delivered->value);
     }

@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Models;
 
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Carbon;
 use Kraite\Core\Concerns\Notification\HasGetters;
 use Kraite\Core\Concerns\Notification\HasScopes;
 use Kraite\Core\Database\Factories\NotificationFactory;
@@ -30,9 +32,12 @@ use Kraite\Core\Enums\NotificationSeverity;
  * @property NotificationSeverity|null $default_severity
  * @property array<int, string>|null $cache_key
  * @property bool $is_active
- * @property \Illuminate\Support\Carbon $created_at
- * @property \Illuminate\Support\Carbon $updated_at
- * @property-read \Illuminate\Database\Eloquent\Collection<int, NotificationLog> $logs
+ * @property bool $has_threshold
+ * @property int|null $threshold_max_notifications
+ * @property int|null $threshold_max_duration_minutes
+ * @property Carbon $created_at
+ * @property Carbon $updated_at
+ * @property-read Collection<int, NotificationLog> $logs
  */
 final class Notification extends Model
 {
@@ -47,6 +52,9 @@ final class Notification extends Model
         'verified' => 'boolean',
         'cache_key' => 'array',
         'is_active' => 'boolean',
+        'has_threshold' => 'boolean',
+        'threshold_max_notifications' => 'integer',
+        'threshold_max_duration_minutes' => 'integer',
     ];
 
     /**

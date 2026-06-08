@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.53.0 - 2026-06-08
+
+### Features
+
+- [NEW FEATURE] **Notification Threshold — opt-in escalation gate on top of the Throttler.** A notification flagged `has_threshold` is only physically delivered once it has recurred `threshold_max_notifications` times within a rolling `threshold_max_duration_minutes` window. Sub-threshold occurrences are still recorded in `notification_logs` (`passed_threshold = false`, status `threshold held`) but not sent — turning benign-when-rare / serious-when-frequent alerts (e.g. Bybit retCode 10006) into a single alert only when they actually cluster. The throttler still runs first and only its survivors are counted; counting is per `(notification_id, relatable)` over the "held" rows, and re-earns after each breach via an id-high-water-mark cache anchor (immune to sub-second bursts, consistent across workers). Inert by default (`has_threshold` defaults false → every existing notification unchanged); thresholds are switched on per notification, by hand. New columns: `notifications.has_threshold/threshold_max_notifications/threshold_max_duration_minutes`, `notification_logs.passed_threshold` (default true). The DB-throttle window now counts only delivered rows so a notification's own held rows can't starve its threshold. Fully fail-open: a threshold write error or unkeyable relatable never breaks the caller.
+
+- [NEW FEATURE] **Phase 3 — regime-scaled leverage + position-count ramps; Critical is absolute.** Each BSCS regime band now drives three stacking, open-time-only risk axes: leverage scales down (`floor(base × ratio)`, min 1×), position count scales down (`floor(account_max × ratio)`, gate-only — an over-cap book freezes new opens and never force-closes), and the existing margin slice. Every opened position records the band+direction it was born under (`positions.bscs_band`, e.g. `elevated-long`) and the raw `positions.bscs_score`. The per-account `respect_bscs` opt-out and the operator `bscs_override_until` escape hatch are both removed — a Critical-armed cooldown blocks new opens for every account and cannot be bypassed; the only fail-open path left is staleness.
+
 ## 1.52.0 - 2026-06-07
 
 ### Features
