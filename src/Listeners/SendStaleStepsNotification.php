@@ -66,6 +66,12 @@ final class SendStaleStepsNotification
 
             $context = $event->context;
 
+            // Resolve the table set the wedged dispatcher actually owns from the
+            // active prefix ('' -> steps / steps_dispatcher, 'trading_' ->
+            // trading_steps / trading_steps_dispatcher). Threading these into the
+            // message stops the resolution SQL hardcoding `FROM steps` when it
+            // was a trading_steps group that stalled — the 2026-06-09 gamma case
+            // sent the responder to the wrong table.
             $referenceData = [
                 'count' => $event->count,
                 'group' => $context['group'] ?? 'N/A',
@@ -73,6 +79,8 @@ final class SendStaleStepsNotification
                 'last_terminal_update' => $context['last_terminal_update'] ?? 'never',
                 'progress_threshold_seconds' => $context['progress_threshold_seconds'] ?? 0,
                 'server' => $context['hostname'] ?? gethostname(),
+                'steps_table' => $watchdogPrefix.'steps',
+                'dispatcher_table' => $watchdogPrefix.'steps_dispatcher',
             ];
 
             // Throttle window is taken from the notification row's

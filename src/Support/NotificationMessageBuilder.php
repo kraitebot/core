@@ -304,6 +304,8 @@ final class NotificationMessageBuilder
                 $lastTerminalUpdate = is_string($context['last_terminal_update'] ?? null) ? $context['last_terminal_update'] : 'never';
                 $thresholdSeconds = is_int($context['progress_threshold_seconds'] ?? null) ? $context['progress_threshold_seconds'] : 0;
                 $thresholdMinutes = $thresholdSeconds > 0 ? (int) round($thresholdSeconds / 60) : 0;
+                $stepsTable = is_string($context['steps_table'] ?? null) ? $context['steps_table'] : 'steps';
+                $dispatcherTable = is_string($context['dispatcher_table'] ?? null) ? $context['dispatcher_table'] : 'steps_dispatcher';
 
                 return [
                     'severity' => NotificationSeverity::Critical,
@@ -314,7 +316,8 @@ final class NotificationMessageBuilder
                         "• Pending steps: {$pendingCount}\n".
                         "• Last terminal update: {$lastTerminalUpdate}\n".
                         "• Threshold: {$thresholdMinutes} minute(s)\n".
-                        "• Server: {$hostname}\n\n".
+                        "• Server: {$hostname}\n".
+                        "• Table set: {$stepsTable}\n\n".
                         "⚠️ WHAT THIS MEANS:\n\n".
                         'This watchdog catches dispatcher wedges that the per-step stuck detector misses — '.
                         'no individual step is stuck, but no group-level work is concluding either. '.
@@ -322,13 +325,13 @@ final class NotificationMessageBuilder
                         "intervention; this alarm closes that blind spot.\n\n".
                         "🔍 RESOLUTION STEPS:\n\n".
                         "1. Inspect the wedged group's tick state:\n".
-                        "[CMD]SELECT `group`, can_dispatch, current_tick_id, updated_at FROM steps_dispatcher WHERE `group` = '{$group}';[/CMD]\n\n".
+                        "[CMD]SELECT `group`, can_dispatch, current_tick_id, updated_at FROM {$dispatcherTable} WHERE `group` = '{$group}';[/CMD]\n\n".
                         "2. Check the Pending pile-up:\n".
-                        "[CMD]SELECT class, COUNT(*) c, MIN(created_at) oldest FROM steps WHERE `group` = '{$group}' AND state = 'StepDispatcher\\\\States\\\\Pending' GROUP BY class ORDER BY c DESC LIMIT 10;[/CMD]\n\n".
+                        "[CMD]SELECT class, COUNT(*) c, MIN(created_at) oldest FROM {$stepsTable} WHERE `group` = '{$group}' AND state = 'StepDispatcher\\\\States\\\\Pending' GROUP BY class ORDER BY c DESC LIMIT 10;[/CMD]\n\n".
                         "3. Look for Skipped parents with non-null child_block_uuid (the historical wedge shape):\n".
-                        "[CMD]SELECT id, class, child_block_uuid, updated_at FROM steps WHERE `group` = '{$group}' AND state = 'StepDispatcher\\\\States\\\\Skipped' AND child_block_uuid IS NOT NULL;[/CMD]\n\n".
+                        "[CMD]SELECT id, class, child_block_uuid, updated_at FROM {$stepsTable} WHERE `group` = '{$group}' AND state = 'StepDispatcher\\\\States\\\\Skipped' AND child_block_uuid IS NOT NULL;[/CMD]\n\n".
                         "4. Compare healthy vs wedged groups' last terminal update:\n".
-                        "[CMD]SELECT `group`, MAX(updated_at) last_terminal FROM steps WHERE state IN ('StepDispatcher\\\\States\\\\Completed','StepDispatcher\\\\States\\\\Skipped','StepDispatcher\\\\States\\\\Cancelled','StepDispatcher\\\\States\\\\Failed','StepDispatcher\\\\States\\\\Stopped') GROUP BY `group` ORDER BY last_terminal;[/CMD]",
+                        "[CMD]SELECT `group`, MAX(updated_at) last_terminal FROM {$stepsTable} WHERE state IN ('StepDispatcher\\\\States\\\\Completed','StepDispatcher\\\\States\\\\Skipped','StepDispatcher\\\\States\\\\Cancelled','StepDispatcher\\\\States\\\\Failed','StepDispatcher\\\\States\\\\Stopped') GROUP BY `group` ORDER BY last_terminal;[/CMD]",
                     'pushoverMessage' => "🚨 Group '{$group}' wedged\nPending: {$pendingCount}\nLast progress: {$lastTerminalUpdate}\nServer: {$hostname}",
                     'actionUrl' => null,
                     'actionLabel' => null,

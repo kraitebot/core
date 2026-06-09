@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.53.2 - 2026-06-09
+
+### Bug fixes
+
+- [FIXED] **`group_no_progress_detected` alert now points the operator at the table set that actually stalled.** The watchdog runs once per dispatcher prefix (`steps:recover-stale` for the default set, `--prefix=trading` for the trading set), but the embedded resolution SQL in the alert hardcoded `FROM steps` / `FROM steps_dispatcher` — so a `trading_steps` group stall (the 2026-06-09 gamma case) printed default-set diagnostics and sent the responder to the wrong table. `SendStaleStepsNotification` already reads the active `RuntimeContext` prefix for pause-suppression; it now also resolves the real table names from it and passes `steps_table` / `dispatcher_table` in `referenceData`. `NotificationMessageBuilder` renders those in all four resolution queries (falling back to `steps` / `steps_dispatcher` when absent, so other callers are unaffected) and adds a "Table set:" line to the alert body. Covered by two cases in the ingestion project's `SendStaleStepsGroupProgressNotificationTest` (trading prefix → `trading_steps` SQL; default → `steps` SQL).
+
 ## 1.53.1 - 2026-06-09
 
 ### Bug fixes
