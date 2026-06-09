@@ -75,11 +75,17 @@ final class SendStaleStepsNotification
                 'server' => $context['hostname'] ?? gethostname(),
             ];
 
+            // Throttle window is taken from the notification row's
+            // cache_duration (not hardcoded here) so it can be tuned as
+            // config — and, crucially, dropped to 0 when a Notification
+            // Threshold is armed on this canonical, since the threshold
+            // counts only post-throttle occurrences and a 600s throttle
+            // would otherwise starve it. The row defaults to 600, so behaviour
+            // is unchanged until the threshold is switched on.
             NotificationService::send(
                 user: Kraite::admin(),
                 canonical: $canonical,
                 referenceData: $referenceData,
-                duration: 600,
                 cacheKeys: ['group' => $referenceData['group']],
             );
 

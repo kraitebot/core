@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.53.1 - 2026-06-09
+
+### Bug fixes
+
+- [FIXED] **`RecoverPositionsCommand::hasInflightStepFor` no longer counts parked `NotRunnable` rescue steps as in-flight work.** The in-flight guard excluded only terminal states, so the `NotRunnable` `CancelPositionJob` that every successfully-opened position leaves behind (a resolve-exception "rescue" branch that runs only if a sibling fails) looked like live work. Recovery therefore deferred forever on any healthy position — the exact case that blocked `kraite:recover-positions` from rescuing the 8 positions wedged in `syncing` on 2026-06-09. `NotRunnable` is now merged into the excluded set alongside the terminal states; a genuinely failing block still trips the guard through its real non-terminal sibling (Pending / Dispatched / Running). Covered by `tests/Feature/Commands/RecoverPositionsNotRunnableInflightTest.php` in the ingestion project.
+- [FIXED] **`SendStaleStepsNotification` reads the notification row's `cache_duration` instead of hardcoding a 600s throttle.** The listener passed `duration: 600` literally, which would starve a Notification Threshold armed on `group_no_progress_detected` (the threshold counts only post-throttle occurrences, so the throttle must be droppable to 0). It now defers to the row's `cache_duration`, which defaults to 600 — so behaviour is unchanged until a threshold is switched on for the canonical.
+
 ## 1.53.0 - 2026-06-08
 
 ### Features

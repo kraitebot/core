@@ -16,6 +16,7 @@ use Kraite\Core\Support\Recovery\RecovererResolver;
 use Kraite\Core\Support\Recovery\RecoveryReport;
 use StepDispatcher\Models\Step;
 use StepDispatcher\States\Cancelled;
+use StepDispatcher\States\NotRunnable;
 use StepDispatcher\Support\BaseCommand;
 use StepDispatcher\Support\StepDispatcher;
 use StepDispatcher\Support\Steps;
@@ -974,8 +975,17 @@ final class RecoverPositionsCommand extends BaseCommand
     protected function hasInflightStepFor(int $positionId): bool
     {
         $check = function () use ($positionId): bool {
+            // Exclude NotRunnable alongside the terminal states. NotRunnable is
+            // the parked state for resolve-exception ("rescue") steps that only
+            // run if a sibling in their block fails; on the happy path they sit
+            // there forever and the dispatcher itself excludes them from
+            // dispatch. Counting an inert rescue branch as an in-flight workflow
+            // makes recovery defer forever on any successfully-opened position
+            // (which always leaves a NotRunnable CancelPositionJob behind). A
+            // genuinely failing block still trips this guard via its real
+            // non-terminal sibling (Pending/Dispatched/Running).
             return Step::query()
-                ->whereNotIn('state', Step::terminalStepStates())
+                ->whereNotIn('state', array_merge(Step::terminalStepStates(), [NotRunnable::class]))
                 ->whereRaw(
                     "CAST(JSON_EXTRACT(arguments, '$.positionId') AS UNSIGNED) = ?",
                     [$positionId],
