@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.53.3 - 2026-06-10
+
+### Bug fixes
+
+- [BUG FIX] **Per-symbol leverage-bracket sync no longer lets one dead symbol poison the batch.** `SyncLeverageBracketJob` (the shared atomic used by Bybit, KuCoin and Bitget) called the exchange's per-symbol leverage endpoint with no guard: when the exchange reported a symbol closed/invalid at runtime (Bybit retCode 10001 "symbol is closed or invalid", and the per-exchange equivalents) the atomic threw, which failed the shared parent `SyncLeverageBracketsJob` ("Child step(s) failed") and recurred on every hourly refresh because nothing ever flagged the symbol. It now catches the API error, and if `isSymbolDelisted()` recognises it, marks the symbol for delisting and settles the step cleanly (mirroring `FetchKlinesJob`); any other error still bubbles up. The next refresh's lifecycle filter then excludes the symbol entirely, so it self-heals. Sibling symbols already completed independently — this removes the parent-poisoning + recurring failure and closes the "listed-but-leverage-closed" blind spot the proactive orphan-sweep and the kline detector both miss (2026-06-09: AAOI/USDT on Bybit). Regression coverage in the ingestion project's `SyncLeverageBracketJobDelistingTest`.
+
 ## 1.53.2 - 2026-06-09
 
 ### Bug fixes
