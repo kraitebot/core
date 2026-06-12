@@ -42,6 +42,7 @@ use Kraite\Core\Commands\Cronjobs\UpsertPnlsCommand;
 use Kraite\Core\Commands\Daemons\StreamBinancePricesCommand;
 use Kraite\Core\Commands\Daemons\StreamBinanceUserDataCommand;
 use Kraite\Core\Commands\DispatchDaemonCommand;
+use Kraite\Core\Commands\Fleet\ReportFleetMetricsCommand;
 use Kraite\Core\Commands\Ingestion\IsEligibleCommand;
 use Kraite\Core\Commands\RecoverPositionsCommand;
 use Kraite\Core\Commands\SafeToRestartCommand;
@@ -134,6 +135,7 @@ final class CoreServiceProvider extends ServiceProvider
             CooldownCommand::class,
             DispatchDaemonCommand::class,
             WarmupCommand::class,
+            ReportFleetMetricsCommand::class,
         ]);
 
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
@@ -234,6 +236,7 @@ final class CoreServiceProvider extends ServiceProvider
         });
 
         $this->syncHorizonEnvironmentsFromKraiteConfig();
+        $this->registerFleetRedisConnection();
     }
 
     public function register(): void
@@ -438,5 +441,41 @@ final class CoreServiceProvider extends ServiceProvider
         $merged = array_values(array_unique(array_merge($existingValid, $physicalQueues)));
 
         config(['step-dispatcher.queues.valid' => $merged]);
+    }
+
+    /**
+     * Register a dedicated, UNPREFIXED Redis connection (`fleet`) for the
+     * fleet-metrics heartbeat. Cloned from the app's `default` connection
+     * (so it inherits whatever host / password each app already points at)
+     * but with an empty key prefix and pinned to the kraite Redis database.
+     *
+     * Why empty prefix: the writer runs under the ingestion app and the
+     * reader under the admin app, each with its own `REDIS_PREFIX`. On the
+     * default connection the same logical key prefixes differently per app,
+     * so the reader would never see the writer's keys. hyperion (no PHP app)
+     * writes the same literal key via raw redis-cli. An empty prefix on a
+     * shared connection is the only way all four producers/consumers agree
+     * on the byte-for-byte key `kraite:fleet:<hostname>`.
+     */
+    private function registerFleetRedisConnection(): void
+    {
+        $default = config('database.redis.default');
+
+        if (! is_array($default)) {
+            return;
+        }
+
+        config([
+            'database.redis.fleet' => array_merge($default, [
+                'database' => (int) config('kraite.fleet_metrics.redis_database', 2),
+                // Preserve any global redis options (cluster / persistent) but
+                // force an EMPTY prefix — the literal key is the whole point.
+                'options' => array_merge(
+                    (array) config('database.redis.options', []),
+                    (array) ($default['options'] ?? []),
+                    ['prefix' => ''],
+                ),
+            ]),
+        ]);
     }
 }

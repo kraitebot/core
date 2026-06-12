@@ -245,6 +245,49 @@ return [
         ],
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Fleet Metrics — per-box heartbeat → admin dashboard
+    |--------------------------------------------------------------------------
+    |
+    | Each box writes a live-vitals snapshot to a Redis key every
+    | `report_interval_seconds`; the admin dashboard + the system-health
+    | watchdog read those keys, joined against the `fleet.servers` registry,
+    | to render the fleet and alert on silence.
+    |
+    | The keys live on a DEDICATED, UNPREFIXED Redis connection (`fleet`,
+    | injected by CoreServiceProvider::boot) so every app agrees on the
+    | literal key regardless of its own per-app `REDIS_PREFIX`. Without that
+    | the ingestion writer and the admin reader would prefix the same logical
+    | key differently and never see each other. hyperion (no PHP app) writes
+    | the same literal key via raw redis-cli, so the prefix must be empty.
+    |
+    | Liveness is judged by the embedded `reported_at` age, NOT key existence:
+    | the key carries a long `ttl_seconds` (garbage-collection horizon for a
+    | decommissioned box), while `stale_after_seconds` (minutes) decides
+    | online vs DOWN. The threshold sits comfortably above a clean reboot so a
+    | box bouncing through a deploy does not page.
+    */
+    'fleet_metrics' => [
+        'key_prefix' => env('FLEET_METRICS_KEY_PREFIX', 'kraite:fleet:'),
+        'redis_database' => (int) env('FLEET_METRICS_REDIS_DB', 2),
+        'report_interval_seconds' => (int) env('FLEET_METRICS_REPORT_INTERVAL_SECONDS', 300),
+        'ttl_seconds' => (int) env('FLEET_METRICS_TTL_SECONDS', 604800),
+        'stale_after_seconds' => (int) env('FLEET_METRICS_STALE_AFTER_SECONDS', 720),
+
+        // Reporting identity + queue routing for the heartbeat. The defaults
+        // (all null) match a production box, where the OS hostname IS the
+        // logical roster name, the default queue connection is the Horizon
+        // connection, and a per-host supervisor consumes the `<hostname>`
+        // queue. A box where those don't hold — a dev machine whose OS hostname
+        // is not `local`, whose default queue connection is `database`, and
+        // whose Horizon consumes `default` — overrides them so the identical
+        // self-rescheduling heartbeat runs on the already-running local Horizon.
+        'hostname' => env('FLEET_METRICS_HOSTNAME'),     // null → gethostname()
+        'connection' => env('FLEET_METRICS_CONNECTION'), // null → default queue connection
+        'queue' => env('FLEET_METRICS_QUEUE'),           // null → the resolved hostname
+    ],
+
     /**
      * Small safety tolerance to lower the leverage bracket in case is
      * falls inside that percentage gap, to avoid last limit order rejections.

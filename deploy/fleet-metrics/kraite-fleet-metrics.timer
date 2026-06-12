@@ -1,0 +1,18 @@
+# Fires the hyperion fleet-metrics heartbeat every ~5 minutes.
+# Install to /etc/systemd/system/kraite-fleet-metrics.timer, then:
+#   systemctl daemon-reload
+#   systemctl enable --now kraite-fleet-metrics.timer
+[Unit]
+Description=Run Kraite fleet-metrics heartbeat every 5 minutes (hyperion)
+
+[Timer]
+# First run shortly after boot, then every 5 minutes on a steady cadence.
+OnBootSec=90
+OnUnitActiveSec=300
+# Spread the wakeup a little so it never lands dead-on the minute boundary
+# alongside everything else on the box.
+AccuracySec=20
+Persistent=true
+
+[Install]
+WantedBy=timers.target

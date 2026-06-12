@@ -16,12 +16,13 @@ use Kraite\Core\Models\BinanceListenKey;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
-use StepDispatcher\Models\Step;
+use Kraite\Core\Support\Fleet\FleetMetricsRepository;
 use Kraite\Core\Support\Health\OrphanReconciler;
 use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
+use StepDispatcher\Models\Step;
 use StepDispatcher\Support\BaseCommand;
 use Throwable;
 
@@ -220,6 +221,7 @@ final class CheckSystemHealthCommand extends BaseCommand
             'checkDiskPressure',
             'checkStaleSyncingPositions',
             'checkUserDataDeadLetters',
+            'checkFleetMetricsSilence',
         ];
 
         // The two dispatcher-dependent checks (indicator + balance
@@ -1436,6 +1438,49 @@ final class CheckSystemHealthCommand extends BaseCommand
         );
 
         return 1;
+    }
+
+    /**
+     * #13 — Fleet-metrics silence. Each box writes a vitals heartbeat to a
+     * Redis key every few minutes; this check reads the
+     * `kraite.fleet.servers` registry joined against those keys and alerts on
+     * any box that is `missing` (registered but never reported — warmup seed
+     * missed, Horizon never came up, or decommissioned without cleaning the
+     * registry) or `stale` (key present but `reported_at` aged past the
+     * threshold — box offline, Horizon/heartbeat wedged, or mid-reboot beyond
+     * the grace window).
+     *
+     * The staleness threshold (`fleet_metrics.stale_after_seconds`) sits well
+     * above a clean reboot, so a box bouncing through a deploy does not page;
+     * only a box that fails to come back trips it. Redis-only, so it stays
+     * accurate even while the steps dispatcher is paused.
+     */
+    private function checkFleetMetricsSilence(): int
+    {
+        $silent = app(FleetMetricsRepository::class)->silentHosts();
+
+        $alerts = 0;
+
+        foreach ($silent as $row) {
+            $hostname = (string) $row['hostname'];
+            $status = (string) $row['status'];
+            $type = $row['type'] ?? 'unknown';
+            $ip = $row['ip_address'] ?? 'unknown';
+
+            $detail = $status === 'missing'
+                ? "No fleet-metrics heartbeat key for {$hostname} ({$type}, {$ip}). The box is in the kraite.fleet.servers registry but has never reported — its heartbeat loop never started (warmup seed missed, Horizon down since provisioning) or it was decommissioned without cleaning the registry."
+                : "Fleet-metrics heartbeat for {$hostname} ({$type}, {$ip}) is {$row['age_seconds']}s stale (threshold: ".config('kraite.fleet_metrics.stale_after_seconds').'s). The box stopped reporting — Horizon / heartbeat wedged, the box is offline, or it is mid-reboot beyond the grace window.';
+
+            $this->emit(
+                signal: "fleet_box_silent_{$hostname}",
+                severity: 'high',
+                title: "Fleet box {$hostname} {$status} — no live metrics",
+                detail: $detail,
+            );
+            $alerts++;
+        }
+
+        return $alerts;
     }
 
     /**

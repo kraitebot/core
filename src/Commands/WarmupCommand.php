@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Commands;
 
 use Illuminate\Support\Facades\Artisan;
+use Kraite\Core\Jobs\Fleet\ReportFleetMetricsJob;
 use Kraite\Core\Support\MaintenanceMode;
 use StepDispatcher\Support\BaseCommand;
 
@@ -35,6 +36,16 @@ final class WarmupCommand extends BaseCommand
         $this->line('Bringing application UP...');
         Artisan::call('up');
         $this->info('Application is UP.');
+
+        // (Re)start this box's fleet-metrics heartbeat. The job is unique per
+        // host, so seeding on every warmup is idempotent — it revives a loop
+        // that died (failed tick, lost delayed job, fresh deploy) without ever
+        // spawning a duplicate pulse while one is still pending.
+        $hostname = ReportFleetMetricsJob::resolveHostname();
+        if ($hostname !== '' && $hostname !== 'unknown') {
+            ReportFleetMetricsJob::seed($hostname);
+            $this->info("Fleet-metrics heartbeat seeded for {$hostname}.");
+        }
 
         $this->info('STATUS:ONLINE');
 

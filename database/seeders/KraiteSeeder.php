@@ -635,14 +635,21 @@ final class KraiteSeeder extends Seeder
      * Seed the fleet roster into the `servers` table.
      *
      * Reads the canonical hostname → metadata map from
-     * `config('kraite.fleet.servers')` and writes one row per entry. Same
-     * roster on every environment (local, testing, production) — the table
-     * is the source of truth that `StepRouter` uses to translate banned IPs
-     * back to hostnames during ban filtering, and the deploy-time drift
-     * gate `kraite:verify-fleet-topology` checks that every
-     * `kraite.horizon.workers` key has a matching row here. Keeping the
-     * roster constant across envs means the drift gate behaves the same
-     * everywhere, no env-conditional skips.
+     * `config('kraite.fleet.servers')` and writes one row per entry, scoped to
+     * the environment: a local box is a single machine, so it seeds ONLY the
+     * `local` host; production (and any non-local env) seeds the real fleet and
+     * never the `local` 127.0.0.1 row. The `servers` table is the runtime
+     * source of truth every core consumer reads — `StepRouter` translates
+     * banned IPs back to hostnames through it, the fleet-metrics dashboard
+     * renders it, and the deploy-time drift gate `kraite:verify-fleet-topology`
+     * checks that every `kraite.horizon.workers` key has a matching row. The
+     * env scoping is safe for those: the drift gate runs only at production
+     * deploy (where the full fleet is present), and `local` is never a Horizon
+     * worker, so excluding it from production never trips the gate.
+     *
+     * This is `updateOrInsert` only — it never deletes. Pruning a host that
+     * left the roster is a deliberate operator step, never an automatic delete
+     * during seeding.
      *
      * `secret` is sourced from `kraite.server_secrets.<hostname>` when set
      * (typically only ingestion has one in production). `own_queue_name`
@@ -652,7 +659,13 @@ final class KraiteSeeder extends Seeder
      */
     public function seedServers(): void
     {
-        foreach (config('kraite.fleet.servers', []) as $hostname => $meta) {
+        $roster = (array) config('kraite.fleet.servers', []);
+
+        $roster = app()->environment('local')
+            ? array_filter($roster, static fn (string $hostname): bool => $hostname === 'local', ARRAY_FILTER_USE_KEY)
+            : array_filter($roster, static fn (string $hostname): bool => $hostname !== 'local', ARRAY_FILTER_USE_KEY);
+
+        foreach ($roster as $hostname => $meta) {
             DB::table('servers')->updateOrInsert(
                 ['hostname' => $hostname],
                 [
@@ -668,6 +681,14 @@ final class KraiteSeeder extends Seeder
                     'updated_at' => now(),
                 ]
             );
+        }
+
+        // A box seeded before this env scoping leaves a stale `local`
+        // (127.0.0.1) row that does not belong to production. Drop it on any
+        // non-local env so the prod fleet shows only prod hosts. Targeted
+        // single-hostname delete — never a cascade; nothing references servers.
+        if (! app()->environment('local')) {
+            DB::table('servers')->where('hostname', 'local')->delete();
         }
     }
 
