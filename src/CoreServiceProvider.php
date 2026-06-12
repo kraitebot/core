@@ -236,7 +236,6 @@ final class CoreServiceProvider extends ServiceProvider
         });
 
         $this->syncHorizonEnvironmentsFromKraiteConfig();
-        $this->registerFleetRedisConnection();
     }
 
     public function register(): void
@@ -247,6 +246,18 @@ final class CoreServiceProvider extends ServiceProvider
             __DIR__.'/../config/kraite.php',
             'kraite'
         );
+
+        // MUST run in register(), not boot(): the `redis` manager is a singleton
+        // that snapshots config('database.redis') the first time it's resolved.
+        // In a long-running Horizon worker, another provider's boot() resolves
+        // Redis (for the queue) before CoreServiceProvider::boot() could inject
+        // the `fleet` connection — so the worker's manager never sees it and
+        // FleetMetricsRepository::write() throws "Redis connection [fleet] not
+        // configured", silently killing every box's heartbeat. Registering in
+        // register() (before ANY provider boot()) guarantees the config is set
+        // before the manager is ever resolved. (Worked on the CLI + pheme by
+        // luck of resolution order; broke on the ingestion workers — 2026-06-12.)
+        $this->registerFleetRedisConnection();
 
         // Bind the drift-spotter contract to its production implementation.
         // The interface seam exists so tests can swap in canned reports
