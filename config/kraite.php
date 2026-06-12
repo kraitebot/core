@@ -242,6 +242,18 @@ return [
                 'type' => 'worker',
                 'description' => 'Worker — indicators + cronjobs (isolated from trading queues)',
             ],
+            'palaemon' => [
+                'ip_address' => '37.27.192.42',
+                'is_apiable' => true,
+                'type' => 'worker',
+                'description' => 'Worker — positions / orders / priority. Joined 2026-06-12.',
+            ],
+            'aristaeus' => [
+                'ip_address' => '37.27.196.99',
+                'is_apiable' => true,
+                'type' => 'worker',
+                'description' => 'Worker — positions / orders / priority. Joined 2026-06-12.',
+            ],
         ],
     ],
 
