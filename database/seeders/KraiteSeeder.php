@@ -666,21 +666,26 @@ final class KraiteSeeder extends Seeder
             : array_filter($roster, static fn (string $hostname): bool => $hostname !== 'local', ARRAY_FILTER_USE_KEY);
 
         foreach ($roster as $hostname => $meta) {
-            DB::table('servers')->updateOrInsert(
-                ['hostname' => $hostname],
-                [
-                    'hostname' => $hostname,
-                    'ip_address' => (string) ($meta['ip_address'] ?? ''),
-                    'is_apiable' => (bool) ($meta['is_apiable'] ?? false),
-                    'needs_whitelisting' => (bool) ($meta['is_apiable'] ?? false),
-                    'own_queue_name' => $hostname,
-                    'description' => (string) ($meta['description'] ?? $hostname),
-                    'type' => (string) ($meta['type'] ?? 'worker'),
-                    'secret' => config('kraite.server_secrets.'.$hostname),
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ]
-            );
+            $values = [
+                'hostname' => $hostname,
+                'ip_address' => (string) ($meta['ip_address'] ?? ''),
+                'is_apiable' => (bool) ($meta['is_apiable'] ?? false),
+                'needs_whitelisting' => (bool) ($meta['is_apiable'] ?? false),
+                'own_queue_name' => $hostname,
+                'description' => (string) ($meta['description'] ?? $hostname),
+                'type' => (string) ($meta['type'] ?? 'worker'),
+                'secret' => config('kraite.server_secrets.'.$hostname),
+                'updated_at' => now(),
+            ];
+
+            // `created_at` only on first registration — it anchors the
+            // fleet-metrics provisioning grace window, so a reseed must
+            // never make an old box look freshly provisioned again.
+            if (! DB::table('servers')->where('hostname', $hostname)->exists()) {
+                $values['created_at'] = now();
+            }
+
+            DB::table('servers')->updateOrInsert(['hostname' => $hostname], $values);
         }
 
         // A box seeded before this env scoping leaves a stale `local`

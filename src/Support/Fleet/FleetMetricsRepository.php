@@ -102,6 +102,7 @@ final class FleetMetricsRepository
                     'ip_address' => $server->ip_address,
                     'type' => $server->type,
                     'description' => $server->description,
+                    'registered_at' => $server->created_at?->toIso8601String(),
                 ],
                 $snapshot,
                 $now,
@@ -147,6 +148,9 @@ final class FleetMetricsRepository
             'ip_address' => $meta['ip_address'] ?? null,
             'type' => $meta['type'] ?? null,
             'description' => $meta['description'] ?? null,
+            // When the host joined the roster (servers.created_at) — the
+            // watchdog's provisioning-grace anchor for `missing` rows.
+            'registered_at' => $meta['registered_at'] ?? null,
         ];
 
         if ($snapshot === null) {

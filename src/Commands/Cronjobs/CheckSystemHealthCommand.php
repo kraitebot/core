@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Commands\Cronjobs;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -22,6 +23,7 @@ use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
+use RuntimeException;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Support\BaseCommand;
 use Throwable;
@@ -169,11 +171,6 @@ final class CheckSystemHealthCommand extends BaseCommand
      */
     private const STALE_SYNCING_POSITION_MINUTES = 15;
 
-    protected $signature = 'kraite:cron-check-system-health
-                            {--output : Display command output (silent by default)}';
-
-    protected $description = 'Run ten staleness / connectivity checks across the bot\'s critical data paths and alert per failed signal.';
-
     /**
      * Checks that depend on the steps-dispatcher actively draining
      * Pending steps. When `MaintenanceMode::pauseStepsDispatch()` is
@@ -191,6 +188,46 @@ final class CheckSystemHealthCommand extends BaseCommand
         'checkIndicatorFreshness',
         'checkAccountBalanceFreshness',
     ];
+
+    protected $signature = 'kraite:cron-check-system-health
+                            {--output : Display command output (silent by default)}';
+
+    protected $description = 'Run ten staleness / connectivity checks across the bot\'s critical data paths and alert per failed signal.';
+
+    /**
+     * Pure-function disk-pressure evaluation. Extracted so the alert
+     * path is unit-testable without a host with low disk. Returns null
+     * for all "no alert" cases: healthy, unreadable (false from
+     * disk_free/total_space), corrupt total (≤ 0). Returns the
+     * structured fields (`free_gib`, `total_gib`, `free_percent_str`)
+     * for the emit() detail line otherwise.
+     *
+     * Boundary semantics: `free_percent >= threshold` is HEALTHY (no
+     * alert). Strictly below the threshold fires.
+     *
+     * @return array{free_gib: string, total_gib: string, free_percent_str: string}|null
+     */
+    public static function evaluateDiskPressure(
+        int|float|false $free,
+        int|float|false $total,
+        int $thresholdPercent,
+    ): ?array {
+        if ($free === false || $total === false || $total <= 0) {
+            return null;
+        }
+
+        $freePercent = ((float) $free / (float) $total) * 100;
+
+        if ($freePercent >= $thresholdPercent) {
+            return null;
+        }
+
+        return [
+            'free_gib' => number_format($free / (1024 ** 3), 2),
+            'total_gib' => number_format($total / (1024 ** 3), 2),
+            'free_percent_str' => number_format($freePercent, 1),
+        ];
+    }
 
     public function handle(): int
     {
@@ -639,12 +676,12 @@ final class CheckSystemHealthCommand extends BaseCommand
             return 'unknown';
         }
 
-        $colonPos = strpos($firstLine, ':');
+        $colonPos = mb_strpos($firstLine, ':');
         if ($colonPos === false) {
-            return trim($firstLine) ?: 'unknown';
+            return mb_trim($firstLine) ?: 'unknown';
         }
 
-        return trim(substr($firstLine, 0, $colonPos)) ?: 'unknown';
+        return mb_trim(mb_substr($firstLine, 0, $colonPos)) ?: 'unknown';
     }
 
     /**
@@ -794,41 +831,6 @@ final class CheckSystemHealthCommand extends BaseCommand
         );
 
         return 1;
-    }
-
-    /**
-     * Pure-function disk-pressure evaluation. Extracted so the alert
-     * path is unit-testable without a host with low disk. Returns null
-     * for all "no alert" cases: healthy, unreadable (false from
-     * disk_free/total_space), corrupt total (≤ 0). Returns the
-     * structured fields (`free_gib`, `total_gib`, `free_percent_str`)
-     * for the emit() detail line otherwise.
-     *
-     * Boundary semantics: `free_percent >= threshold` is HEALTHY (no
-     * alert). Strictly below the threshold fires.
-     *
-     * @return array{free_gib: string, total_gib: string, free_percent_str: string}|null
-     */
-    public static function evaluateDiskPressure(
-        int|float|false $free,
-        int|float|false $total,
-        int $thresholdPercent,
-    ): ?array {
-        if ($free === false || $total === false || $total <= 0) {
-            return null;
-        }
-
-        $freePercent = ((float) $free / (float) $total) * 100;
-
-        if ($freePercent >= $thresholdPercent) {
-            return null;
-        }
-
-        return [
-            'free_gib' => number_format($free / (1024 ** 3), 2),
-            'total_gib' => number_format($total / (1024 ** 3), 2),
-            'free_percent_str' => number_format($freePercent, 1),
-        ];
     }
 
     /**
@@ -1170,7 +1172,7 @@ final class CheckSystemHealthCommand extends BaseCommand
     private function closeOrphanPosition(Account $account, string $symbol, ?string $direction, string $quantity): void
     {
         if ($direction === null) {
-            throw new \RuntimeException("Orphan position key missing direction: {$symbol}");
+            throw new RuntimeException("Orphan position key missing direction: {$symbol}");
         }
 
         if ($quantity === '0' || $quantity === '') {
@@ -1454,10 +1456,23 @@ final class CheckSystemHealthCommand extends BaseCommand
      * above a clean reboot, so a box bouncing through a deploy does not page;
      * only a box that fails to come back trips it. Redis-only, so it stays
      * accurate even while the steps dispatcher is paused.
+     *
+     * Alert lifecycle: a `missing` box still inside the provisioning grace
+     * window (`fleet_metrics.provisioning_grace_seconds` after its `servers`
+     * row was first registered) is skipped — a box is normally seeded into
+     * the roster hours before its Horizon warms up, and paging on that gap
+     * every run is pure noise. `stale` is never graced: that box HAS reported
+     * before, so silence is always a real signal. Once alertable, the signal
+     * re-pages every `fleet_metrics.alert_throttle_seconds` (not every check
+     * run — the default canonical throttle is shorter than the check cadence,
+     * which would page on every single tick while a box is down).
      */
     private function checkFleetMetricsSilence(): int
     {
         $silent = app(FleetMetricsRepository::class)->silentHosts();
+
+        $graceSeconds = (int) config('kraite.fleet_metrics.provisioning_grace_seconds', 86400);
+        $alertThrottleSeconds = (int) config('kraite.fleet_metrics.alert_throttle_seconds', 3600);
 
         $alerts = 0;
 
@@ -1467,15 +1482,27 @@ final class CheckSystemHealthCommand extends BaseCommand
             $type = $row['type'] ?? 'unknown';
             $ip = $row['ip_address'] ?? 'unknown';
 
+            if ($status === 'missing' && $this->withinProvisioningGrace($row, $graceSeconds)) {
+                continue;
+            }
+
+            // `age_seconds` is null when the key exists but its `reported_at`
+            // is absent or unparseable (corrupt payload, rogue writer) — name
+            // that state instead of interpolating a null into the sentence.
+            $staleFor = $row['age_seconds'] !== null
+                ? "{$row['age_seconds']}s stale"
+                : 'stale with an unreadable reported_at stamp';
+
             $detail = $status === 'missing'
                 ? "No fleet-metrics heartbeat key for {$hostname} ({$type}, {$ip}). The box is in the kraite.fleet.servers registry but has never reported — its heartbeat loop never started (warmup seed missed, Horizon down since provisioning) or it was decommissioned without cleaning the registry."
-                : "Fleet-metrics heartbeat for {$hostname} ({$type}, {$ip}) is {$row['age_seconds']}s stale (threshold: ".config('kraite.fleet_metrics.stale_after_seconds').'s). The box stopped reporting — Horizon / heartbeat wedged, the box is offline, or it is mid-reboot beyond the grace window.';
+                : "Fleet-metrics heartbeat for {$hostname} ({$type}, {$ip}) is {$staleFor} (threshold: ".config('kraite.fleet_metrics.stale_after_seconds').'s). The box stopped reporting — Horizon / heartbeat wedged, the box is offline, or it is mid-reboot beyond the grace window.';
 
             $this->emit(
                 signal: "fleet_box_silent_{$hostname}",
                 severity: 'high',
                 title: "Fleet box {$hostname} {$status} — no live metrics",
                 detail: $detail,
+                throttleSeconds: $alertThrottleSeconds,
             );
             $alerts++;
         }
@@ -1484,13 +1511,39 @@ final class CheckSystemHealthCommand extends BaseCommand
     }
 
     /**
+     * True while a roster row is younger than the provisioning grace window —
+     * the seeded-but-not-yet-warmed phase of a new box. An unreadable
+     * registration stamp fails open (alertable): better one page too many
+     * than a silent box hidden behind a parse error.
+     *
+     * @param  array<string, mixed>  $row
+     */
+    private function withinProvisioningGrace(array $row, int $graceSeconds): bool
+    {
+        $registeredAt = $row['registered_at'] ?? null;
+
+        if (! is_string($registeredAt) || $registeredAt === '') {
+            return false;
+        }
+
+        try {
+            return CarbonImmutable::parse($registeredAt)->gt(now()->subSeconds($graceSeconds));
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    /**
      * Single emit path so every check shares the same notification
      * surface (one canonical) with the same per-signal throttle. The
      * `signal` value is the per-signal cache key; pick a stable string
      * (e.g. `indicator_stale_BTCUSDT`) so the same failure dedupes
      * across runs and a different failure gets its own throttle bucket.
+     * `throttleSeconds` overrides the canonical's default window for
+     * checks whose re-page cadence must differ from it (null keeps the
+     * notifications-table `cache_duration`).
      */
-    private function emit(string $signal, string $severity, string $title, string $detail): void
+    private function emit(string $signal, string $severity, string $title, string $detail, ?int $throttleSeconds = null): void
     {
         $this->verboseWarn("[{$severity}] {$signal}: {$title}");
 
@@ -1505,6 +1558,7 @@ final class CheckSystemHealthCommand extends BaseCommand
                     'detail' => $detail,
                     'detected_at' => now()->toIso8601String(),
                 ],
+                duration: $throttleSeconds,
                 cacheKeys: ['signal' => $signal],
             );
         } catch (Throwable $exception) {

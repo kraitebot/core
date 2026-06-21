@@ -9,7 +9,7 @@ The keys live on a dedicated, **unprefixed** Redis connection (`fleet`, injected
 by `CoreServiceProvider::boot`, database 2) so every app agrees on the literal
 key regardless of its own `REDIS_PREFIX`.
 
-## The 7 PHP boxes (athena, eos, iris, nyx, hemera, tyche, pheme)
+## The 9 PHP boxes (athena, eos, iris, nyx, hemera, palaemon, aristaeus, tyche, pheme)
 
 Nothing to install — the heartbeat is a self-rescheduling Laravel job
 (`ReportFleetMetricsJob`) seeded automatically by `kraite:warmup` on every

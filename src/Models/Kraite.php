@@ -149,8 +149,11 @@ final class Kraite extends BaseModel
     /**
      * Current server's public IP.
      *
-     * Primary source is the `servers` row matching the OS hostname — one
-     * local DB roundtrip, authoritative. The previous fallback used
+     * Primary source is the `servers` row matching this box's logical
+     * roster identity: `kraite.fleet_metrics.hostname` when set (a box
+     * whose OS hostname is not its roster name — e.g. a dev Mac whose
+     * roster row is `local`), else the OS hostname. One local DB
+     * roundtrip, authoritative. The previous fallback used
      * `gethostbyname()`, which on Ubuntu boxes resolves the hostname to
      * `127.0.1.1` via `/etc/hosts` and poisoned every IP-scoped downstream
      * check (ForbiddenHostname lookups, API-key whitelist diagnostics,
@@ -160,7 +163,11 @@ final class Kraite extends BaseModel
      */
     public static function ip(): string
     {
-        $hostname = gethostname();
+        $hostname = config('kraite.fleet_metrics.hostname');
+
+        if (! is_string($hostname) || $hostname === '') {
+            $hostname = gethostname();
+        }
 
         if ($hostname !== false) {
             $server = Server::where('hostname', $hostname)->first();

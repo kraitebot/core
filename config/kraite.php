@@ -287,6 +287,16 @@ return [
         'ttl_seconds' => (int) env('FLEET_METRICS_TTL_SECONDS', 604800),
         'stale_after_seconds' => (int) env('FLEET_METRICS_STALE_AFTER_SECONDS', 720),
 
+        // Watchdog alert lifecycle. A silent box re-pages once per
+        // alert_throttle_seconds — the canonical's default 300s window is
+        // shorter than the 7-min check cadence, which would page on every
+        // tick while a box is down. A `missing` box whose servers row is
+        // younger than provisioning_grace_seconds is skipped entirely:
+        // seeded-but-not-yet-warmed is the normal state of a box
+        // mid-provision, not an incident. `stale` is never graced.
+        'alert_throttle_seconds' => (int) env('FLEET_METRICS_ALERT_THROTTLE_SECONDS', 3600),
+        'provisioning_grace_seconds' => (int) env('FLEET_METRICS_PROVISIONING_GRACE_SECONDS', 86400),
+
         // Reporting identity + queue routing for the heartbeat. The defaults
         // (all null) match a production box, where the OS hostname IS the
         // logical roster name, the default queue connection is the Horizon
@@ -295,6 +305,10 @@ return [
         // is not `local`, whose default queue connection is `database`, and
         // whose Horizon consumes `default` — overrides them so the identical
         // self-rescheduling heartbeat runs on the already-running local Horizon.
+        // `hostname` is the box's logical roster identity, also honoured by
+        // Kraite::ip() — without it a box whose OS hostname misses the
+        // servers roster falls back to a live ipify lookup on every
+        // IP-scoped call (notifications, throttlers, ban diagnostics).
         'hostname' => env('FLEET_METRICS_HOSTNAME'),     // null → gethostname()
         'connection' => env('FLEET_METRICS_CONNECTION'), // null → default queue connection
         'queue' => env('FLEET_METRICS_QUEUE'),           // null → the resolved hostname

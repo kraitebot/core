@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.55.0 - 2026-06-21
+
+### Features
+
+- [NEW FEATURE] **Fleet-silence watchdog alert lifecycle — provisioning grace + bounded re-page.** `CheckSystemHealthCommand::checkFleetMetricsSilence` no longer pages on a box that is merely mid-provision, and no longer re-pages on every check tick. A `missing` box (roster row present, no heartbeat key ever written) is skipped while its `servers.created_at` is younger than `fleet_metrics.provisioning_grace_seconds` (default 86400) — the seeded-but-not-yet-warmed window is the normal state of a box being onboarded, not an incident. A `stale` box (heartbeat key exists but aged past `stale_after_seconds`) is never graced: it reported before, so silence is always real. Once alertable, the signal re-pages once per `fleet_metrics.alert_throttle_seconds` (default 3600) instead of every 7-minute check run. An `age_seconds=null` (corrupt/unparseable `reported_at`) is now named explicitly instead of interpolating a null into the alert sentence. New config keys `fleet_metrics.alert_throttle_seconds` + `fleet_metrics.provisioning_grace_seconds`; `FleetMetricsRepository` threads `registered_at` (from `servers.created_at`) into both the live and missing-host rows as the grace anchor, and `KraiteSeeder` writes `created_at` on first registration only so a reseed never re-arms the grace window for an existing box.
+- [NEW FEATURE] **`Kraite::ip()` resolves through the box's logical roster identity.** The server-IP resolver now honours `config('kraite.fleet_metrics.hostname')` before falling back to `gethostname()`. A box whose OS hostname is not its roster name (a dev Mac whose `servers` row is `local`) previously fell through every IP-scoped call (notification builds, the four exchange throttlers' `getCurrentIp`, ban diagnostics) to a live `api.ipify.org` lookup — which went silent for ~3 hours when the Mac's SSL chain broke (deploy-notes #86). With the override the resolver reads the roster row directly. Production boxes are untouched (the OS hostname IS the roster name; the env stays unset).
+- [IMPROVED] **palaemon + aristaeus added to the config worker roster** — the fifth and sixth interchangeable trading workers (joined 2026-06-12).
+
+## 1.54.1 - 2026-06-12
+
+### Bug fixes
+
+- [FIXED] **Fleet Redis connection is registered in `register()`, not `boot()`.** Resolving the dedicated fleet-metrics Redis connection at boot time raced the container's config resolution; binding it in `register()` makes the connection available before any boot-phase consumer reads it.
+
+## 1.54.0 - 2026-06-12
+
+### Features
+
+- [NEW FEATURE] **Fleet metrics heartbeat — roster-driven, cross-platform, env-configurable.** Per-box vitals now derive their roster from the `servers` table, the collector is cross-platform (Linux fleet boxes + the macOS dev box), and the heartbeat's reporting identity / queue connection / queue name are env-configurable (`FLEET_METRICS_HOSTNAME` / `_CONNECTION` / `_QUEUE`) so the identical self-rescheduling job runs on a dev box whose roster name, default connection and Horizon queue differ from a production box's.
+
 ## 1.53.3 - 2026-06-10
 
 ### Bug fixes
