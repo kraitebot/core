@@ -276,11 +276,23 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
 
     /**
      * Symbol removed / delisted by BitGet.
-     * Detected by vendor code 40309 ("The contract has been removed").
      *
-     * BitGet returns this on kline and other endpoints once a futures
-     * contract has been delisted from the platform. BitGet codes are
-     * delivered as strings inside the JSON body.
+     * Detected by two vendor codes (BitGet delivers codes as strings inside
+     * the JSON body):
+     *  - 40309 "The contract has been removed" — the explicit delist signal
+     *    on the trading / contract endpoints.
+     *  - 40034 "Parameter {symbol} does not exist" — the kline / market-data
+     *    endpoints answer with this once a contract is gone from the
+     *    platform. Seen live during the 2026-06 TON→GRAM rebrand: BitGet
+     *    pulled the TONUSDT contract and every kline fetch returned 40034,
+     *    so the reactive self-heal never fired and the dead symbol failed
+     *    each refresh cycle until the slower proactive sweep caught it.
+     *
+     * 40034 is safe to treat as a delisting because it is distinct from
+     * 40808 "Parameter verification exception" (a malformed / invalid
+     * parameter such as a bad granularity): a request-shape bug surfaces as
+     * 40808, never 40034. 40034 means the looked-up symbol itself is not
+     * found, which on these read-only endpoints can only mean it is gone.
      */
     public function isSymbolDelisted(Throwable $exception): bool
     {
@@ -291,7 +303,7 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
         $data = $this->extractHttpErrorCodes($exception);
         $code = (string) ($data['api_code'] ?? $data['status_code'] ?? '');
 
-        return $code === '40309';
+        return in_array($code, ['40309', '40034'], strict: true);
     }
 
     /**

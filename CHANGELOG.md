@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.55.1 - 2026-06-21
+
+### Bug fixes
+
+- [FIXED] **BitGet kline delisting self-heal now recognises code 40034.** `BitgetExceptionHandler::isSymbolDelisted()` only matched 40309 ("The contract has been removed"), but BitGet's kline / market-data endpoints report a gone contract with 40034 ("Parameter {symbol} does not exist"). So `FetchKlinesJob`'s reactive self-heal never fired for a delisted BitGet symbol — it failed every refresh cycle until the slower hourly proactive presence-sweep flagged it. Surfaced live by the 2026-06 TON→GRAM rebrand: BitGet pulled the TONUSDT contract and every kline fetch returned 40034 all day (reference/indicator data only — zero trading impact, `trading_steps` stayed clean). `isSymbolDelisted()` now also matches 40034, so the symbol self-heals on the first kline failure (marks `is_marked_for_delisting`, settles the step cleanly). Safe because 40034 (an entity-lookup miss) is distinct from 40808 ("Parameter verification exception", a malformed param such as a bad granularity) — a request-shape bug surfaces as 40808, never 40034, so this can never mass-delist the universe. Mirrors the entry-#78 leverage-job fix (1.53.3). Regression coverage in the ingestion suite's `SymbolDelistedClassifierTest` (40034 → delisted, 40808 → not).
+
 ## 1.55.0 - 2026-06-21
 
 ### Features
