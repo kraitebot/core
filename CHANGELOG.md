@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.57.0 - 2026-06-22
+
+### Bug fixes
+
+- [FIXED] **Cross-exchange direction bridging keys on the canonical CMC `symbol_id`, not the ticker string.** `ExchangeSymbolObserver` (overlap detection) and `CopyDirectionToOtherExchangesJob` (the conclude-cycle copy) matched the other-exchange row by ticker string + a hand-seeded `token_mapper`, so naming-divergent symbols with no mapper row — BitGet FLOKI / SHIB and Bybit SKYAI1, the same assets as Binance 1000FLOKI / 1000SHIB / SKYAI — sat with `overlaps_with_binance=0`, null indicators, and perpetually tripped the indicator-stale watchdog. The CMC `symbol_id` already linked them correctly (and is the same identity the observer uses for backtesting / TP-SL / gap sibling propagation); the string path was the lone holdout. Both sites now resolve by `symbol_id` (naming-agnostic), keeping exact-token + `token_mapper` as the fallback for CMC-unresolved rows. Additive and low-blast: existing token matches are unchanged; only previously-orphaned divergent symbols newly bridge. A null `symbol_id` never matches (no bridge to an arbitrary Binance row) and a different `symbol_id` never matches (ticker-collision guard). Regression coverage in the ingestion suite's `SymbolIdIdentityBridgeTest` (bridges by symbol_id with no mapper; different symbol_id does not bridge; null symbol_id still bridges via the token fallback).
+
 ## 1.56.0 - 2026-06-22
 
 ### Features

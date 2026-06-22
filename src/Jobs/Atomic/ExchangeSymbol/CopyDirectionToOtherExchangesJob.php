@@ -13,8 +13,7 @@ final class CopyDirectionToOtherExchangesJob extends BaseQueueableJob
 {
     public function __construct(
         public int $sourceExchangeSymbolId,
-    ) {
-    }
+    ) {}
 
     /**
      * @return array<string, mixed>
@@ -69,6 +68,20 @@ final class CopyDirectionToOtherExchangesJob extends BaseQueueableJob
                         ->where('overlaps_with_binance', true)
                         ->first();
                 }
+            }
+
+            // Identity fallback: resolve by canonical CMC symbol_id — the
+            // naming-agnostic match. Catches the divergences a TokenMapper row
+            // would otherwise have to spell out (Binance 1000FLOKI -> BitGet
+            // FLOKI, both symbol_id 72) with no hand-seeded mapping. The
+            // overlaps_with_binance gate is already symbol_id-aware (set by
+            // ExchangeSymbolObserver), so it only matches confirmed siblings.
+            if (! $targetSymbol && $sourceSymbol->symbol_id !== null) {
+                $targetSymbol = ExchangeSymbol::query()
+                    ->where('api_system_id', $exchange->id)
+                    ->where('symbol_id', $sourceSymbol->symbol_id)
+                    ->where('overlaps_with_binance', true)
+                    ->first();
             }
 
             // 6. Copy direction data if target found

@@ -73,7 +73,6 @@ final class ExchangeSymbolObserver
         );
     }
 
-
     /**
      * Handle overlap logic before saving (create or update).
      * Sets overlaps_with_binance and handles delisting cascades.
@@ -97,8 +96,14 @@ final class ExchangeSymbolObserver
                 $this->markOtherExchangesAsNotOverlapping($model->token);
             }
         } else {
-            // Rule 2: Non-Binance - check if token exists on Binance (direct or via TokenMapper)
-            $model->overlaps_with_binance = $this->tokenExistsOnBinance($model->token, $model->api_system_id);
+            // Rule 2: Non-Binance - overlaps when Binance lists the SAME ASSET.
+            // The canonical CMC symbol_id is the naming-agnostic identity
+            // (BitGet FLOKI shares symbol_id 72 with Binance 1000FLOKI), so it
+            // resolves 1000x / numeric-suffix / alias divergences with no
+            // hand-seeded TokenMapper row. Exact-token + TokenMapper matching
+            // stays as the fallback for rows CMC has not resolved yet.
+            $model->overlaps_with_binance = $this->binanceListsSymbolId($model->symbol_id)
+                || $this->tokenExistsOnBinance($model->token, $model->api_system_id);
         }
     }
 
@@ -190,6 +195,28 @@ final class ExchangeSymbolObserver
         }
 
         return false;
+    }
+
+    /**
+     * True when Binance lists a symbol sharing this canonical CMC symbol_id —
+     * the naming-agnostic identity match. A null symbol_id never matches: an
+     * unresolved row must not bridge to an arbitrary Binance symbol.
+     */
+    public function binanceListsSymbolId(?int $symbolId): bool
+    {
+        if ($symbolId === null) {
+            return false;
+        }
+
+        $binanceSystemId = $this->getBinanceSystemId();
+
+        if ($binanceSystemId === null) {
+            return false;
+        }
+
+        return ExchangeSymbol::where('api_system_id', $binanceSystemId)
+            ->where('symbol_id', $symbolId)
+            ->exists();
     }
 
     /**
