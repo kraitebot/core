@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.56.0 - 2026-06-22
+
+### Features
+
+- [NEW FEATURE] **Dispatcher-orchestrated candle-coverage steps for the backtest risk gate.** New `Jobs/Backtest/EnsureBacktestCandleCoverageStep` (orchestrator) audits coverage via `CandleCoverageVerifier` and, when a token's window isn't fresh + gap-free, `makeItAParent()`s a sequential child block — `FetchVisionCandlesStep` → `FetchRestCandlesStep` (forward-fill + `fillGaps`) → `FetchTaapiCandlesStep` → `VerifyCoverageResultStep` — each wrapping the existing synchronous `Support/Backtest/*` fetchers and best-effort (catch → complete) so one source hiccup never stalls the block. The final verify records `{ready, reason, coverage}` on its step `response` for the admin poll endpoint. New `Support/Backtest/CoverageGate` is the single fresh+complete predicate (latest holds the last CLOSED candle = 1× interval; `holes == 0 && contiguity >= 99%`), shared by the dispatcher verify step and the admin `run` / `approve` gates. All additive — no change to existing trading code; the steps run on the `indicators` queue. Backs the admin backtesting rule that a grade or approve can never be produced on stale or incomplete candle data.
+
 ## 1.55.1 - 2026-06-21
 
 ### Bug fixes
