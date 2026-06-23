@@ -467,6 +467,30 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'exchange_symbol_price_misaligned' => (static function () use ($context) {
+                $symbol = is_string($context['symbol'] ?? null) ? $context['symbol'] : 'unknown';
+                $exchangeName = is_string($context['exchange'] ?? null) ? $context['exchange'] : 'unknown';
+                $live = $context['live_price'] ?? null;
+                $binance = $context['binance_price'] ?? null;
+                $ratio = $context['ratio'] ?? null;
+                $liveStr = is_numeric($live) ? mb_rtrim(mb_rtrim(number_format((float) $live, 12, '.', ''), '0'), '.') : 'n/a';
+                $binanceStr = is_numeric($binance) ? mb_rtrim(mb_rtrim(number_format((float) $binance, 12, '.', ''), '0'), '.') : 'n/a';
+                $ratioStr = is_numeric($ratio) ? (string) $ratio : 'n/a';
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'title' => "Price mismatch — {$symbol} on {$exchangeName} disabled",
+                    'emailMessage' => "{$symbol} on {$exchangeName} was switched off — its live price does not match the Binance same-asset reference, which means it lists a different contract unit (e.g. a plain token vs Binance's 1000x contract).\n\n".
+                        "Live price: {$liveStr}\n".
+                        "Binance reference: {$binanceStr}\n".
+                        "Ratio (live / Binance): {$ratioStr}\n\n".
+                        "The price stream replicates Binance's mark_price onto same-asset rows with no contract-ratio scaling, so this symbol carried a wrong price. It is now is_price_aligned=false and is_manually_enabled=false, so it is excluded from trading. No action needed unless you intend to trade this contract — that would require a per-symbol scale factor on the price replication first.",
+                    'pushoverMessage' => "Price mismatch {$symbol} ({$exchangeName}) — ratio {$ratioStr}, symbol disabled",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                ];
+            })(),
+
             'server_ip_not_whitelisted' => (static function () use ($exchangeTitle, $ip, $accountName) {
                 return [
                     'severity' => NotificationSeverity::High,

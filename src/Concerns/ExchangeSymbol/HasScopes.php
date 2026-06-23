@@ -91,6 +91,11 @@ trait HasScopes
         $query->where("{$table}.api_statuses->has_taapi_data", true)
             ->where("{$table}.has_no_indicator_data", false)
             ->where("{$table}.is_marked_for_delisting", false)
+            // Price must approximately match the Binance same-asset sibling — a
+            // unit-divergent contract (KuCoin FLOKI vs Binance 1000FLOKI) carries
+            // a replicated mark_price wrong by the contract ratio. Set by the
+            // refresh price-alignment check; Binance + unverified rows default true.
+            ->where("{$table}.is_price_aligned", true)
             ->where("{$table}.has_price_trend_misalignment", false)
             ->where("{$table}.has_early_direction_change", false)
             ->where("{$table}.has_invalid_indicator_direction", false)
@@ -120,6 +125,11 @@ trait HasScopes
         $query->where("{$table}.api_statuses->has_taapi_data", true)
             ->where("{$table}.has_no_indicator_data", false)
             ->where("{$table}.is_marked_for_delisting", false)
+            // Price must approximately match the Binance same-asset sibling — a
+            // unit-divergent contract (KuCoin FLOKI vs Binance 1000FLOKI) carries
+            // a replicated mark_price wrong by the contract ratio. Set by the
+            // refresh price-alignment check; Binance + unverified rows default true.
+            ->where("{$table}.is_price_aligned", true)
             ->where("{$table}.has_price_trend_misalignment", false)
             ->where("{$table}.has_early_direction_change", false)
             ->where("{$table}.has_invalid_indicator_direction", false)

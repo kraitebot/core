@@ -10,6 +10,7 @@ use Kraite\Core\Jobs\Atomic\ApiSystem\UpsertExchangeSymbolsFromExchangeJob;
 use Kraite\Core\Jobs\Lifecycles\ApiSystem\DiscoverCMCTokensForOrphanedSymbolsJob;
 use Kraite\Core\Jobs\Lifecycles\ApiSystem\SyncLeverageBracketsJob;
 use Kraite\Core\Jobs\Lifecycles\ExchangeSymbol\TouchTaapiDataForExchangeSymbolsJob;
+use Kraite\Core\Jobs\Lifecycles\ExchangeSymbol\VerifyPriceAlignmentsJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Support\Proxies\JobProxy;
@@ -161,6 +162,22 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
 
             $this->verboseLine('  - Created CMC discovery lifecycle step (Index 3)');
             $this->verboseLine('  - Created TAAPI touch lifecycle step (Index 3, Binance only)');
+
+            // Index 4: after CMC discovery (Index 3) has resolved symbol_id,
+            // verify each naming-divergent cross-exchange symbol's live price
+            // against its Binance same-asset sibling. A unit-divergent contract
+            // (KuCoin FLOKI vs Binance 1000FLOKI) carries a replicated price
+            // wrong by the contract ratio — it is flagged is_price_aligned=false
+            // and switched off so it never trades.
+            Step::create([
+                'class' => VerifyPriceAlignmentsJob::class,
+                'queue' => 'cronjobs',
+                'arguments' => [],
+                'block_uuid' => $blockUuid,
+                'index' => 4,
+            ]);
+
+            $this->verboseLine('  - Created price-alignment verification lifecycle step (Index 4)');
         });
 
         $this->verboseInfo("Done. {$exchanges->count()} exchange step(s) created.");

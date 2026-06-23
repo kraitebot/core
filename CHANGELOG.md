@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.58.0 - 2026-06-23
+
+### Features
+
+- [NEW FEATURE] **Price-alignment gate — unit-divergent cross-exchange contracts are excluded from trading.** Two exchanges list the same asset under different contract units (Binance `1000FLOKI` = 1000 × KuCoin/Bybit `FLOKI`). The price stream replicates Binance's mark_price onto same-asset rows with no contract-ratio scaling, so a unit-divergent row carried a price wrong by that ratio (KuCoin FLOKI held Binance 1000FLOKI's 0.0237 vs its real 0.0000237 — ~1000× too high). New `is_price_aligned` column (boolean, default true) is required by `scopeTradeable`, so a price-divergent symbol can't trade even if re-enabled. A new refresh **index-4** step — `VerifyPriceAlignmentsJob` (parent) → `VerifyPriceAlignmentJob` (per-symbol child) — fetches each naming-divergent `symbol_id` sibling's LIVE exchange price, compares to the Binance sibling within `config('kraite.price_alignment.tolerance', 0.10)`, and on divergence sets `is_price_aligned=false` + `is_manually_enabled=false` + one deduped `exchange_symbol_price_misaligned` notification. Same-name siblings are inherently same-contract and left aligned. Additive + default-true: no trading-behavior change until a check actually proves divergence; the index-4 step doubles as the backfill (re-checks every refresh). Regression coverage in the ingestion suite's `PriceAlignmentTest`.
+
 ## 1.57.0 - 2026-06-22
 
 ### Bug fixes

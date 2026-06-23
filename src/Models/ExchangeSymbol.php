@@ -89,6 +89,7 @@ final class ExchangeSymbol extends BaseModel
         'has_early_direction_change' => 'boolean',
         'has_invalid_indicator_direction' => 'boolean',
         'overlaps_with_binance' => 'boolean',
+        'is_price_aligned' => 'boolean',
         'is_marked_for_delisting' => 'boolean',
 
         'api_statuses' => 'array',
@@ -203,6 +204,11 @@ final class ExchangeSymbol extends BaseModel
             : \Illuminate\Support\Carbon::parse($value);
     }
 
+    protected static function newFactory(): ExchangeSymbolFactory
+    {
+        return ExchangeSymbolFactory::new();
+    }
+
     /**
      * Normalise a decimal price string to the sidecar's 8-decimal
      * representation. The legacy `exchange_symbols.mark_price`
@@ -218,10 +224,5 @@ final class ExchangeSymbol extends BaseModel
         }
 
         return number_format((float) $value, 8, '.', '');
-    }
-
-    protected static function newFactory(): ExchangeSymbolFactory
-    {
-        return ExchangeSymbolFactory::new();
     }
 }
