@@ -16,6 +16,7 @@ use Kraite\Core\Support\Apis\REST\BinanceApi;
 use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use React\EventLoop\Loop;
+use React\EventLoop\LoopInterface;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Support\Steps;
 use Throwable;
@@ -80,12 +81,34 @@ final class StreamBinanceUserDataCommand extends Command
     private const HEALTH_TICK_INTERVAL_SECONDS = 30;
 
     /**
-     * Daemon graceful-exit threshold. Once resident memory crosses
-     * this, the daemon stops the loop and exits. Supervisor respawns
-     * a fresh process, breaking any latent reference cycles in the
-     * ReactPHP closures or Eloquent model graph.
+     * Account-aware memory ceiling. The daemon's footprint is a fixed
+     * base (PHP + Laravel + ReactPHP ~75-150MB) plus a roughly linear
+     * per-account cost (~10MB each — one WS client + closures). A FIXED
+     * 512MB ceiling was fine at 1 account but would be crossed around
+     * ~43 accounts by normal operation, self-exiting the whole daemon
+     * and resetting EVERY account's stream — a crash-loop of mass resets
+     * at fleet scale. Computing the ceiling from the live account count
+     * (see memoryLimitBytes()) means the self-exit fires only on a
+     * genuine leak beyond the expected per-account budget, never on
+     * healthy load. Generous per-account headroom (25MB vs ~10MB
+     * observed) keeps normal growth well clear of a false trip.
      */
-    private const MEMORY_LIMIT_BYTES = 512 * 1024 * 1024;
+    private const MEMORY_BASE_BYTES = 200 * 1024 * 1024;
+
+    private const MEMORY_PER_ACCOUNT_BYTES = 25 * 1024 * 1024;
+
+    /**
+     * Per-account connect stagger. On a daemon (re)start every eligible
+     * account would otherwise open its WebSocket in the same tick — 100
+     * accounts = 100 simultaneous handshakes from athena's single IP,
+     * risking Binance's per-IP WS connection rate limit and a
+     * thundering-herd reconnect cascade. Spacing each connect by this
+     * many seconds ramps the fleet online gradually (0.25s = 4/sec, so
+     * 100 accounts spread over ~25s) — comfortably under any connection
+     * rate limit while still bringing everyone online quickly. A single
+     * steady-state respawn (index 0) gets zero delay.
+     */
+    private const CONNECT_STAGGER_SECONDS = 0.25;
 
     private const PROCESS_QUEUE = 'user-data-stream';
 
@@ -131,6 +154,18 @@ final class StreamBinanceUserDataCommand extends Command
 
     private ?int $binanceSystemId = null;
 
+    private LoopInterface $loop;
+
+    /**
+     * Account ids with a connect scheduled on the loop but not yet
+     * slotted. Prevents a second discovery tick (or a re-entrant sweep)
+     * from double-scheduling a connect for the same account during the
+     * staggered boot ramp, before its slot lands in $accountClients.
+     *
+     * @var array<int, true>
+     */
+    private array $spawning = [];
+
     public function handle(): int
     {
         $binanceSystem = ApiSystem::firstWhere('canonical', 'binance');
@@ -144,6 +179,7 @@ final class StreamBinanceUserDataCommand extends Command
         $this->binanceSystemId = $binanceSystem->id;
 
         $loop = Loop::get();
+        $this->loop = $loop;
 
         $loop->addPeriodicTimer(self::DISCOVERY_INTERVAL_SECONDS, function () {
             $this->discoverNewAccounts();
@@ -170,10 +206,25 @@ final class StreamBinanceUserDataCommand extends Command
         $this->discoverNewAccounts();
         $this->touchHeartbeatFlag();
 
+        // Staggered boot: discoverNewAccounts() scheduled a connect per
+        // eligible account on the loop rather than opening them inline,
+        // so $accountClients is still empty here — the scheduled count
+        // lives in $spawning. Emit ONE boot-summary notification for the
+        // whole fleet instead of one "connected" alert per account (which
+        // at 100 accounts turned every restart into a 100-message storm).
+        // Per-account connect success is log-only from here on; only
+        // failures (init_failed) and lifecycle events still alert.
+        $scheduledCount = count($this->spawning);
+
         Log::channel('user-data')->info('[USER-DATA] daemon started', [
-            'initial_account_count' => count($this->accountClients),
+            'initial_account_count' => $scheduledCount,
             'pid' => getmypid(),
         ]);
+
+        $this->notify(
+            'binance_user_data_daemon_online',
+            ['account_count' => $scheduledCount, 'pid' => getmypid()],
+        );
 
         $loop->run();
 
@@ -245,6 +296,33 @@ final class StreamBinanceUserDataCommand extends Command
     }
 
     /**
+     * Stagger delay (seconds) for the connect at position $index in a
+     * discovery sweep. Linear ramp: index 0 fires immediately, each
+     * subsequent account is spaced by CONNECT_STAGGER_SECONDS. Extracted
+     * as a pure method so the ramp is unit-testable without the loop.
+     */
+    public function connectStaggerDelay(int $index): float
+    {
+        return max(0, $index) * self::CONNECT_STAGGER_SECONDS;
+    }
+
+    /**
+     * Account-aware memory ceiling: a fixed base plus a per-account
+     * budget scaled by the number of live slots. A fixed ceiling would
+     * be crossed by normal operation past a few dozen accounts and
+     * self-exit the daemon — resetting every account's stream — so the
+     * ceiling has to grow with the fleet. Floored at one account's worth
+     * so an empty daemon still has the full base budget. Extracted as a
+     * pure method so the scaling is unit-testable.
+     */
+    public function memoryLimitBytes(): int
+    {
+        $accountCount = max(1, count($this->accountClients));
+
+        return self::MEMORY_BASE_BYTES + (self::MEMORY_PER_ACCOUNT_BYTES * $accountCount);
+    }
+
+    /**
      * Walk the accounts table and reconcile the in-process slot set
      * with the DB. Two passes:
      *
@@ -287,31 +365,48 @@ final class StreamBinanceUserDataCommand extends Command
             $this->reapAccount((int) $openId);
         }
 
-        // Spawn pass: ensure every eligible account has a slot.
+        // Spawn pass: ensure every eligible account has a slot. Rather
+        // than opening each WebSocket inline (which fires every handshake
+        // in the same tick — a thundering herd of N simultaneous connects
+        // from one IP at fleet scale), schedule each connect on the loop
+        // with an incremental stagger so the fleet ramps online
+        // gradually. A single steady-state respawn gets index 0 → zero
+        // delay. The $spawning guard stops a later discovery tick from
+        // double-scheduling an account whose staggered connect hasn't
+        // landed in $accountClients yet.
+        $index = 0;
         foreach ($eligibleAccounts as $account) {
-            if (isset($this->accountClients[$account->id])) {
+            if (isset($this->accountClients[$account->id]) || isset($this->spawning[$account->id])) {
                 continue;
             }
 
-            try {
-                $this->initAccount($account);
-            } catch (Throwable $exception) {
-                Log::channel('user-data')->error('[USER-DATA] init failed', [
-                    'account_id' => $account->id,
-                    'account_name' => $account->name,
-                    'error' => $exception->getMessage(),
-                ]);
+            $this->spawning[$account->id] = true;
+            $delay = $this->connectStaggerDelay($index);
+            $index++;
 
-                $this->notify(
-                    'binance_user_data_account_init_failed',
-                    [
+            $this->loop->addTimer($delay, function () use ($account) {
+                try {
+                    $this->initAccount($account);
+                } catch (Throwable $exception) {
+                    Log::channel('user-data')->error('[USER-DATA] init failed', [
                         'account_id' => $account->id,
                         'account_name' => $account->name,
                         'error' => $exception->getMessage(),
-                    ],
-                    cacheKey: ['account_id' => (string) $account->id]
-                );
-            }
+                    ]);
+
+                    $this->notify(
+                        'binance_user_data_account_init_failed',
+                        [
+                            'account_id' => $account->id,
+                            'account_name' => $account->name,
+                            'error' => $exception->getMessage(),
+                        ],
+                        cacheKey: ['account_id' => (string) $account->id]
+                    );
+                } finally {
+                    unset($this->spawning[$account->id]);
+                }
+            });
         }
     }
 
@@ -380,16 +475,18 @@ final class StreamBinanceUserDataCommand extends Command
             'last_frame_persisted_at' => 0.0,
         ];
 
+        // Connect success is LOG-ONLY. A per-account "connected"
+        // notification here fired on every (re)connect — boot, deploy,
+        // rotation, expiry, transient drop — turning a daemon restart at
+        // 100 accounts into a 100-message storm. The once-per-boot
+        // summary (binance_user_data_daemon_online) covers "the fleet is
+        // online"; routine per-account reconnects are self-healing and
+        // don't warrant an alert. Only FAILURE to connect (init_failed)
+        // and lifecycle events (expiry, reap, memory restart) still page.
         Log::channel('user-data')->info('[USER-DATA] account initialised', [
             'account_id' => $account->id,
             'account_name' => $account->name,
         ]);
-
-        $this->notify(
-            'binance_user_data_account_connected',
-            ['account_id' => $account->id, 'account_name' => $account->name],
-            cacheKey: ['account_id' => (string) $account->id]
-        );
     }
 
     /**
@@ -730,10 +827,12 @@ final class StreamBinanceUserDataCommand extends Command
     private function checkMemoryPressure(): void
     {
         $bytes = memory_get_usage(true);
-        if ($bytes < self::MEMORY_LIMIT_BYTES) {
+        $limit = $this->memoryLimitBytes();
+
+        if ($bytes < $limit) {
             // Periodic gc_collect helps reclaim cycle-collected
             // closures before we hit the hard limit.
-            if ($bytes > self::MEMORY_LIMIT_BYTES / 2) {
+            if ($bytes > $limit / 2) {
                 gc_collect_cycles();
             }
 
@@ -742,7 +841,8 @@ final class StreamBinanceUserDataCommand extends Command
 
         Log::channel('user-data')->warning('[USER-DATA] memory limit exceeded — exiting for supervisor restart', [
             'memory_bytes' => $bytes,
-            'limit_bytes' => self::MEMORY_LIMIT_BYTES,
+            'limit_bytes' => $limit,
+            'account_count' => count($this->accountClients),
             'pid' => getmypid(),
         ]);
 
@@ -750,7 +850,7 @@ final class StreamBinanceUserDataCommand extends Command
             'binance_user_data_memory_restart',
             [
                 'memory_bytes' => $bytes,
-                'limit_bytes' => self::MEMORY_LIMIT_BYTES,
+                'limit_bytes' => $limit,
                 'pid' => getmypid(),
             ],
         );

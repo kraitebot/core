@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.58.2 - 2026-07-02
+
+### Bug fixes
+
+- [FIXED] **User-data daemon hardened against the fleet-scale reset storm — one restart no longer means N notifications, N simultaneous reconnects, or a memory crash-loop.** The daemon multiplexes one WebSocket per Binance account in a single process, so any restart resets every account at once. Three amplifiers turned that into a storm at 100 accounts, all addressed: (A) the per-account `binance_user_data_account_connected` notification fired on every (re)connect — a restart produced one message per account; connect success is now log-only and a single `binance_user_data_daemon_online` boot-summary covers the fleet, while per-account init FAILURES still page. (B) every account's handshake fired in the same event-loop tick — a thundering herd of N simultaneous connects from athena's single IP, risking Binance's per-IP WS connection rate limit; connects are now staggered on a linear ramp (`connectStaggerDelay`, 0.25s spacing → ~4/sec) with a `$spawning` guard against double-scheduling. (C) the memory self-exit ceiling was a FIXED 512MB, crossed by roughly 43 accounts of normal load (~10MB/account + base) — self-exiting and resetting the entire fleet in a crash-loop; the ceiling now scales with the live account count (`memoryLimitBytes()` = 200MB base + 25MB/account), so the self-exit fires only on a genuine leak. Regression coverage in the ingestion suite's `StreamBinanceUserDataScaleTest`.
+
 ## 1.58.1 - 2026-07-02
 
 ### Bug fixes

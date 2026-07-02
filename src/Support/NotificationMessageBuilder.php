@@ -1424,6 +1424,23 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'binance_user_data_daemon_online' => (function () use ($context) {
+                $accountCount = (int) ($context['account_count'] ?? 0);
+                $pid = (string) ($context['pid'] ?? 'unknown');
+                $noun = $accountCount === 1 ? 'account' : 'accounts';
+                $body = "User-data daemon (pid {$pid}) is online and bringing {$accountCount} {$noun} online (connects are staggered to avoid a reconnect burst).\n\nThis single summary replaces the previous one-notification-per-account behaviour, so a daemon restart no longer floods the channel at fleet scale. Individual accounts that FAIL to connect still page separately.";
+
+                return [
+                    'severity' => NotificationSeverity::Info,
+                    'title' => "Binance user-data daemon online — {$accountCount} {$noun}",
+                    'emailMessage' => $body,
+                    'pushoverMessage' => $body,
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => -1,
+                ];
+            })(),
+
             'binance_user_data_account_init_failed' => (function () use ($context) {
                 $accountId = (string) ($context['account_id'] ?? 'unknown');
                 $accountName = (string) ($context['account_name'] ?? 'unknown');
