@@ -32,6 +32,14 @@ final class BinanceApi
             // leaves the default true so a legitimately silent
             // account doesn't false-trip.
             'pings_count_as_alive' => false,
+
+            // Same strict-data rationale drives the self-exit: if no
+            // mark-price frame lands for 5 minutes, a reconnect loop is
+            // not recovering (2026-07-02 DNS-wedge). Exit so supervisor
+            // respawns a fresh process — the only reliable way to clear a
+            // loop-level ReactPHP DNS/UDP wedge. User-data leaves this
+            // unset (silence is normal there) so it never self-exits.
+            'no_data_self_exit_seconds' => 300,
         ]);
     }
 

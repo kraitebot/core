@@ -105,6 +105,39 @@ abstract class BaseWebsocketClient
     protected float $lastFrameAt = 0.0;
 
     /**
+     * Sustained no-data self-exit threshold, in seconds. When set, the
+     * watchdog stops the event loop (for supervisor respawn) once no
+     * DATA frame has arrived for this long — regardless of how many
+     * reconnects happened in between.
+     *
+     * `null` (default) disables the behaviour so sparse-data streams
+     * (user-data: silent for hours on a quiet account) never self-exit.
+     * Strict-data streams (mark-price: 1Hz expected) opt in.
+     *
+     * Why a fresh PROCESS and not just another reconnect: the 2026-07-02
+     * incident showed a transient network blip can wedge ReactPHP's DNS
+     * resolver on the shared event loop. The "fresh connector per
+     * attempt" mitigation does NOT clear a loop-level UDP wedge — 46,088
+     * reconnects failed over ~4h with zero frames, and mark prices froze.
+     * Only a process restart cleared it. This threshold makes that
+     * recovery automatic instead of waiting for a human.
+     */
+    protected ?int $noDataSelfExitSeconds = null;
+
+    /**
+     * Monotonic clock (microtime as float) of the last real DATA frame.
+     *
+     * Distinct from $lastFrameAt: this advances ONLY on an actual message
+     * frame and is NEVER reset by a (re)connect or a protocol ping. That
+     * makes it age correctly through BOTH failure phases seen on
+     * 2026-07-02 — the never-connect DNS-wedge phase (no connect resets
+     * it) AND the connect-then-silent idle-flap phase (a reconnect's
+     * successful open would otherwise reset $lastFrameAt and mask the
+     * silence). It is the signal the no-data self-exit reads.
+     */
+    protected float $lastDataFrameAt = 0.0;
+
+    /**
      * Whether protocol-level pings count toward the idle-watchdog's
      * "still alive" signal.
      *
@@ -165,6 +198,13 @@ abstract class BaseWebsocketClient
         // on genuine zombies, not on natural quiet periods.
         if (isset($args['idleTimeoutSeconds']) && $args['idleTimeoutSeconds'] > 0) {
             $this->idleTimeoutSeconds = (int) $args['idleTimeoutSeconds'];
+        }
+
+        // Opt-in sustained-no-data self-exit. Only strict-data streams
+        // (mark-price) pass this; sparse-data streams leave it null so a
+        // legitimately quiet feed never self-exits.
+        if (isset($args['noDataSelfExitSeconds']) && $args['noDataSelfExitSeconds'] > 0) {
+            $this->noDataSelfExitSeconds = (int) $args['noDataSelfExitSeconds'];
         }
     }
 
@@ -228,6 +268,27 @@ abstract class BaseWebsocketClient
         $this->registerCallbacks($url, $callback);
     }
 
+    /**
+     * Whether the stream has gone without a real data frame long enough
+     * to warrant a self-exit for supervisor respawn.
+     *
+     * Guards: disabled unless a threshold is configured, and never trips
+     * before the watchdog has primed $lastDataFrameAt at daemon start
+     * (a zero clock must not read as "infinitely stale").
+     */
+    protected function shouldSelfExitForNoData(float $now): bool
+    {
+        if ($this->noDataSelfExitSeconds === null) {
+            return false;
+        }
+
+        if ($this->lastDataFrameAt <= 0.0) {
+            return false;
+        }
+
+        return ($now - $this->lastDataFrameAt) > $this->noDataSelfExitSeconds;
+    }
+
     protected function handleCallback(string $url, array $callback): void
     {
         $this->registerCallbacks($url, $callback);
@@ -282,6 +343,10 @@ abstract class BaseWebsocketClient
 
                 $conn->on('message', function ($msg) use ($conn, $callback) {
                     $this->lastFrameAt = microtime(true);
+                    // Real data frame — advance the no-data clock. This is
+                    // the ONLY place lastDataFrameAt moves (never on connect
+                    // or ping) so it ages correctly through a reconnect flap.
+                    $this->lastDataFrameAt = microtime(true);
                     $this->framesReceived++;
 
                     $payload = (string) $msg;
@@ -471,12 +536,40 @@ abstract class BaseWebsocketClient
         }
         $this->watchdogStarted = true;
 
+        // Prime the no-data clock at daemon start so the self-exit window
+        // is measured from process launch, not from epoch. Without this a
+        // slow first connect would look "infinitely stale" on the first
+        // watchdog tick.
+        $this->lastDataFrameAt = microtime(true);
+
         // Idle-frame detector. When lastFrameAt gets stale beyond the
         // threshold, force-close the connection; the close handler then
         // fires reconnect(). This is the defence against the "TCP is
         // open but the server stopped talking" zombie scenario that
         // froze the Binance daemon on 2026-04-24.
         $this->loop->addPeriodicTimer($this->watchdogCheckIntervalSeconds, function () use ($url) {
+            // Sustained-no-data self-exit. Checked BEFORE the wsConnection
+            // null-guard on purpose: the DNS-wedge failure mode
+            // (2026-07-02) holds wsConnection null across thousands of
+            // failed reconnects, so a guard-first check would never see
+            // it. A fresh PROCESS is the only reliable way to clear a
+            // loop-level ReactPHP DNS/UDP wedge — stop the loop and let
+            // supervisor's autorestart respawn a clean process.
+            if ($this->shouldSelfExitForNoData(microtime(true))) {
+                Log::channel('jobs')->error(
+                    '[WEBSOCKET] No data frame within self-exit window — stopping loop for supervisor respawn',
+                    [
+                        'url' => $url,
+                        'seconds_since_last_data_frame' => (int) round(microtime(true) - $this->lastDataFrameAt),
+                        'threshold' => $this->noDataSelfExitSeconds,
+                    ]
+                );
+
+                $this->loop->stop();
+
+                return;
+            }
+
             if ($this->wsConnection === null) {
                 return;
             }

@@ -28,6 +28,7 @@ final class BinanceApiClient extends BaseWebsocketClient
             'baseURL' => $config['base_url'] ?? 'wss://fstream.binance.com',
             'wsConnector' => $config['ws_connector'] ?? null,
             'idleTimeoutSeconds' => $config['idle_timeout_seconds'] ?? null,
+            'noDataSelfExitSeconds' => $config['no_data_self_exit_seconds'] ?? null,
         ]);
 
         // Strict-data streams (mark-price) opt out of "ping counts as
@@ -84,6 +85,11 @@ final class BinanceApiClient extends BaseWebsocketClient
         $this->handleCallbackAsync($this->buildUserStreamUrl($listenKey), $callbacks);
     }
 
+    public function getLoop(): LoopInterface
+    {
+        return $this->loop;
+    }
+
     /**
      * Build the user-data-stream URL with the listenKey as a query
      * parameter — the post-2026-04-23 shape required by Binance after
@@ -92,10 +98,5 @@ final class BinanceApiClient extends BaseWebsocketClient
     private function buildUserStreamUrl(string $listenKey): string
     {
         return $this->baseURL.'/private/ws?listenKey='.rawurlencode($listenKey);
-    }
-
-    public function getLoop(): LoopInterface
-    {
-        return $this->loop;
     }
 }

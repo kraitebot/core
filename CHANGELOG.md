@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.58.1 - 2026-07-02
+
+### Bug fixes
+
+- [FIXED] **Strict-data WebSocket streams now self-exit for supervisor respawn after a sustained no-data window — "reconnect forever" is availability, not recovery.** On 2026-07-02 a transient network blip wedged the mark-price daemon's ReactPHP DNS resolver on its shared event loop; the daemon reconnected ~46,000 times over ~4 hours, every attempt failing, no price frames landing, until a manual restart cleared it in seconds. The existing mitigations (bypass the systemd stub for `1.1.1.1`, rebuild a fresh Pawl connector per attempt) do NOT clear a loop-level UDP wedge — only a fresh process does. `BaseWebsocketClient` now accepts an opt-in `noDataSelfExitSeconds` threshold and tracks `lastDataFrameAt` — a clock that advances only on real data frames and is never reset by a (re)connect or a keepalive ping, so it ages correctly through both failure phases (never-connects AND connects-but-silent). The idle-watchdog checks it before the connection null-guard (the DNS-fail phase holds the connection null) and, on breach, stops the event loop so supervisor's `autorestart=true` respawns a clean process — turning a multi-hour blackout into a ~10-second blip with no operator. The mark-price stream (`BinanceApi::markPrices`) opts in at 300s; the user-data stream leaves it unset because silence is legitimate on a quiet account. Regression coverage in the ingestion suite's `BaseWebsocketClientSelfExitTest`.
+
 ## 1.58.0 - 2026-06-23
 
 ### Features
