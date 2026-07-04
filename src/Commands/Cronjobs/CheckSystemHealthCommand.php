@@ -231,6 +231,25 @@ final class CheckSystemHealthCommand extends BaseCommand
 
     public function handle(): int
     {
+        // A box parked in maintenance mode is the one failure the rest
+        // of this watchdog cannot see: Laravel's scheduler skips every
+        // event while the app is down, so all cron-driven signals —
+        // including this command, before it was scheduled
+        // evenInMaintenanceMode() — go silent together. 2026-07-02
+        // incident: athena's release warmup never ran `artisan up` and
+        // the box sat down for two days with keepalive, sync fallback
+        // and DB backups all dead, paged only by the listenKeyExpired
+        // side-effect. While down, run exactly ONE check — "have we
+        // been in maintenance too long" — and skip the rest so a
+        // normal deploy window never produces transient pages.
+        if (app()->isDownForMaintenance()) {
+            $alertCount = $this->checkMaintenanceModeStuck();
+
+            $this->verboseInfo("Maintenance mode active — stuck-maintenance check only. Alerts emitted: {$alertCount}");
+
+            return self::SUCCESS;
+        }
+
         $checks = [
             'checkMarkPriceFreshness',
             'checkIndicatorFreshness',
@@ -1531,6 +1550,53 @@ final class CheckSystemHealthCommand extends BaseCommand
         } catch (Throwable) {
             return false;
         }
+    }
+
+    /**
+     * Stuck-maintenance detector — the only check that runs while the
+     * app is down (see handle()'s early branch).
+     *
+     * Age is read from the `storage/framework/down` marker's mtime —
+     * the file driver is the only maintenance driver this fleet uses,
+     * and the payload itself carries no activation timestamp. An
+     * active-but-unreadable marker fails open (alertable): better one
+     * page too many than a silently parked box hidden behind a stat
+     * failure — same posture as withinProvisioningGrace().
+     *
+     * Threshold sits above a full release's cooldown → deploy → warmup
+     * span so healthy deploys never page; a box past it has been
+     * forgotten. Re-pages every 30 minutes while the condition holds.
+     */
+    private function checkMaintenanceModeStuck(): int
+    {
+        $thresholdMinutes = (int) config('kraite.health_watchdog.maintenance_stuck_minutes', 45);
+
+        $ageMinutes = null;
+        $downFile = storage_path('framework/down');
+        if (is_file($downFile)) {
+            $mtime = @filemtime($downFile);
+            if ($mtime !== false) {
+                $ageMinutes = (int) floor((time() - $mtime) / 60);
+            }
+        }
+
+        if ($ageMinutes !== null && $ageMinutes < $thresholdMinutes) {
+            return 0;
+        }
+
+        $ageLabel = $ageMinutes !== null
+            ? "{$ageMinutes}min"
+            : 'an unknown time (down marker unreadable)';
+
+        $this->emit(
+            signal: 'maintenance_mode_stuck',
+            severity: 'critical',
+            title: 'Server stuck in maintenance mode',
+            detail: "This box has been in maintenance mode for {$ageLabel} (threshold: {$thresholdMinutes}min). The scheduler skips every cron while the app is down — listen-key keepalive, sync fallback, DB backups and all other scheduled work are dead until `php artisan up` runs (a release warmup was likely interrupted before reaching this box).",
+            throttleSeconds: 1800,
+        );
+
+        return 1;
     }
 
     /**

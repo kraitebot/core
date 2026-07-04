@@ -404,6 +404,16 @@ return [
             'HEALTH_WATCHDOG_ORPHAN_MATCH_WINDOW_MINUTES',
             60
         ),
+
+        // Minutes a box may sit in maintenance mode before the health
+        // watchdog pages `maintenance_mode_stuck`. Must stay above a
+        // full release's cooldown → deploy → warmup span so healthy
+        // deploys never trip it (2026-07-02: athena sat down for two
+        // days because its warmup never ran `artisan up`).
+        'maintenance_stuck_minutes' => (int) env(
+            'HEALTH_WATCHDOG_MAINTENANCE_STUCK_MINUTES',
+            45
+        ),
     ],
 
     /*
