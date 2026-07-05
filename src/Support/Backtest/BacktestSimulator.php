@@ -165,6 +165,7 @@ final class BacktestSimulator
             'tp_market_only' => 0,
             'reboundable' => 0,
             'inconclusive' => 0,
+            'skipped' => 0,
         ];
 
         // Per-sim accumulators for the analytics we compute at the end.
@@ -241,6 +242,11 @@ final class BacktestSimulator
                     'tp_hit_from_market_only' => $totals['tp_market_only']++,
                     'reboundable' => $totals['reboundable']++,
                     'inconclusive' => $totals['inconclusive']++,
+                    // Sizing/ladder rejections. Counted so a run where EVERY sim
+                    // skipped is distinguishable from a clean zero-stop run —
+                    // otherwise "0 stops" reads as approvable when nothing was
+                    // actually simulated.
+                    'skipped' => $totals['skipped']++,
                     default => null,
                 };
 
@@ -327,6 +333,7 @@ final class BacktestSimulator
                 'total_limit_orders' => $totalLimitOrders,
                 'multipliers' => $multipliers ?? ($symbol->limit_quantity_multipliers ?? [2, 2, 2, 2]),
                 'skip_stop_loss' => $skipStopLoss,
+                'days_to_ignore' => $daysToIgnore,
             ],
         ];
     }
@@ -1089,6 +1096,7 @@ final class BacktestSimulator
                 'tp_market_only' => 0,
                 'reboundable' => 0,
                 'inconclusive' => 0,
+                'skipped' => 0,
                 'overall_score' => null,
                 'grade' => null,
                 'verdict' => null,

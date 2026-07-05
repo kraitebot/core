@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.60.0 - 2026-07-06
+
+### Improvements
+
+- [IMPROVED] **BacktestSimulator now counts sizing-skipped sims and reports the trailing-cutoff window.** `totals.skipped` counts simulations whose market/ladder sizing was rejected (min-notional / lot-step gating on awkwardly-priced tokens) — previously these vanished into no bucket at all, so a run where EVERY sim skipped was indistinguishable from a clean zero-stop run (`stops=0` read as approvable when nothing was actually simulated). `meta.days_to_ignore` exposes the trailing-days cutoff the run used, so consumers (the admin AI-insights prompt) stop guessing it. Both additive; `emptyResult()` carries the new key too.
+
+## 1.59.0 - 2026-07-04
+
+### Improvements
+
+- [IMPROVED] **Health watchdog runs even in maintenance mode.** `kraite:cron-check-system-health` is scheduled `->evenInMaintenanceMode()`; while the app is down it runs exactly one check — the new `maintenance_mode_stuck` (pages CRITICAL when the down-marker mtime exceeds `kraite.health_watchdog.maintenance_stuck_minutes`, default 45, re-pages every 30 min). Closes the blind spot where an interrupted release parked athena in maintenance for 53h with the watchdog dead alongside the scheduler it monitors (deploy-notes Entry 93). Regression: `CheckSystemHealthMaintenanceStuckTest`. *(Section added retroactively — the v1.59.0 tag shipped without a changelog entry.)*
+
 ## 1.58.2 - 2026-07-02
 
 ### Bug fixes
