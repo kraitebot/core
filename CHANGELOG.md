@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.61.0 - 2026-07-06
+
+### Improvements
+
+- [IMPROVED] **Backtest grade can no longer contradict the stop-loss decision rule.** The overall score weighs stops as a percentage of resolved sims, so a large sample diluted absolute failures — 16 stop-loss hits over ~1400 sims still graded "B — mostly fine to run" while the admin decision proposal (absolute rule: <5 approve · 5–10 adjust · >10 reject) said "recommend reject" right below it. The score is now capped by the decision band: more than 10 stops grades at best D, 5–10 at best C. Formula ordering below the cap is unchanged.
+
 ## 1.60.0 - 2026-07-06
 
 ### Improvements

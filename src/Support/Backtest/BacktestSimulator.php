@@ -990,6 +990,20 @@ final class BacktestSimulator
 
         $overallScore = max(0.0, min(100.0, $overallScore));
 
+        // The operator's decision rule is ABSOLUTE stop-loss hits (< 5
+        // approve · 5–10 adjust · > 10 reject). The percentage-weighted
+        // score above can grade a 16-stop run "B" when the sample is large
+        // (16 of ~1400 sims ≈ 1% → tiny deduction), directly contradicting
+        // the "recommend reject" proposal rendered beside it. Cap the score
+        // so the letter can never outrank the decision band: more than 10
+        // stops grades at best D (reject territory), 5–10 at best C.
+        $absoluteStops = (int) ($totals['stops'] ?? 0);
+        if ($absoluteStops > 10) {
+            $overallScore = min($overallScore, 69.0);
+        } elseif ($absoluteStops >= 5) {
+            $overallScore = min($overallScore, 79.0);
+        }
+
         $grade = match (true) {
             $overallScore >= 90 => 'A',
             $overallScore >= 80 => 'B',
