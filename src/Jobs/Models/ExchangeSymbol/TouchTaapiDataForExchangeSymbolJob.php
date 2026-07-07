@@ -27,7 +27,8 @@ use Throwable;
  *
  * HTTP error handling:
  * - 429 (rate limit): Retried by framework via TaapiExceptionHandler
- * - 400 (invalid symbol/no data): Ignored by job's ignoreException(), marks symbol as verified with no data
+ * - 400 (invalid symbol/no data) and 404 (no candle data): Ignored by job's
+ *   ignoreException(), marks symbol as verified with no data
  * - Other errors: Fail the step normally
  */
 final class TouchTaapiDataForExchangeSymbolJob extends BaseApiableJob
@@ -51,18 +52,20 @@ final class TouchTaapiDataForExchangeSymbolJob extends BaseApiableJob
     }
 
     /**
-     * Handle ignorable exceptions - HTTP 400 with specific "no data" messages.
+     * Handle ignorable exceptions - HTTP 400/404 with specific "no data" messages.
      *
-     * Only ignore 400s that indicate the symbol doesn't have data on TAAPI.
-     * Any other 400 (plan limits, malformed request, etc.) should fail the step.
+     * Only ignore responses that indicate the symbol doesn't have data on TAAPI.
+     * Anything else (plan limits, malformed request, etc.) should fail the step.
      *
      * Known "no data" patterns from TAAPI:
-     * - "invalid symbol" - symbol doesn't exist on the exchange
-     * - "no candles" - no candle data available for this symbol
+     * - 400 "invalid symbol" - symbol doesn't exist on the exchange
+     * - 400 "no candles" - no candle data available for this symbol
+     * - 404 "no candle data" - pair not carried by TAAPI (seen on newly listed
+     *   non-USDT quotes, e.g. BTC/U, ETH/USD1, DATAIP/USDC)
      */
     public function ignoreException(Throwable $e): bool
     {
-        // Only handle HTTP 400 from TAAPI
+        // Only handle HTTP 400/404 from TAAPI
         if (! $e instanceof RequestException) {
             return false;
         }
@@ -73,7 +76,7 @@ final class TouchTaapiDataForExchangeSymbolJob extends BaseApiableJob
             return false;
         }
 
-        if ($response->getStatusCode() !== 400) {
+        if (! in_array($response->getStatusCode(), [400, 404], true)) {
             return false;
         }
 
@@ -82,6 +85,7 @@ final class TouchTaapiDataForExchangeSymbolJob extends BaseApiableJob
         $noDataPatterns = [
             'invalid symbol',
             'no candles',
+            'no candle data',
         ];
 
         $isNoDataError = false;

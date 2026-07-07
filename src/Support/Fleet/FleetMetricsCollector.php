@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Support\Fleet;
 
 use Carbon\CarbonImmutable;
+use Composer\InstalledVersions;
 use Throwable;
 
 /**
@@ -35,6 +36,7 @@ final class FleetMetricsCollector
             'hostname' => $hostname,
             'role' => $role,
             'reported_at' => CarbonImmutable::now()->toIso8601String(),
+            'version' => $this->coreVersion(),
             'uptime_seconds' => $this->uptimeSeconds(),
             'boot_id' => $this->bootId(),
             'cpu' => $this->cpu(),
@@ -42,6 +44,22 @@ final class FleetMetricsCollector
             'disk' => $this->disk(),
             'units' => $this->services(),
         ];
+    }
+
+    /**
+     * Deployed kraitebot/core version — the fleet's common denominator across
+     * every app checkout (workers run ingestion, pheme runs the web apps, but
+     * all of them carry core). The admin deploy panel groups hosts by this to
+     * surface rollout drift. Null when composer metadata is unreadable
+     * (hyperion's bash agent never reports one).
+     */
+    private function coreVersion(): ?string
+    {
+        try {
+            return InstalledVersions::getPrettyVersion('kraitebot/core');
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     /**
