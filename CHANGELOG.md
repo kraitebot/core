@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.62.1 - 2026-07-10
+
+### Bug fixes
+
+- [FIXED] **Failed-backtest kline purge exempts market-reference symbols.** Rejecting BTC in admin backtesting caused `kraite:cron-purge-failed-backtested-klines` to delete BTC's entire candle history — but BTC is the alignment series every correlation/elasticity computation runs against and the BTC-bias direction source. Effect: elasticity degraded to single-timeframe zero stubs, every LONG candidate failed the per-slot completeness check, and account activation opened zero positions with 11 tradeable tokens and no visible error (discovered on go-live day, 2026-07-10). The purge now exempts the BTC reference token (`kraite.correlation.btc_token`) and the market-regime basket (`kraite.market_regime.symbols`) regardless of review status; NULL-asset rows still purge (three-valued NOT IN guard). 5 regression tests. See deploy-notes Entry 97.
+- [FIXED] **CandleFactory schema drift** — factory wrote `candle_time`, schema has `candle_time_utc` / `candle_time_local`; factory-created candles crashed on insert.
+
+## 1.62.0 - 2026-07-07
+
+### Improvements
+
+- [IMPROVED] **Fleet heartbeat reports the running core version** — `FleetMetricsCollector` adds a `version` field (kraitebot/core pretty version from composer metadata) so the admin deploy panel can surface rollout drift across the fleet; silent hosts / bash-agent reporters classify as null.
+
+### Bug fixes
+
+- [FIXED] **TAAPI 404 "no candle data" treated as a legitimate no-data answer** in `TouchTaapiDataForExchangeSymbolJob` — newly listed non-USDT quotes (BTC/U, ETH/USD1, DATAIP/USDC) hard-failed the verification probe hourly. See deploy-notes Entry 96.
+
 ## 1.61.0 - 2026-07-06
 
 ### Improvements
