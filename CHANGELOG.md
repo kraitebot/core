@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.63.0 - 2026-07-11
+
+### Features
+
+- [NEW FEATURE] **Live-window cascade detection — shock breaker reacts in ~1-2 minutes instead of up to ~35.** `DetectMarketShockJob` now samples the reference basket's mark prices (1s-fresh from the price daemon) into a rolling `market_price_samples` buffer every tick and evaluates the same breaker rules on true rolling windows (15/60-minute geometry over 1-minute samples). Arms only after 2 consecutive breaching ticks (persistence guard — kills single-minute wicks). Replay-validated against all six historical black-swan events (~/blackswan/reports/fast-breaker-replay-20260711.txt): earlier detection on every event (10-20 min on fast cascades during which the basket fell 9-22%; hours-to-days on the two events whose first violent leg the bar-close path missed entirely), at ~1 false 6h pause per choppy month and zero in calm months. The 15m-kline path stays as automatic fallback (daemon outage, thin buffer, `MARKET_SHOCK_LIVE_WINDOW=false` kill switch). `MarketShockCircuitBreaker::evaluate()` gained bar-offset parameters (backward-compatible defaults). New table `market_price_samples` (rolling ~3h buffer). 6 new feature tests.
+
 ## 1.62.2 - 2026-07-10
 
 ### Bug fixes

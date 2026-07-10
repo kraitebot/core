@@ -858,6 +858,25 @@ return [
                 'magnitude_pct' => (float) env('MARKET_SHOCK_MAGNITUDE_PCT', 3.0),
             ],
             'cooldown_hours' => (int) env('MARKET_SHOCK_COOLDOWN_HOURS', 1),
+
+            // Live-window path: evaluate the same rules every minute on
+            // rolling mark-price samples (1s-fresh from the price daemon)
+            // instead of 15-minute-stale klines. Cuts worst-case cascade
+            // detection from ~35 min to ~1-2 min (replay-validated across
+            // the 6 historical events, ~/blackswan 2026-07-11). The kline
+            // path stays active as fallback; disabling this flag reverts
+            // to pre-live behaviour entirely (kill switch).
+            'live_window' => [
+                'enabled' => (bool) env('MARKET_SHOCK_LIVE_WINDOW', true),
+                // consecutive 1-min breaches required before arming —
+                // 2 kills single-minute wicks, 3 costs real early catches
+                // (FTX first leg needed exactly 2 in the replay)
+                'persistence_ticks' => (int) env('MARKET_SHOCK_LIVE_PERSISTENCE', 2),
+                // skip sampling a token whose mark_price is older than
+                // this (price daemon degraded) — live path falls back to
+                // klines rather than evaluating stale marks
+                'mark_max_age_seconds' => (int) env('MARKET_SHOCK_LIVE_MARK_MAX_AGE', 90),
+            ],
         ],
 
         // Cooldown wired to `kraite:cron-analyse-bscs`. When the latest

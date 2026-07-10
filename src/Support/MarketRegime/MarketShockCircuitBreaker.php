@@ -52,9 +52,18 @@ final class MarketShockCircuitBreaker
     /**
      * Evaluate the breaker against fresh klines.
      *
+     * The bar-offset parameters adapt the same rules to any bar spacing:
+     * the default (1, 4, 12) reads 15m klines; the live mark-price path
+     * passes (15, 60, 61) to read 1-minute samples with identical
+     * window semantics — "15 minutes" and "1 hour" stay 15 minutes and
+     * 1 hour regardless of the underlying bar size.
+     *
      * @param  list<array{close: string, timestamp: int}>  $btcBars  newest-LAST
      * @param  array<string, list<array{close: string, timestamp: int}>>  $altBars  same shape, keyed by token (ETH/SOL/BNB/XRP)
      * @param  array{btc_15m_pct: float, btc_1h_pct: float, alt_basket_1h_pct: float, corr_1h: float, magnitude_pct: float}|null  $thresholds
+     * @param  int  $shortOffset  bars spanning the "15m" window
+     * @param  int  $longOffset  bars spanning the "1h" window
+     * @param  int  $corrWindow  bars feeding the correlation returns series
      * @return array{
      *   fired: bool,
      *   rules_triggered: list<string>,
@@ -65,23 +74,29 @@ final class MarketShockCircuitBreaker
      *   thresholds: array<string, float>
      * }
      */
-    public static function evaluate(array $btcBars, array $altBars, ?array $thresholds = null): array
-    {
+    public static function evaluate(
+        array $btcBars,
+        array $altBars,
+        ?array $thresholds = null,
+        int $shortOffset = 1,
+        int $longOffset = 4,
+        int $corrWindow = 12,
+    ): array {
         $thresholds ??= self::defaultThresholds();
 
-        $btc15m = self::priorBarPct($btcBars, 1);
-        $btc1h = self::priorBarPct($btcBars, 4);
+        $btc15m = self::priorBarPct($btcBars, $shortOffset);
+        $btc1h = self::priorBarPct($btcBars, $longOffset);
 
         $altMoves = [];
         foreach ($altBars as $bars) {
-            $move = self::priorBarPct($bars, 4);
+            $move = self::priorBarPct($bars, $longOffset);
             if ($move !== null) {
                 $altMoves[] = $move;
             }
         }
         $altBasket1h = $altMoves === [] ? null : array_sum($altMoves) / count($altMoves);
 
-        $corr1h = self::correlation($btcBars, $altBars);
+        $corr1h = self::correlation($btcBars, $altBars, $corrWindow);
 
         $rulesTriggered = [];
 
