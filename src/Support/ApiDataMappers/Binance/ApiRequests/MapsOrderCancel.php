@@ -31,7 +31,11 @@ trait MapsOrderCancel
             'status' => $result['status'],
             'price' => $result['price'],
             '_price' => $this->computeOrderCancelPrice($result),
-            'average_price' => $result['avgPrice'],
+            // Binance omits avgPrice on cancel responses for never-filled
+            // orders — an unguarded read fatals the worker AFTER the cancel
+            // landed exchange-side, failing the close chain and orphaning
+            // the position's remaining ladder (2026-07-10 night, pos #176).
+            'average_price' => $result['avgPrice'] ?? '0',
             'original_quantity' => $result['origQty'],
             'executed_quantity' => $result['executedQty'],
             'type' => $result['type'],

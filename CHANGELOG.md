@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.62.2 - 2026-07-10
+
+### Bug fixes
+
+- [FIXED] **Binance order-cancel mapper guards the optional `avgPrice` field.** Binance omits `avgPrice` on cancel confirmations for never-filled orders; the unguarded read fataled the worker AFTER the cancel landed exchange-side, failing `CancelPositionOpenOrdersJob` inside the TP-fill close chain and orphaning the position's remaining DCA ladder on the exchange (position #176 SKYUSDT, 2026-07-10 night — contained by the night watch, rungs cancelled manually). Now defaults to '0' like every other optional field in the mapper. 2 regression tests. See deploy-notes Entry 98.
+
 ## 1.62.1 - 2026-07-10
 
 ### Bug fixes
