@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Http\Controllers\Webhooks;
 
+use Cache;
+use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
@@ -73,6 +75,23 @@ final class NotificationWebhookController extends Controller
                 Log::warning('[ZEPTOMAIL WEBHOOK] Invalid event format');
 
                 return response()->json(['status' => 'error', 'message' => 'Invalid event format'], 200);
+            }
+
+            // Replay / duplicate suppression. A signed request is otherwise
+            // valid forever (HMAC covers only the payload), so a captured
+            // bounce could be replayed to clobber a newer delivery state;
+            // ZeptoMail also legitimately re-delivers events on retry. Dedupe
+            // on request_id with an atomic cache reservation — first delivery
+            // wins, every repeat is acknowledged (200) without re-applying.
+            $requestId = is_string($eventData['request_id'] ?? null) ? $eventData['request_id'] : null;
+            if ($requestId !== null
+                && ! Cache::add('zeptomail_webhook:'.$requestId, true, now()->addDays(7))) {
+                Log::info('[ZEPTOMAIL WEBHOOK] Duplicate/replayed event ignored', [
+                    'request_id' => $requestId,
+                    'event_type' => $eventType,
+                ]);
+
+                return response()->json(['status' => 'success', 'deduped' => true], 200);
             }
 
             // Process based on event type
@@ -184,7 +203,7 @@ final class NotificationWebhookController extends Controller
         $status = $bounceType === 'hard_bounce'
             ? NotificationLogStatus::HardBounced->value
             : NotificationLogStatus::SoftBounced->value;
-        $bounceTimestamp = $bounceTime ? \Carbon\Carbon::parse($bounceTime) : now();
+        $bounceTimestamp = $bounceTime ? Carbon::parse($bounceTime) : now();
         $bounceField = $bounceType === 'hard_bounce' ? 'hard_bounced_at' : 'soft_bounced_at';
 
         $notificationLog->update([
@@ -252,7 +271,7 @@ final class NotificationWebhookController extends Controller
 
         // Use timestamp from webhook payload, or fallback to when we received the webhook
         $openedAtTimestamp = $openedAt !== null
-            ? \Carbon\Carbon::parse($openedAt)
+            ? Carbon::parse($openedAt)
             : now();
 
         $notificationLog->update([
@@ -388,6 +407,23 @@ final class NotificationWebhookController extends Controller
 
         if (! $timestamp || ! $signature) {
             return false;
+        }
+
+        // Reject stale signatures. ZeptoMail's documented validation checks
+        // the header timestamp against an acceptable delivery window; without
+        // it a captured signature is valid forever. `ts` is epoch
+        // milliseconds; tolerate a generous 15-minute skew for clock drift
+        // and provider retry latency. Dedup on request_id (see zeptomail())
+        // is the primary replay defence; this is defence in depth.
+        if (is_numeric($timestamp)) {
+            $ageSeconds = abs(now()->getTimestamp() - ((int) $timestamp / 1000));
+            if ($ageSeconds > 900) {
+                Log::warning('[ZEPTOMAIL WEBHOOK] Stale signature timestamp', [
+                    'age_seconds' => (int) $ageSeconds,
+                ]);
+
+                return false;
+            }
         }
 
         // URL decode the signature

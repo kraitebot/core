@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.65.0 - 2026-07-11
+
+### Bug fixes
+
+- [FIXED] **Direction conclusion no longer blends indicators from different runs (signal integrity).** `ConcludeSymbolDirectionAtTimeframeJob` selected `MAX(timestamp)` per indicator independently, and `indicator_histories.timestamp` is the wall-clock write time — so a partial TAAPI bulk response (construct-level errors on a 200, which lets the query step COMPLETE rather than throw) left `MAX()` mixing this run's fresh rows with a prior run's stale ones. The count gate only proves every indicator has *some* row, not that they came from one run, so a direction could be concluded from mixed-hour data that never co-existed and stamped current — driving position opening. Added a same-run provenance gate: if the spread between the oldest and newest latest-per-indicator write time exceeds `kraite.indicators.max_run_spread_seconds` (default 300s), the set is treated as inconclusive and retried next cycle. Same-run writes are seconds apart; a cross-run straggler is ~one timeframe behind, so the two never blur. 2 tests. See deploy-notes Entry 99.
+
+### Security
+
+- [FIXED] **Connectivity endpoints authorize against account ownership.** The three `/api/connectivity-test/*` routes required only `auth` — any authenticated user could start a check with another account's exchange credentials, fire a whitelist notification to its owner, or read per-server topology/credential state. Added `AccountPolicy::operate` (owner-or-admin), gated on all three endpoints, with the status lookup scoped through the workflow's owning account. 7 feature tests. (Zero exposure today — single-user — hardening for multi-user beta.)
+- [FIXED] **ZeptoMail webhook replay/duplicate suppression.** The signed request's HMAC covers only the payload, so a captured event stayed valid forever and could clobber newer delivery state. Added an atomic `request_id` dedup (first delivery wins; also idempotent against ZeptoMail's legitimate retries) plus a 15-minute signature-timestamp age gate. 4 tests.
+- [IMPROVED] **CSRF exemption narrowed from `api/webhooks/*` wildcard to the exact provider callback URIs** (ingestion `bootstrap/app.php`), so a future webhook route can't silently inherit the exemption.
+
 ## 1.64.1 - 2026-07-11
 
 ### Bug fixes

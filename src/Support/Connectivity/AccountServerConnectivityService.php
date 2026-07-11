@@ -50,6 +50,27 @@ final class AccountServerConnectivityService
     /**
      * @return array<string, mixed>
      */
+    /**
+     * The Account a connectivity workflow belongs to, resolved from the
+     * parent step's `relatable`. Lets the controller authorize a status
+     * lookup (keyed only by block_uuid) against account ownership.
+     */
+    public function ownerAccount(string $blockUuid): Account
+    {
+        $account = Step::query()
+            ->where('block_uuid', $blockUuid)
+            ->where('class', TestExchangeConnectivityStep::class)
+            ->where('relatable_type', Account::class)
+            ->firstOrFail()
+            ->relatable;
+
+        if (! $account instanceof Account) {
+            abort(404);
+        }
+
+        return $account;
+    }
+
     public function status(string $blockUuid): array
     {
         $parent = Step::query()

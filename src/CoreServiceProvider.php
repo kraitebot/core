@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
@@ -85,6 +86,7 @@ use Kraite\Core\Observers\OrderObserver;
 use Kraite\Core\Observers\PositionObserver;
 use Kraite\Core\Observers\SymbolObserver;
 use Kraite\Core\Observers\UserObserver;
+use Kraite\Core\Policies\AccountPolicy;
 use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\StepRouter;
 use Schema;
@@ -140,6 +142,11 @@ final class CoreServiceProvider extends ServiceProvider
 
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
         $this->loadViewsFrom(__DIR__.'/../resources/views', 'kraite');
+
+        // Authorization policies. The connectivity endpoints touch account
+        // credentials and leak per-server state, so they authorize against
+        // account ownership (or admin) rather than mere authentication.
+        Gate::policy(Account::class, AccountPolicy::class);
 
         // Load API routes with /api prefix
         $this->app->router->group([

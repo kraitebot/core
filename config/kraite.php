@@ -365,6 +365,19 @@ return [
     |               bypass this band.
     |               Default: 0.20.
     */
+    'indicators' => [
+        // Same-run provenance gate for direction conclusion. A conclusion
+        // must be built from indicators all written by ONE query run; a
+        // partial TAAPI bulk response (construct-level errors on a 200)
+        // otherwise leaves MAX(timestamp) mixing this run's fresh rows with
+        // a prior run's stale ones. One run writes every indicator within
+        // seconds; a cross-run straggler is ~one timeframe behind. If the
+        // spread of latest-per-indicator write times exceeds this many
+        // seconds, the set is treated as inconclusive (retry next cycle).
+        // 300s cleanly separates same-run (seconds) from cross-run (~hour).
+        'max_run_spread_seconds' => (int) env('INDICATORS_MAX_RUN_SPREAD_SECONDS', 300),
+    ],
+
     'token_discovery' => [
         'sr_safe_zone' => (float) env('TOKEN_DISCOVERY_SR_SAFE_ZONE', 0.20),
         'correlation_type' => env('TOKEN_DISCOVERY_CORRELATION_TYPE', 'rolling'),

@@ -7,11 +7,14 @@ namespace Kraite\Core\Jobs\Models\ExchangeSymbol;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseQueueableJob;
+use Kraite\Core\Contracts\Indicators\DirectionIndicator;
+use Kraite\Core\Contracts\Indicators\ValidationIndicator;
 use Kraite\Core\Jobs\Atomic\ExchangeSymbol\ConfirmPriceAlignmentWithDirectionJob;
 use Kraite\Core\Jobs\Atomic\ExchangeSymbol\CopyDirectionToOtherExchangesJob;
 use Kraite\Core\Jobs\Atomic\ExchangeSymbol\QueryAndStoreSupportAndResistanceJob;
 use Kraite\Core\Jobs\Models\Indicator\QuerySymbolIndicatorsJob;
 use Kraite\Core\Models\ExchangeSymbol;
+use Kraite\Core\Models\Indicator;
 use Kraite\Core\Models\IndicatorHistory;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\TradeConfiguration;
@@ -97,13 +100,39 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
         }
 
         // Check if we have data for all expected indicators
-        $expectedIndicatorCount = \Kraite\Core\Models\Indicator::query()
+        $expectedIndicatorCount = Indicator::query()
             ->where('is_active', true)
             ->where('type', 'conclude-indicators')
             ->count();
 
         if ($latestPerIndicator->count() < $expectedIndicatorCount) {
             // Missing some indicator data - treat as inconclusive
+            return $this->handleInconclusiveTimeframe($exchangeSymbol, $allTimeframes);
+        }
+
+        // Same-run provenance gate. indicator_histories.timestamp is the
+        // wall-clock WRITE time, and one query run upserts every indicator
+        // within seconds. If a run only refreshed SOME constructs (a partial
+        // TAAPI bulk response — construct-level errors on a 200), MAX() per
+        // indicator returns this run's fresh rows alongside a previous run's
+        // stale rows (roughly a full timeframe apart). The count check above
+        // only proves every indicator has SOME row, not that they came from
+        // one run — so without this gate a direction could be concluded from
+        // mixed-hour data and stamped current, driving position opening on a
+        // signal that never existed at any single point in time. If the
+        // spread between the oldest and newest "latest" timestamp exceeds the
+        // tolerance, the set is not from one run → inconclusive, retry next
+        // cycle. Same-run spread is a few seconds; a cross-run straggler is
+        // ~one timeframe behind, so the two never blur.
+        $timestamps = $latestPerIndicator
+            ->pluck('max_timestamp')
+            ->map(static fn ($value): int => (int) $value)
+            ->filter(static fn (int $value): bool => $value > 0);
+
+        $maxSpreadSeconds = (int) config('kraite.indicators.max_run_spread_seconds', 300);
+
+        if ($timestamps->isNotEmpty() && ($timestamps->max() - $timestamps->min()) > $maxSpreadSeconds) {
+            // Mixed-run indicator set — do not conclude on partial-refresh data.
             return $this->handleInconclusiveTimeframe($exchangeSymbol, $allTimeframes);
         }
 
@@ -178,12 +207,12 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
             $conclusion = $history->conclusion;
 
             // Determine indicator type by checking if the class implements the appropriate interface
-            if (is_subclass_of($indicatorClass, \Kraite\Core\Contracts\Indicators\DirectionIndicator::class)) {
+            if (is_subclass_of($indicatorClass, DirectionIndicator::class)) {
                 // Direction indicator
                 if ($conclusion === 'LONG' || $conclusion === 'SHORT') {
                     $directions[] = $conclusion;
                 }
-            } elseif (is_subclass_of($indicatorClass, \Kraite\Core\Contracts\Indicators\ValidationIndicator::class)) {
+            } elseif (is_subclass_of($indicatorClass, ValidationIndicator::class)) {
                 // Validation indicator
                 if ($conclusion === '0' || $conclusion === 0 || $conclusion === false) {
                     // Validation failed - immediately invalidate this timeframe
