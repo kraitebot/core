@@ -4,9 +4,13 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Abstracts;
 
+use Closure;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Models\ModelLog;
 use StepDispatcher\Abstracts\BaseStepJob;
+use StepDispatcher\Models\Step;
 use StepDispatcher\Support\ExceptionParser;
 use Throwable;
 
@@ -81,6 +85,50 @@ abstract class BaseQueueableJob extends BaseStepJob
     }
 
     /**
+     * Build an orchestrator's child chain exactly once, atomically.
+     *
+     * Orchestrators persist their child_block_uuid the moment they elect to
+     * parent mode, then insert child steps one by one. Two retry vectors can
+     * rerun compute() against that same block: a transient DB error mid-build
+     * (classified retryable → parent back to Pending) and steps:recover-stale
+     * reclaiming a zombie parent whose tree already settled. Without
+     * protection, the rerun re-inserts children at the same (block_uuid,
+     * index) — there is no unique constraint — and BOTH copies become
+     * dispatchable: duplicate status flips at best, duplicate exchange
+     * placements (double market entry) at worst.
+     *
+     * Two layers, each covering the vector the other cannot:
+     *   - The transaction makes a partial build vanish on failure, so a
+     *     retry rebuilds from zero instead of appending to half a chain.
+     *   - The populated-block guard makes a rerun against a fully-committed
+     *     chain a no-op (the settled-tree recover-stale case).
+     *
+     * Returns true when this call built the chain, false when a prior run
+     * already had — callers should return their normal response either way
+     * and let the parent await its (already existing) children.
+     */
+    protected function buildChildChainOnce(Closure $builder): bool
+    {
+        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
+
+        $alreadyBuilt = Step::query()
+            ->where('block_uuid', $blockUuid)
+            ->exists();
+
+        if ($alreadyBuilt) {
+            Step::log($this->step->id, 'lifecycle', 'Retry detected — child block already populated, skipping chain build.');
+
+            return false;
+        }
+
+        DB::transaction(function () use ($builder, $blockUuid): void {
+            $builder($blockUuid);
+        });
+
+        return true;
+    }
+
+    /**
      * Belt-and-suspenders clear for the process-scoped step context.
      *
      * The primary clear runs via Queue::after / Queue::failing listeners
@@ -147,7 +195,7 @@ abstract class BaseQueueableJob extends BaseStepJob
                 message: $parser->friendlyMessage()
             );
         } catch (Throwable $logException) {
-            \Illuminate\Support\Facades\Log::warning('[BaseQueueableJob] onExceptionLogged failed; swallowed to protect the outer exception handler', [
+            Log::warning('[BaseQueueableJob] onExceptionLogged failed; swallowed to protect the outer exception handler', [
                 'step_id' => $this->step->id ?? null,
                 'relatable_class' => get_class($relatable),
                 'original_exception_class' => get_class($e),

@@ -63,10 +63,23 @@ final class VerifyIfTPIsFilledJob extends BaseApiableJob
             $exchangeStatus = $apiResponse->result['status'] ?? null;
         }
 
-        // If TP is FILLED on exchange, abort WAP - close workflow will handle it
+        // If TP is FILLED on exchange, abort WAP — but FIRST persist the
+        // fill locally. We hold definitive exchange truth right here;
+        // discarding it and betting on the WS stream / sync cron to
+        // re-discover the fill left a window (reconciliation degraded)
+        // where the local order stayed NEW and the position reverted to
+        // 'active' — a phantom live position whose exchange side had
+        // already closed. Writing FILLED through updateSaving fires the
+        // OrderObserver's locked + deduped close dispatch organically
+        // (waping is an active status, so it claims 'closing'), and the
+        // WAP resolver's revert-to-active then no-ops on its own
+        // onlyFromStatus='waping' guard. The observer remains the single
+        // close-dispatch chokepoint — no parallel dispatch site here.
         if ($exchangeStatus === 'FILLED') {
+            $profitOrder->updateSaving(['status' => 'FILLED']);
+
             throw new NonNotifiableException(
-                "TP order #{$profitOrder->id} is already FILLED on exchange - aborting WAP, close workflow will handle"
+                "TP order #{$profitOrder->id} is already FILLED on exchange - aborting WAP, close workflow dispatched via observer"
             );
         }
 

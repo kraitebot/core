@@ -139,6 +139,13 @@ final class ModifyAlgoOrderJob extends BaseApiableJob
      * Find the sibling algo leg on this position (TP <-> SL pair). Required
      * because Bitget's `place-pos-tpsl` overwrites BOTH legs atomically;
      * we need the unchanged leg's current price to feed back unchanged.
+     *
+     * MUST select the newest LIVE leg (activeOnExchange + latest). Recreate
+     * workflows retain historical CANCELLED/EXPIRED rows, and an unfiltered
+     * first() picked the oldest row — feeding place-pos-tpsl an obsolete
+     * trigger silently rewrote the healthy live leg's protection. Ambiguity
+     * (two live legs of one type) is structurally prevented by the
+     * OrderObserver's per-type active-order limit.
      */
     public function findSiblingAlgoOrder(): ?Order
     {
@@ -148,6 +155,8 @@ final class ModifyAlgoOrderJob extends BaseApiableJob
             ->where('type', $siblingType)
             ->where('is_algo', true)
             ->where('id', '!=', $this->order->id)
+            ->activeOnExchange()
+            ->latest('id')
             ->first();
     }
 

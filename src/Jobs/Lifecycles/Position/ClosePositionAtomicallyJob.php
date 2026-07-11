@@ -16,18 +16,6 @@ use StepDispatcher\Models\Step;
  */
 final class ClosePositionAtomicallyJob extends BasePositionLifecycle
 {
-    protected bool $verifyPrice = false;
-
-    /**
-     * Set whether to verify price before closing (used by cancel workflow).
-     */
-    public function withVerifyPrice(bool $verifyPrice = true): self
-    {
-        $this->verifyPrice = $verifyPrice;
-
-        return $this;
-    }
-
     public function dispatch(string $blockUuid, int $startIndex, ?string $workflowId = null): int
     {
         Step::create([
@@ -35,7 +23,6 @@ final class ClosePositionAtomicallyJob extends BasePositionLifecycle
             'queue' => 'positions',
             'arguments' => [
                 'positionId' => $this->position->id,
-                'verifyPrice' => $this->verifyPrice,
             ],
             'block_uuid' => $blockUuid,
             'index' => $startIndex,

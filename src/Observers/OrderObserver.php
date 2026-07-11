@@ -585,40 +585,65 @@ final class OrderObserver
         // finds a pending correction (because trading dispatched it),
         // and re-fires every observer cycle until the drift is healed.
         Steps::usingPrefix('trading', function () use ($model, $position, $hasPriceDrift, $hasQuantityDrift): void {
-            // Deduplicate: skip if PrepareOrderCorrectionJob already pending for this order.
-            $alreadyPending = Step::query()
-                ->where('class', PrepareOrderCorrectionJob::class)
-                ->whereRaw("JSON_EXTRACT(arguments, '$.orderId') = ?", [$model->id])
-                ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-                ->exists();
+            // Same transaction + position-lock discipline as the observer's
+            // other dispatch paths (close / replacement / WAP / partial-fill):
+            // two concurrent observer fires for the same drifted order (WS
+            // worker + sync worker) must serialize here, or both pass the
+            // dedupe and enqueue two correction chains — for Bitget's paired
+            // TP/SL modify that means racing place-pos-tpsl overwrites on
+            // both live legs. The loser waits on the lock, re-runs the
+            // dedupe, sees the winner's row, and bails.
+            DB::transaction(function () use ($model, $position, $hasPriceDrift, $hasQuantityDrift): void {
+                $locked = Position::query()->whereKey($position->id)->lockForUpdate()->firstOrFail();
 
-            if ($alreadyPending) {
-                return;
-            }
+                // Re-check against the locked row: the position may have
+                // left the correctable window between fire and lock.
+                if (! in_array($locked->status, $locked->activeStatuses(), true)) {
+                    return;
+                }
 
-            $driftType = match (true) {
-                $hasPriceDrift && $hasQuantityDrift => 'price and quantity',
-                $hasPriceDrift => 'price',
-                default => 'quantity',
-            };
+                // Resolve to the exchange-specific override when one exists (e.g.
+                // Bitget uses modify-tpsl-order for algo correction instead of the
+                // default cancel+recreate). Falls back to the base class when no
+                // override is registered, preserving existing Binance behaviour.
+                //
+                // Resolved BEFORE the dedupe on purpose: the inserted row carries
+                // this class, so the dedupe must search the same value. When it
+                // searched the base class, a pending Bitget correction was
+                // invisible and every observer cycle on a still-drifted order
+                // enqueued another chain — racing place-pos-tpsl overwrites on
+                // live TP/SL legs.
+                $resolvedClass = JobProxy::with($position->account)
+                    ->resolve(PrepareOrderCorrectionJob::class);
 
-            // Resolve to the exchange-specific override when one exists (e.g.
-            // Bitget uses modify-tpsl-order for algo correction instead of the
-            // default cancel+recreate). Falls back to the base class when no
-            // override is registered, preserving existing Binance behaviour.
-            $resolvedClass = JobProxy::with($position->account)
-                ->resolve(PrepareOrderCorrectionJob::class);
+                // Deduplicate: skip if a correction is already pending for this order.
+                $alreadyPending = Step::query()
+                    ->where('class', $resolvedClass)
+                    ->whereRaw("JSON_EXTRACT(arguments, '$.orderId') = ?", [$model->id])
+                    ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+                    ->exists();
 
-            Step::create([
-                'class' => $resolvedClass,
-                'queue' => 'positions',
-                'priority' => 'high',
-                'arguments' => [
-                    'positionId' => $position->id,
-                    'orderId' => $model->id,
-                    'message' => "{$model->type} order #{$model->id} modified ({$driftType}) — correcting",
-                ],
-            ]);
+                if ($alreadyPending) {
+                    return;
+                }
+
+                $driftType = match (true) {
+                    $hasPriceDrift && $hasQuantityDrift => 'price and quantity',
+                    $hasPriceDrift => 'price',
+                    default => 'quantity',
+                };
+
+                Step::create([
+                    'class' => $resolvedClass,
+                    'queue' => 'positions',
+                    'priority' => 'high',
+                    'arguments' => [
+                        'positionId' => $position->id,
+                        'orderId' => $model->id,
+                        'message' => "{$model->type} order #{$model->id} modified ({$driftType}) — correcting",
+                    ],
+                ]);
+            });
         });
     }
 

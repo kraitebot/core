@@ -29,12 +29,9 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
 {
     public Position $position;
 
-    public bool $verifyPrice;
-
-    public function __construct(int $positionId, bool $verifyPrice = false)
+    public function __construct(int $positionId)
     {
         $this->position = Position::findOrFail($positionId);
-        $this->verifyPrice = $verifyPrice;
     }
 
     public function assignExceptionHandler(): void

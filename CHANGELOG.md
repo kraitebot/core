@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.66.0 - 2026-07-12
+
+Second external SME code-review batch (GPT-5.6 "Sol Ultra"), adjudicated adversarially: 12 findings implemented, 4 discarded with evidence. Every fix carries a regression test; the money-path ones are the headline. See deploy-notes Entry 100.
+
+### Bug fixes — workflow engine
+
+- [FIXED] **Retried trading orchestrators could duplicate a partially-built child chain (duplicate market entries).** `child_block_uuid` is persisted the moment an orchestrator elects to parent mode, then child steps are inserted one at a time. A transient DB error mid-build (classified retryable → parent back to Pending) or `steps:recover-stale` reclaiming a settled-tree zombie re-ran `compute()` against the same block and re-inserted children 1..N-1 at the same `(block_uuid, index)` — no unique constraint — making duplicate exchange-facing steps dispatchable. New `BaseQueueableJob::buildChildChainOnce()` wraps the build in a transaction (partial build rolls back) plus a populated-block guard (settled-tree rerun no-ops). Applied to all six money-path orchestrators: `DispatchPositionJob` (Binance/Bybit/Kucoin/Bitget), `CancelPositionJob`, `ApplyWapJob`.
+- [FIXED] **Ladder step-insertion failures were swallowed and reported as success.** `DispatchLimitOrdersJob` created every Order row, then caught each per-rung `Step::create()` failure and continued — leaving a phantom `NEW` order with no placement step and no `exchange_order_id`, while the response claimed success and the promised resolve-exception path never fired. Order rows and placement steps now build together inside `buildChildChainOnce()`: a mid-build failure rolls back both and reaches the exception handler.
+- [FIXED] **Opening failures before the `opening` transition left positions stuck in `new`, re-selected every cron cycle.** The opening chain's resolve-exception path (`CancelPositionJob`) omitted `new` from its first status step's `onlyFromStatus`, so a failure in verify-pair / margin-mode (which run while status is still `new`) no-opped the cancel and the position stayed `new` — an infinite open-fail-"cancel" loop. `new` is now claimable through `cancelling → cancelled`; the exchange-facing children no-op naturally on a positionless `new`.
+
+### Bug fixes — orders & corrections
+
+- [FIXED] **Concurrent recreation could place two replacements for one cancelled order.** The lineage lookup (SELECT latest replacement) and `Order::create()` had no lock or unique constraint between them. Two workflows for the same cancelled order both saw no replacement and both `apiPlace()`d. Now serialized on the cancelled order row (`lockForUpdate` in a transaction, loser adopts the winner's row) plus a **new migration** making `orders.recreated_from_order_id` unique (prod verified zero duplicate parents before the swap).
+- [FIXED] **Bitget order-correction dedupe queried the wrong class.** The dedupe searched the base `PrepareOrderCorrectionJob`, but the insert stored the `JobProxy`-resolved class — for Bitget the override — so a pending Bitget correction was invisible and every observer cycle on a still-drifted order enqueued another chain (racing `place-pos-tpsl` overwrites on live TP/SL). Dedupe now searches the resolved class.
+- [FIXED] **Correction dedupe was a non-atomic SELECT-then-INSERT.** `checkForOrderModification` was the lone observer dispatch path without the `DB::transaction` + `lockForUpdate` + status re-check its four siblings (close / replacement / WAP / partial-fill) all use. Two concurrent observer fires could both enqueue a correction. Now matches the sibling discipline.
+- [FIXED] **Bitget paired TP/SL overwrite could restore a cancelled historical sibling.** `place-pos-tpsl` overwrites BOTH legs atomically; the sibling-selection helpers (`ModifyAlgoOrderJob`, Bitget WAP) picked the oldest row with no status filter, so a stale CANCELLED trigger silently rewrote the live opposite leg. Both helpers now select the newest live (`activeOnExchange`) sibling only.
+
+### Bug fixes — WAP & close
+
+- [FIXED] **WAP follow-up acknowledged fills before the follow-up step was durably created.** `CalculateWapAndModifyProfitOrderJob::complete()` bulk-bumped unacked FILLED LIMITs to `reference_status=FILLED` and then created the follow-up `ApplyWap` step — the comment promised one transaction, the code had none. An ack that outlived a failed step insert permanently silenced those fills (the sync recovery sweep only re-discovers UNACKED fills), leaving the TP sized for the earlier fill set. Now wrapped in `DB::transaction`.
+- [FIXED] **TP-filled verification aborted WAP without persisting the fill or starting closure.** `VerifyIfTPIsFilledJob` threw on exchange-reported FILLED, discarding the definitive fill it had just fetched; the position reverted `waping → active`, a phantom-live position if WS/sync reconciliation was degraded. It now persists `FILLED` first, which fires the observer's locked, deduped close dispatch (claims `closing`); the WAP resolver's revert-to-active then no-ops on its `waping`-only guard.
+- [FIXED] **Bitget WAP could send the success notification twice per lifecycle.** The Bitget variant notifies inline from `computeApiable` (added after the 2026-05-02 production silence) and again via inherited `complete()`; dedupe depended entirely on the 30s notification-side cache throttle. A per-instance send-once latch now makes one-notification-per-WAP a property of the job, first call wins (accurate "old" values). Both historically-motivated call sites kept.
+
+### Removed
+
+- [REMOVED] **Dead `verifyPrice` flag on the atomic close path.** `ClosePositionAtomicallyJob` declared and passed `verifyPrice` end-to-end but never read it — vestigial from the Martingalian rebrand; cancel and normal close were always identical despite the lifecycle API and comments advertising a price gate. Flag removed everywhere (atomic job, lifecycle `withVerifyPrice()`, `CancelPositionJob` call site) — zero behaviour change, no false contract.
+
+### Security (carried from the untagged 1.65.x follow-up)
+
+- [FIXED] **`AccountPolicy::operate` accepts any `Authenticatable`.** The concrete core-`User` typehint made the Gate throw a `TypeError` for consuming apps (admin) that authenticate their own User class against the shared users table, instead of authorizing them.
+
 ## 1.65.0 - 2026-07-11
 
 ### Bug fixes

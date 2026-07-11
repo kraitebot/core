@@ -41,115 +41,120 @@ final class DispatchPositionJob extends BaseDispatchPositionJob
     public function compute()
     {
         $resolver = JobProxy::with($this->position->account);
-        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
 
-        // Step 1: Verify trading pair not already open
-        $verifyLifecycleClass = $resolver->resolve(VerifyTradingPairNotOpenLifecycle::class);
-        $verifyLifecycle = new $verifyLifecycleClass($this->position);
-        $nextIndex = $verifyLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: 1,
-            workflowId: null
-        );
+        // Atomic + idempotent chain build — a retried orchestrator must not
+        // append duplicate children to a half-built or already-built block
+        // (a duplicated chain here means a second market entry).
+        $built = $this->buildChildChainOnce(function (string $blockUuid) use ($resolver): void {
 
-        // Step 2: Set margin mode (isolated/crossed)
-        $marginModeLifecycleClass = $resolver->resolve(SetMarginModeLifecycle::class);
-        $marginModeLifecycle = new $marginModeLifecycleClass($this->position);
-        $nextIndex = $marginModeLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+            // Step 1: Verify trading pair not already open
+            $verifyLifecycleClass = $resolver->resolve(VerifyTradingPairNotOpenLifecycle::class);
+            $verifyLifecycle = new $verifyLifecycleClass($this->position);
+            $nextIndex = $verifyLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: 1,
+                workflowId: null
+            );
 
-        // Step 3: Prepare position data (margin, indicators - leverage determined next)
-        $prepareDataLifecycleClass = $resolver->resolve(PreparePositionDataLifecycle::class);
-        $prepareDataLifecycle = new $prepareDataLifecycleClass($this->position);
-        $nextIndex = $prepareDataLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+            // Step 2: Set margin mode (isolated/crossed)
+            $marginModeLifecycleClass = $resolver->resolve(SetMarginModeLifecycle::class);
+            $marginModeLifecycle = new $marginModeLifecycleClass($this->position);
+            $nextIndex = $marginModeLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
 
-        // Step 4: Determine optimal leverage based on margin and brackets
-        $determineLeverageLifecycleClass = $resolver->resolve(DetermineLeverageLifecycle::class);
-        $determineLeverageLifecycle = new $determineLeverageLifecycleClass($this->position);
-        $nextIndex = $determineLeverageLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+            // Step 3: Prepare position data (margin, indicators - leverage determined next)
+            $prepareDataLifecycleClass = $resolver->resolve(PreparePositionDataLifecycle::class);
+            $prepareDataLifecycle = new $prepareDataLifecycleClass($this->position);
+            $nextIndex = $prepareDataLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
 
-        // Step 5: Set leverage on exchange
-        $leverageLifecycleClass = $resolver->resolve(SetLeverageLifecycle::class);
-        $leverageLifecycle = new $leverageLifecycleClass($this->position);
-        $nextIndex = $leverageLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+            // Step 4: Determine optimal leverage based on margin and brackets
+            $determineLeverageLifecycleClass = $resolver->resolve(DetermineLeverageLifecycle::class);
+            $determineLeverageLifecycle = new $determineLeverageLifecycleClass($this->position);
+            $nextIndex = $determineLeverageLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
 
-        // Step 6: Verify order notional (fetch mark price, validate notional)
-        $verifyNotionalLifecycleClass = $resolver->resolve(VerifyOrderNotionalLifecycle::class);
-        $verifyNotionalLifecycle = new $verifyNotionalLifecycleClass($this->position);
-        $nextIndex = $verifyNotionalLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+            // Step 5: Set leverage on exchange
+            $leverageLifecycleClass = $resolver->resolve(SetLeverageLifecycle::class);
+            $leverageLifecycle = new $leverageLifecycleClass($this->position);
+            $nextIndex = $leverageLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
 
-        // Step 7: Place entry order
-        $placeEntryLifecycleClass = $resolver->resolve(PlaceMarketOrderLifecycle::class);
-        $placeEntryLifecycle = new $placeEntryLifecycleClass($this->position);
-        $nextIndex = $placeEntryLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+            // Step 6: Verify order notional (fetch mark price, validate notional)
+            $verifyNotionalLifecycleClass = $resolver->resolve(VerifyOrderNotionalLifecycle::class);
+            $verifyNotionalLifecycle = new $verifyNotionalLifecycleClass($this->position);
+            $nextIndex = $verifyNotionalLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
 
-        // Step 8: Place limit ladder orders (parallel)
-        $placeLimitOrdersLifecycleClass = $resolver->resolve(PlaceLimitOrdersLifecycle::class);
-        $placeLimitOrdersLifecycle = new $placeLimitOrdersLifecycleClass($this->position);
-        $nextIndex = $placeLimitOrdersLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+            // Step 7: Place entry order
+            $placeEntryLifecycleClass = $resolver->resolve(PlaceMarketOrderLifecycle::class);
+            $placeEntryLifecycle = new $placeEntryLifecycleClass($this->position);
+            $nextIndex = $placeEntryLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
 
-        // Step 9: Place combined TP/SL via position endpoint
-        $placePositionTpslLifecycleClass = $resolver->resolve(PlacePositionTpslLifecycle::class);
-        $placePositionTpslLifecycle = new $placePositionTpslLifecycleClass($this->position);
-        $nextIndex = $placePositionTpslLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+            // Step 8: Place limit ladder orders (parallel)
+            $placeLimitOrdersLifecycleClass = $resolver->resolve(PlaceLimitOrdersLifecycle::class);
+            $placeLimitOrdersLifecycle = new $placeLimitOrdersLifecycleClass($this->position);
+            $nextIndex = $placeLimitOrdersLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
 
-        // Step 10: Activate position (validate orders, set status='active')
-        $activatePositionLifecycleClass = $resolver->resolve(ActivatePositionLifecycle::class);
-        $activatePositionLifecycle = new $activatePositionLifecycleClass($this->position);
-        $nextIndex = $activatePositionLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+            // Step 9: Place combined TP/SL via position endpoint
+            $placePositionTpslLifecycleClass = $resolver->resolve(PlacePositionTpslLifecycle::class);
+            $placePositionTpslLifecycle = new $placePositionTpslLifecycleClass($this->position);
+            $nextIndex = $placePositionTpslLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
 
-        // resolve-exception: Cancel position if any step fails
-        // Note: index=1 allows immediate dispatch when promoted to Pending
-        Step::create([
-            'class' => $resolver->resolve(CancelPositionJob::class),
-            'queue' => 'positions',
-            'block_uuid' => $blockUuid,
-            'index' => 1,
-            'type' => 'resolve-exception',
-            'arguments' => [
-                'positionId' => $this->position->id,
-                'message' => 'Position opening failed during dispatch workflow',
-            ],
-        ]);
+            // Step 10: Activate position (validate orders, set status='active')
+            $activatePositionLifecycleClass = $resolver->resolve(ActivatePositionLifecycle::class);
+            $activatePositionLifecycle = new $activatePositionLifecycleClass($this->position);
+            $nextIndex = $activatePositionLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
+
+            // resolve-exception: Cancel position if any step fails
+            // Note: index=1 allows immediate dispatch when promoted to Pending
+            Step::create([
+                'class' => $resolver->resolve(CancelPositionJob::class),
+                'queue' => 'positions',
+                'block_uuid' => $blockUuid,
+                'index' => 1,
+                'type' => 'resolve-exception',
+                'arguments' => [
+                    'positionId' => $this->position->id,
+                    'message' => 'Position opening failed during dispatch workflow',
+                ],
+            ]);
+        });
 
         return [
             'position_id' => $this->position->id,
-            'message' => 'Position dispatching initiated',
+            'message' => $built ? 'Position dispatching initiated' : 'Retry detected — child block already populated, no-op.',
         ];
     }
 }

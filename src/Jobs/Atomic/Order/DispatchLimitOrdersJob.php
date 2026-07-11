@@ -4,14 +4,12 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\Order;
 
-use Illuminate\Support\Facades\Log;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Proxies\JobProxy;
 use Kraite\Core\Trading\Kraite;
 use StepDispatcher\Models\Step;
-use Throwable;
 
 /**
  * DispatchLimitOrdersJob (Orchestrator)
@@ -118,47 +116,45 @@ final class DispatchLimitOrdersJob extends BaseQueueableJob
             );
         }
 
-        // Observer silently rejects excess orders (returns false from creating()),
-        // so filter removes any nulls from blocked creations
-        $this->limitOrders = collect($ladder)
-            ->map(function (array $rung) use ($side, $direction): Order {
-                return Order::create([
-                    'position_id' => $this->position->id,
-                    'type' => 'LIMIT',
-                    'status' => 'NEW',
-                    'side' => $side,
-                    'position_side' => $direction,
-                    'price' => $rung['price'],
-                    'quantity' => $rung['quantity'],
-                ]);
-            })
-            ->filter()
-            ->values()
-            ->all();
+        // 2 + 3. Create the Order rows AND their placement steps in ONE
+        // atomic, idempotent build. Orders and steps must live or die
+        // together: a step-insert failure with the Order rows already
+        // committed leaves phantom NEW orders with no placement step and
+        // no exchange counterpart — the prior per-rung swallow shipped
+        // exactly that, reported success, and the resolve-exception path
+        // its own comment promised could never fire because the exception
+        // never escaped. Now a mid-build failure rolls back the whole
+        // ladder and reaches the exception handler: transient errors
+        // retry into a clean rebuild (populated-block guard prevents a
+        // second ladder), permanent ones fail the step so the opening
+        // chain's CancelPosition resolver actually runs.
+        //
+        // Self-elect to parent only when the ladder is non-empty —
+        // otherwise we'd leave a parent step whose child_block_uuid
+        // points at an empty block, which the dispatcher treats as a
+        // never-completing zombie.
+        if (count($ladder) > 0) {
+            $this->buildChildChainOnce(function (string $blockUuid) use ($ladder, $side, $direction, $resolver): void {
+                // Observer silently rejects excess orders (returns false
+                // from creating()), so filter removes blocked creations.
+                $this->limitOrders = collect($ladder)
+                    ->map(function (array $rung) use ($side, $direction): Order {
+                        return Order::create([
+                            'position_id' => $this->position->id,
+                            'type' => 'LIMIT',
+                            'status' => 'NEW',
+                            'side' => $side,
+                            'position_side' => $direction,
+                            'price' => $rung['price'],
+                            'quantity' => $rung['quantity'],
+                        ]);
+                    })
+                    ->filter()
+                    ->values()
+                    ->all();
 
-        // 3. Create Steps to place orders on exchange (sequential to allow cancellation on failure)
-        // Self-elect to parent only when there are children to spawn — otherwise
-        // we'd leave a parent step with a child_block_uuid pointing at an empty
-        // block, which the dispatcher treats as a never-completing zombie.
-        $totalCreated = count($this->limitOrders);
-
-        if ($totalCreated > 0) {
-            $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
-            $rungsDispatched = 0;
-            $rungsFailed = 0;
-
-            collect($this->limitOrders)
-                ->each(function (Order $order, int $rungIndex) use ($resolver, $blockUuid, &$rungsDispatched, &$rungsFailed): void {
-                    // Per-rung try/catch — a transient Step::create
-                    // failure on rung 2 must not abort rungs 3..N. The
-                    // ladder is already in DB as Order rows; the
-                    // PlaceLimitOrderJob steps are the only piece that
-                    // could fail here. Logging the failure and
-                    // continuing produces a partial-but-known ladder
-                    // state the lifecycle's resolve-exception path can
-                    // recover from rather than a half-dispatched
-                    // surprise.
-                    try {
+                collect($this->limitOrders)
+                    ->each(function (Order $order, int $rungIndex) use ($resolver, $blockUuid): void {
                         Step::create([
                             'class' => $resolver->resolve(PlaceLimitOrderJob::class),
                             'queue' => 'orders',
@@ -172,18 +168,11 @@ final class DispatchLimitOrdersJob extends BaseQueueableJob
                             'index' => $rungIndex + 1,
                             'workflow_id' => null,
                         ]);
-                        $rungsDispatched++;
-                    } catch (Throwable $e) {
-                        $rungsFailed++;
-                        Log::channel('jobs')->error('[DISPATCH-LIMITS] per-rung dispatch threw — continuing', [
-                            'order_id' => $order->id,
-                            'rung_index' => $rungIndex + 1,
-                            'exception' => $e::class,
-                            'message' => $e->getMessage(),
-                        ]);
-                    }
-                });
+                    });
+            });
         }
+
+        $totalCreated = count($this->limitOrders);
 
         $this->position->appLog(
             event: 'limit_orders_dispatched',

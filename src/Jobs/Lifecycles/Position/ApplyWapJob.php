@@ -92,111 +92,115 @@ final class ApplyWapJob extends BaseApiableJob
     public function computeApiable()
     {
         $resolver = JobProxy::with($this->position->account);
-        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
 
-        // Step 1: Update position status to 'waping'.
-        // Guarded with onlyFromStatus=['active', 'syncing']: if a concurrent
-        // close workflow has already transitioned the position to 'closing'
-        // or 'cancelling' between our orchestrator's startOrFail and this
-        // step, skip rather than revive it. `syncing` is accepted because
-        // LIMIT fills are detected inside the sync loop — by the time this
-        // step runs, the position may still be `syncing` (sync's own
-        // complete() flip back to `active` hasn't fired yet). Blocking
-        // that case would leave the WAP sub-chain running against a stale
-        // status and make the downstream `CalculateWap::startOrFail`
-        // (which requires `waping`) fail with no recovery.
-        Step::create([
-            'class' => $resolver->resolve(AtomicUpdatePositionStatusJob::class),
-            'queue' => 'positions',
-            'arguments' => [
-                'positionId' => $this->position->id,
-                'status' => 'waping',
-                'message' => $this->message,
-                'onlyFromStatus' => ['active', 'syncing'],
-            ],
-            'block_uuid' => $blockUuid,
-            'index' => 1,
-            'workflow_id' => null,
-        ]);
+        // Atomic + idempotent chain build — a retried orchestrator must not
+        // append duplicate children to a half-built or already-built block.
+        $built = $this->buildChildChainOnce(function (string $blockUuid) use ($resolver): void {
 
-        // Step 2: Verify TP is not already filled on exchange
-        // This catches the edge case where LIMIT and TP fill in same sync cycle
-        Step::create([
-            'class' => $resolver->resolve(VerifyIfTPIsFilledJob::class),
-            'queue' => 'positions',
-            'arguments' => [
-                'positionId' => $this->position->id,
-            ],
-            'block_uuid' => $blockUuid,
-            'index' => 2,
-            'workflow_id' => null,
-        ]);
+            // Step 1: Update position status to 'waping'.
+            // Guarded with onlyFromStatus=['active', 'syncing']: if a concurrent
+            // close workflow has already transitioned the position to 'closing'
+            // or 'cancelling' between our orchestrator's startOrFail and this
+            // step, skip rather than revive it. `syncing` is accepted because
+            // LIMIT fills are detected inside the sync loop — by the time this
+            // step runs, the position may still be `syncing` (sync's own
+            // complete() flip back to `active` hasn't fired yet). Blocking
+            // that case would leave the WAP sub-chain running against a stale
+            // status and make the downstream `CalculateWap::startOrFail`
+            // (which requires `waping`) fail with no recovery.
+            Step::create([
+                'class' => $resolver->resolve(AtomicUpdatePositionStatusJob::class),
+                'queue' => 'positions',
+                'arguments' => [
+                    'positionId' => $this->position->id,
+                    'status' => 'waping',
+                    'message' => $this->message,
+                    'onlyFromStatus' => ['active', 'syncing'],
+                ],
+                'block_uuid' => $blockUuid,
+                'index' => 1,
+                'workflow_id' => null,
+            ]);
 
-        // Step 3: Query account positions snapshot from exchange
-        $queryPositionsLifecycleClass = $resolver->resolve(QueryAccountPositionsLifecycle::class);
-        $queryPositionsLifecycle = new $queryPositionsLifecycleClass($this->position->account);
-        $nextIndex = $queryPositionsLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: 3,
-            workflowId: null
-        );
+            // Step 2: Verify TP is not already filled on exchange
+            // This catches the edge case where LIMIT and TP fill in same sync cycle
+            Step::create([
+                'class' => $resolver->resolve(VerifyIfTPIsFilledJob::class),
+                'queue' => 'positions',
+                'arguments' => [
+                    'positionId' => $this->position->id,
+                ],
+                'block_uuid' => $blockUuid,
+                'index' => 2,
+                'workflow_id' => null,
+            ]);
 
-        // Step 4: Calculate WAP and modify profit order
-        Step::create([
-            'class' => $resolver->resolve(CalculateWapAndModifyProfitOrderJob::class),
-            'queue' => 'positions',
-            'arguments' => [
-                'positionId' => $this->position->id,
-            ],
-            'block_uuid' => $blockUuid,
-            'index' => $nextIndex,
-            'workflow_id' => null,
-        ]);
-        $nextIndex++;
+            // Step 3: Query account positions snapshot from exchange
+            $queryPositionsLifecycleClass = $resolver->resolve(QueryAccountPositionsLifecycle::class);
+            $queryPositionsLifecycle = new $queryPositionsLifecycleClass($this->position->account);
+            $nextIndex = $queryPositionsLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: 3,
+                workflowId: null
+            );
 
-        // Step 5: Revert position status to 'active'.
-        // Guarded with onlyFromStatus='waping': if a concurrent close workflow
-        // triggered by a TP fill that slipped past VerifyIfTPIsFilledJob has
-        // already set the position to 'closing', do NOT promote it back to
-        // 'active' — that would silently break the close workflow's state
-        // machine. In that case the current status is 'closing' and this
-        // transition no-ops, which is the correct outcome.
-        Step::create([
-            'class' => $resolver->resolve(AtomicUpdatePositionStatusJob::class),
-            'queue' => 'positions',
-            'arguments' => [
-                'positionId' => $this->position->id,
-                'status' => 'active',
-                'message' => 'WAP applied successfully',
-                'onlyFromStatus' => 'waping',
-            ],
-            'block_uuid' => $blockUuid,
-            'index' => $nextIndex,
-            'workflow_id' => null,
-        ]);
+            // Step 4: Calculate WAP and modify profit order
+            Step::create([
+                'class' => $resolver->resolve(CalculateWapAndModifyProfitOrderJob::class),
+                'queue' => 'positions',
+                'arguments' => [
+                    'positionId' => $this->position->id,
+                ],
+                'block_uuid' => $blockUuid,
+                'index' => $nextIndex,
+                'workflow_id' => null,
+            ]);
+            $nextIndex++;
 
-        // Resolve-exception step: Revert status to 'active' on failure.
-        // Same onlyFromStatus='waping' guard — if the failure path fires
-        // while a close workflow has already claimed the position, let the
-        // close workflow's state advance unmolested.
-        Step::create([
-            'class' => $resolver->resolve(AtomicUpdatePositionStatusJob::class),
-            'queue' => 'positions',
-            'arguments' => [
-                'positionId' => $this->position->id,
-                'status' => 'active',
-                'message' => 'WAP failed, reverting to active',
-                'onlyFromStatus' => 'waping',
-            ],
-            'block_uuid' => $blockUuid,
-            'index' => 1,
-            'type' => 'resolve-exception',
-            'workflow_id' => null,
-        ]);
+            // Step 5: Revert position status to 'active'.
+            // Guarded with onlyFromStatus='waping': if a concurrent close workflow
+            // triggered by a TP fill that slipped past VerifyIfTPIsFilledJob has
+            // already set the position to 'closing', do NOT promote it back to
+            // 'active' — that would silently break the close workflow's state
+            // machine. In that case the current status is 'closing' and this
+            // transition no-ops, which is the correct outcome.
+            Step::create([
+                'class' => $resolver->resolve(AtomicUpdatePositionStatusJob::class),
+                'queue' => 'positions',
+                'arguments' => [
+                    'positionId' => $this->position->id,
+                    'status' => 'active',
+                    'message' => 'WAP applied successfully',
+                    'onlyFromStatus' => 'waping',
+                ],
+                'block_uuid' => $blockUuid,
+                'index' => $nextIndex,
+                'workflow_id' => null,
+            ]);
+
+            // Resolve-exception step: Revert status to 'active' on failure.
+            // Same onlyFromStatus='waping' guard — if the failure path fires
+            // while a close workflow has already claimed the position, let the
+            // close workflow's state advance unmolested.
+            Step::create([
+                'class' => $resolver->resolve(AtomicUpdatePositionStatusJob::class),
+                'queue' => 'positions',
+                'arguments' => [
+                    'positionId' => $this->position->id,
+                    'status' => 'active',
+                    'message' => 'WAP failed, reverting to active',
+                    'onlyFromStatus' => 'waping',
+                ],
+                'block_uuid' => $blockUuid,
+                'index' => 1,
+                'type' => 'resolve-exception',
+                'workflow_id' => null,
+            ]);
+        });
 
         return [
             'position_id' => $this->position->id,
-            'message' => 'WAP workflow initiated',
+            'message' => $built ? 'WAP workflow initiated' : 'Retry detected — child block already populated, no-op.',
         ];
     }
 }

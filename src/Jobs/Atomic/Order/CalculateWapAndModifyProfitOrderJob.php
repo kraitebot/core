@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\Order;
 
+use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Exceptions\NonNotifiableException;
@@ -45,6 +46,9 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
     public Position $position;
 
     public ?Order $profitOrder = null;
+
+    /** Send-once latch for the WAP-applied notification (see dispatchWapAppliedNotification). */
+    protected bool $wapNotificationDispatched = false;
 
     public ?string $breakEvenPrice = null;
 
@@ -371,17 +375,27 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
             // framework changes. Wrapping here matches the prefix
             // discipline of every other trading-step dispatch site.
             Steps::usingPrefix('trading', function () use ($unackedLimitsQuery): void {
-                (clone $unackedLimitsQuery)->update(['reference_status' => 'FILLED']);
+                // Ack and follow-up step live or die together. The ack IS
+                // the claim on these fills — once reference_status=FILLED
+                // commits, neither the observer nor the sync-orders
+                // recovery sweep will ever look at them again, so the
+                // ApplyWap step is the only carrier of the "needs WAP"
+                // signal. An ack that outlived a failed step insert
+                // permanently silenced the fills and left the TP sized
+                // for the earlier fill set.
+                DB::transaction(function () use ($unackedLimitsQuery): void {
+                    (clone $unackedLimitsQuery)->update(['reference_status' => 'FILLED']);
 
-                Step::create([
-                    'class' => ApplyWapJob::class,
-                    'queue' => 'positions',
-                    'arguments' => [
-                        'positionId' => $this->position->id,
-                        'message' => 'Follow-up WAP for LIMIT fills that arrived during the prior WAP run',
-                    ],
-                    'dispatch_after' => now()->addSeconds(3),
-                ]);
+                    Step::create([
+                        'class' => ApplyWapJob::class,
+                        'queue' => 'positions',
+                        'arguments' => [
+                            'positionId' => $this->position->id,
+                            'message' => 'Follow-up WAP for LIMIT fills that arrived during the prior WAP run',
+                        ],
+                        'dispatch_after' => now()->addSeconds(3),
+                    ]);
+                });
             });
         }
     }
@@ -432,9 +446,23 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
      */
     protected function dispatchWapAppliedNotification(string $oldTpPrice, string $oldTpQuantity): void
     {
+        // Send-once per job run. The Bitget variant notifies inline from
+        // computeApiable (added after the 2026-05-02 production silence —
+        // root cause of the completion-hook miss never established), and
+        // the inherited complete() notifies again ms later. Deduplication
+        // used to depend entirely on the notification-side 30s cache
+        // throttle; a cache hiccup meant a double ping. One-notification-
+        // per-WAP is now a property of the job itself, and the first call
+        // wins — it carries the accurate pre-update "old" values.
+        if ($this->wapNotificationDispatched) {
+            return;
+        }
+
         if ($this->profitOrder === null) {
             return;
         }
+
+        $this->wapNotificationDispatched = true;
 
         $user = $this->position->account->user ?? null;
 

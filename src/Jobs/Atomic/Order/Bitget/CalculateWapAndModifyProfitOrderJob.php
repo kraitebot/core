@@ -6,6 +6,7 @@ namespace Kraite\Core\Jobs\Atomic\Order\Bitget;
 
 use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Jobs\Atomic\Order\CalculateWapAndModifyProfitOrderJob as BaseCalculateWapAndModifyProfitOrderJob;
+use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
@@ -50,7 +51,7 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseCalculateWapAndModif
         $scale = 8;
         $account = $this->position->account;
 
-        $positions = \Kraite\Core\Models\ApiSnapshot::getFrom($account, 'account-positions');
+        $positions = ApiSnapshot::getFrom($account, 'account-positions');
 
         $positionKey = $this->buildPositionKey();
 
@@ -217,17 +218,20 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseCalculateWapAndModif
     }
 
     /**
-     * Locate the position's STOP-MARKET algo leg so its current price
-     * can be carried through the place-pos-tpsl call unchanged.
-     *
-     * Mirrors the helper on Bitget\ModifyAlgoOrderJob — same contract,
-     * same expectations.
+     * Locate the position's newest LIVE STOP-MARKET algo leg so its
+     * current price can be carried through the place-pos-tpsl call
+     * unchanged. Historical CANCELLED/EXPIRED rows from recreate
+     * workflows must never win — an obsolete trigger fed back here
+     * silently rewrites the live stop's protection (see the same
+     * rationale on Bitget\ModifyAlgoOrderJob::findSiblingAlgoOrder).
      */
     public function findSiblingStopLossOrder(): ?Order
     {
         return $this->position->orders()
             ->where('type', 'STOP-MARKET')
             ->where('is_algo', true)
+            ->activeOnExchange()
+            ->latest('id')
             ->first();
     }
 }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\Order;
 
+use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Order;
@@ -147,18 +148,57 @@ final class RecreateCancelledOrderJob extends BaseApiableJob
         // Reuse any Order row a prior attempt left behind without an
         // exchange_order_id (the apiPlace never reached the exchange) so
         // we don't accumulate orphan rows on retries.
+        //
+        // Serialized on the cancelled order row: two concurrent recreation
+        // workflows for the same cancelled order (the observer-dedupe races
+        // can produce them) would otherwise both see "no replacement yet"
+        // and both create + place — duplicate live exchange orders. The
+        // lock makes the loser wait, re-read, and adopt the winner's row;
+        // the unique index on recreated_from_order_id is the schema
+        // backstop for any writer that bypasses this path.
         if ($this->newOrder === null) {
-            $this->newOrder = Order::create([
-                'position_id' => $this->position->id,
-                'type' => $this->cancelledOrder->type,
-                'status' => 'NEW',
-                'side' => $side,
-                'position_side' => $direction,
-                'price' => $price,
-                'quantity' => $quantity,
-                'is_algo' => $this->cancelledOrder->is_algo,
-                'recreated_from_order_id' => $this->cancelledOrder->id,
-            ]);
+            $this->newOrder = DB::transaction(function () use ($direction, $side, $price, $quantity): Order {
+                Order::query()
+                    ->whereKey($this->cancelledOrder->id)
+                    ->lockForUpdate()
+                    ->first();
+
+                $existingReplacement = Order::query()
+                    ->where('recreated_from_order_id', $this->cancelledOrder->id)
+                    ->latest('id')
+                    ->first();
+
+                if ($existingReplacement !== null) {
+                    return $existingReplacement;
+                }
+
+                return Order::create([
+                    'position_id' => $this->position->id,
+                    'type' => $this->cancelledOrder->type,
+                    'status' => 'NEW',
+                    'side' => $side,
+                    'position_side' => $direction,
+                    'price' => $price,
+                    'quantity' => $quantity,
+                    'is_algo' => $this->cancelledOrder->is_algo,
+                    'recreated_from_order_id' => $this->cancelledOrder->id,
+                ]);
+            });
+
+            // Adopted a row the winner already placed? Same short-circuit
+            // as the top-of-compute retry path — never re-place it.
+            if ($this->newOrder->exchange_order_id !== null) {
+                return [
+                    'position_id' => $this->position->id,
+                    'cancelled_order_id' => $this->cancelledOrder->id,
+                    'new_order_id' => $this->newOrder->id,
+                    'type' => $this->newOrder->type,
+                    'price' => $this->newOrder->price,
+                    'quantity' => $this->newOrder->quantity,
+                    'exchange_order_id' => $this->newOrder->exchange_order_id,
+                    'message' => 'Replacement already created and placed by a concurrent workflow — adopting it',
+                ];
+            }
         }
 
         // Place on exchange
