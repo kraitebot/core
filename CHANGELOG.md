@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.64.0 - 2026-07-11
+
+### Features
+
+- [NEW FEATURE] **Drawdown floor — the continuation-crash fix (Jun 2022 class).** BSCS's five sub-signals measure change vs a 14-day baseline and go blind when the baseline itself is already broken (Jun 2022: score never crossed 60 while the market bled into the Celsius cliff). The hourly compute now overlays an absolute-state reading: BTC's latest 1h close >= 15% below its highest close across the last 500 bars (~21 days, matching candle retention) floors the composite score at 60 (Fragile posture: reduced count/leverage/margin). Floor only — never lowers a higher score, never reaches Critical on its own. Config `kraite.market_regime.drawdown_floor` (kill switch `MARKET_REGIME_DRAWDOWN_FLOOR`). Forensics ride the snapshot's `inputs_meta.drawdown_floor` block. Earn-a-slot study (~/blackswan/reports/signal-candidates-20260711.txt): fires 4/6 events at T-6h INCLUDING the missed Jun-2022 (36.6%), ~zero calm-month phantoms; only cost is deliberate Fragile posture during genuine >15% drawdown recoveries. 6 feature tests.
+
+### Research decisions
+
+- [DECISION] **Perp-basis signal candidate KILLED by data.** The Tier-A candidate from the external trader review fired in only 1/6 historical events at T-6h (needs >=4), with calm-month noise peaks exceeding every pre-crash reading — the same failure mode that eliminated funding rate in the original research. Study preserved in ~/blackswan/reports/signal-candidates-20260711.txt; not implemented.
+
 ## 1.63.0 - 2026-07-11
 
 ### Features

@@ -49,7 +49,9 @@ final class ComputeMarketRegimeJob extends BaseQueueableJob
         $symbols = $this->resolveSymbols((array) ($config['symbols'] ?? []));
         $thresholds = $this->resolveThresholds((array) ($config['thresholds'] ?? []));
 
-        $btcBars = $this->loadKlines($symbols['BTC'] ?? null);
+        $floorConfig = (array) ($config['drawdown_floor'] ?? []);
+        $floorWindow = (int) ($floorConfig['window_hours'] ?? 500);
+        $btcBars = $this->loadKlines($symbols['BTC'] ?? null, max(360, $floorWindow + 1));
         if (count($btcBars) < 14 * 24) {
             // Not enough history to compute meaningfully — bail without
             // writing a snapshot. The cron will retry next hour; the
@@ -73,6 +75,32 @@ final class ComputeMarketRegimeJob extends BaseQueueableJob
         $values = RegimeCalculator::computeSubSignalValues($btcBars, $altBars);
         $fired = RegimeCalculator::applyThresholds($values, $thresholds);
         $score = RegimeCalculator::compositeScore($fired);
+
+        // Drawdown floor — absolute-state overlay for continuation
+        // regimes the relative sub-signals cannot see. Floors the score
+        // (never lowers it, never reaches Critical on its own).
+        $drawdown = [
+            'enabled' => (bool) ($floorConfig['enabled'] ?? true),
+            'window_hours' => $floorWindow,
+            'threshold_pct' => (float) ($floorConfig['threshold_pct'] ?? 15.0),
+            'floor_score' => (int) ($floorConfig['floor_score'] ?? 60),
+            'value_pct' => null,
+            'floor_applied' => false,
+        ];
+
+        if ($drawdown['enabled']) {
+            $drawdownPct = RegimeCalculator::drawdownPct($btcBars, $floorWindow);
+            $drawdown['value_pct'] = $drawdownPct === null ? null : round($drawdownPct, 2);
+
+            if ($drawdownPct !== null
+                && $drawdownPct >= $drawdown['threshold_pct']
+                && $score < $drawdown['floor_score']
+            ) {
+                $score = $drawdown['floor_score'];
+                $drawdown['floor_applied'] = true;
+            }
+        }
+
         $band = RegimeBand::fromScore($score);
 
         $btcLastClose = (string) end($btcBars)['close'];
@@ -97,6 +125,7 @@ final class ComputeMarketRegimeJob extends BaseQueueableJob
                 'symbols' => array_keys($symbols),
                 'baseline_days' => 14,
                 'thresholds' => $thresholds,
+                'drawdown_floor' => $drawdown,
             ],
         ]);
 
@@ -117,6 +146,7 @@ final class ComputeMarketRegimeJob extends BaseQueueableJob
             'snapshot_id' => $snapshot->id,
             'score' => $score,
             'band' => $band->value,
+            'drawdown_floor' => $drawdown,
         ];
     }
 
@@ -153,18 +183,19 @@ final class ComputeMarketRegimeJob extends BaseQueueableJob
     /**
      * @return list<array{open: string, high: string, low: string, close: string, volume: string, timestamp: int}>
      */
-    private function loadKlines(?ExchangeSymbol $exchangeSymbol): array
+    private function loadKlines(?ExchangeSymbol $exchangeSymbol, int $limit = 360): array
     {
         if ($exchangeSymbol === null) {
             return [];
         }
 
-        // 14 days = 336 hourly bars; pull 360 to be defensive.
+        // 14 days = 336 hourly bars; pull 360 to be defensive. BTC pulls
+        // more when the drawdown floor needs its longer window.
         $rows = Candle::query()
             ->where('exchange_symbol_id', $exchangeSymbol->id)
             ->where('timeframe', '1h')
             ->orderByDesc('timestamp')
-            ->limit(360)
+            ->limit($limit)
             ->get(['open', 'high', 'low', 'close', 'volume', 'timestamp']);
 
         // DB returned newest-first; calculator expects oldest-first.

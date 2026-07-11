@@ -849,6 +849,24 @@ return [
         // Notification: `market_shock_circuit_breaker` — fires once per
         // fresh arming, silent re-arm while a cooldown is already active
         // to avoid double-pinging.
+        // Drawdown floor — the continuation-crash fix (Jun 2022 class).
+        // When BTC's latest 1h close sits >= threshold_pct below its
+        // highest close across window_hours, the hourly composite score
+        // is floored at floor_score (Fragile posture: reduced count /
+        // leverage / margin). Never reaches Critical on its own. The
+        // five relative sub-signals stay untouched. Earn-a-slot study:
+        // ~/blackswan/reports/signal-candidates-20260711.txt (fires
+        // 4/6 events at T-6h incl. the missed Jun-2022; ~zero calm
+        // phantom at 15%).
+        'drawdown_floor' => [
+            'enabled' => (bool) env('MARKET_REGIME_DRAWDOWN_FLOOR', true),
+            'threshold_pct' => (float) env('MARKET_REGIME_DRAWDOWN_THRESHOLD', 15.0),
+            'floor_score' => (int) env('MARKET_REGIME_DRAWDOWN_FLOOR_SCORE', 60),
+            // 500 bars ≈ 21 days — matches kraite:purge-candles retention
+            // (keeps the newest 500 candles per symbol/timeframe).
+            'window_hours' => (int) env('MARKET_REGIME_DRAWDOWN_WINDOW_HOURS', 500),
+        ],
+
         'shock' => [
             'thresholds' => [
                 'btc_15m_pct' => (float) env('MARKET_SHOCK_BTC_15M_PCT', -3.0),

@@ -112,6 +112,41 @@ final class RegimeCalculator
     }
 
     /**
+     * Percentage drawdown of the latest close from the highest close
+     * across the last `$windowHours` bars (inclusive). Returns null
+     * when the series is shorter than the window — the caller must
+     * treat that as "state unknown", never as zero drawdown.
+     *
+     * Powers the drawdown floor: BSCS's five sub-signals measure
+     * change vs a 14-day baseline and go blind in continuation
+     * crashes where the baseline is already broken (Jun 2022 scored
+     * 60 while the market bled). An absolute-state reading has no
+     * baseline to break. Earn-a-slot study:
+     * ~/blackswan/reports/signal-candidates-20260711.txt.
+     *
+     * @param  list<array{close: string|float}>  $bars  newest-LAST
+     */
+    public static function drawdownPct(array $bars, int $windowHours): ?float
+    {
+        $count = count($bars);
+        if ($count < $windowHours) {
+            return null;
+        }
+
+        $window = array_slice($bars, -$windowHours);
+        $closes = array_map(static fn (array $bar): float => (float) $bar['close'], $window);
+        $high = max($closes);
+
+        if ($high <= 0.0) {
+            return null;
+        }
+
+        $latest = end($closes);
+
+        return ($high - $latest) / $high * 100.0;
+    }
+
+    /**
      * Sub-signal #1: stdev of last-24h log returns / stdev of last-14d
      * log returns. Vol breaking out of compressed regime → ratio > 1.
      *
