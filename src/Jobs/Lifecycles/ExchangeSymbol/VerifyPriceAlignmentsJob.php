@@ -82,6 +82,11 @@ final class VerifyPriceAlignmentsJob extends BaseQueueableJob
 
         return ExchangeSymbol::query()
             ->where('api_system_id', '!=', $binanceSystemId)
+            // Delisted rows must never reach the live price check — a dead
+            // ticker (TON after the GRAM rebrand) makes the exchange answer
+            // "parameter does not exist" on every pass (Bitget 40034,
+            // 2026-07-11, 36 failed steps). scopeNotDelisted's contract.
+            ->notDelisted()
             ->whereNotNull('symbol_id')
             ->whereExists(function (QueryBuilder $query) use ($binanceSystemId): void {
                 $query->from('exchange_symbols as binance_es')

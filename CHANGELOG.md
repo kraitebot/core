@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.64.1 - 2026-07-11
+
+### Bug fixes
+
+- [FIXED] **Price-alignment candidate selection excludes delisted symbols.** The TON→GRAM rebrand left Bitget's dead TON/USDT row (already flagged `is_marked_for_delisting`) sharing its `symbol_id` with Binance's renamed GRAM sibling — name divergence selected it for the live price check on every symbol refresh, and Bitget answered `Parameter TONUSDT does not exist (40034)` twice an hour (36 failed VerifyPriceAlignmentJob steps + cascading parents over two weeks). `namingDivergentCandidateIds()` now applies `notDelisted()` — the scope whose contract (post-Entry-90) names exactly this class of query. Regression test added.
+
 ## 1.64.0 - 2026-07-11
 
 ### Features
