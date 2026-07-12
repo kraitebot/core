@@ -6,6 +6,9 @@ namespace Kraite\Core\Commands\Cronjobs;
 
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Kraite;
@@ -104,6 +107,7 @@ final class CheckDriftsCommand extends BaseCommand
     protected $signature = 'kraite:cron-check-drifts
                             {--account_id= : Limit the audit to a single account}
                             {--skip-structure-audit : Skip the active-position structural integrity scope (drift + orphan scopes still run)}
+                            {--skip-engine-health : Skip the Scope 4 trading-engine-health cooldown scope}
                             {--output : Display command output (silent by default)}';
 
     protected $description = 'Alert-only 5-minute drift spotter — audits active positions and orphan orders, notifies admin. Heal dispatch is intentionally NOT wired here; the operator decides repairs.';
@@ -143,8 +147,24 @@ final class CheckDriftsCommand extends BaseCommand
         $this->auditActivePositionDrift($cutoff, $accountFilter);
         $this->auditOrphanOrders($cutoff, $accountFilter);
 
+        // Scopes 3 + 4 are the cooling detectors. Once the bot is already
+        // cooled (an incident is open), they'd only re-detect the same
+        // thing — so we latch: skip them while cooled. This is the
+        // "alarm once, wait for Bruno" contract. Drift/orphan heals
+        // (Scopes 1 + 2) keep running — they maintain existing positions,
+        // which still trade and close normally while opening is halted.
+        if ($this->isCooled()) {
+            $this->verboseInfo('Cooling detectors skipped — already cooled (incident open, awaiting operator).');
+
+            return self::SUCCESS;
+        }
+
         if (! $this->option('skip-structure-audit')) {
             $this->auditPositionStructureIntegrity($accountFilter);
+        }
+
+        if (config('kraite.guard.engine_health_enabled') && ! $this->option('skip-engine-health')) {
+            $this->auditTradingEngineHealth();
         }
 
         return self::SUCCESS;
@@ -530,7 +550,24 @@ final class CheckDriftsCommand extends BaseCommand
 
         $this->verboseInfo("Structure audit: inspecting {$activePositions->count()} active position(s).");
 
+        $brokenReport = [];
+
         foreach ($activePositions as $position) {
+            // Exit-in-progress guard. A position whose take-profit or
+            // stop-loss has already FILLED/TRIGGERED is closing: the close
+            // workflow cancels its remaining orders (limits, the opposite
+            // protective leg) as a normal part of the exit, so a structural
+            // "gap" here is EXPECTED, not a bug. It is only still `active`
+            // for the sub-second window before the status flips to
+            // `closing`/`closed`. Flagging it wrongly cooled the whole bot
+            // for 6h on a winning TP-close (position #503, 2026-07-12).
+            // Skip — a fired exit is never a broken structure.
+            if ($this->exitHasFired($position)) {
+                $this->verboseComment("  Position #{$position->id}: exit fired (TP/SL FILLED/TRIGGERED) — skipping structure check (closing).");
+
+                continue;
+            }
+
             $missing = $this->detectMissingStructure($position);
 
             if ($missing === []) {
@@ -539,9 +576,138 @@ final class CheckDriftsCommand extends BaseCommand
 
             $this->verboseComment("  Position #{$position->id}: missing ".implode(', ', array_keys($missing)));
 
-            $this->haltOpensGlobally($position);
             $this->notifyStructureBroken($position, $missing);
+
+            $brokenReport[] = [
+                'position_id' => $position->id,
+                'pair' => $position->parsed_trading_pair,
+                'missing' => array_keys($missing),
+            ];
         }
+
+        if ($brokenReport !== []) {
+            $this->enterCooldown('position_structure_broken', ['broken_positions' => $brokenReport]);
+        }
+    }
+
+    /**
+     * Scope 4 — trading-engine health. Deterministic money-danger signals
+     * beyond structure/drift: a burst of failed positions, a storm of
+     * failed trading steps, or rapid-fire exchange errors in the log. Any
+     * one over its (conservative, config-driven) threshold enters cooldown.
+     * The LLM narrator never decides this — it only documents it after.
+     */
+    private function auditTradingEngineHealth(): void
+    {
+        $windowMinutes = (int) config('kraite.guard.window_minutes', 20);
+        $since = Carbon::now()->subMinutes($windowMinutes);
+
+        // Signal A — fresh failed positions. A position should close, not
+        // fail; a cluster of fresh failures signals a systemic problem.
+        $failedThreshold = (int) config('kraite.guard.failed_positions_threshold', 2);
+        $failedPositions = Position::query()
+            ->where('status', 'failed')
+            ->where('updated_at', '>', $since)
+            ->count();
+
+        if ($failedPositions >= $failedThreshold) {
+            $this->enterCooldown('failed_positions_burst', [
+                'failed_positions' => $failedPositions,
+                'threshold' => $failedThreshold,
+                'window_minutes' => $windowMinutes,
+            ]);
+
+            return;
+        }
+
+        // Signal B — failed trading-step storm. The engine choking on the
+        // money path. Threshold sits well above benign TAAPI/kline noise.
+        $stepThreshold = (int) config('kraite.guard.failed_steps_threshold', 25);
+        $failedSteps = DB::table('trading_steps')
+            ->where('state', 'StepDispatcher\\States\\Failed')
+            ->where('updated_at', '>', $since)
+            ->count();
+
+        if ($failedSteps >= $stepThreshold) {
+            $this->enterCooldown('failed_steps_storm', [
+                'failed_steps' => $failedSteps,
+                'threshold' => $stepThreshold,
+                'window_minutes' => $windowMinutes,
+            ]);
+
+            return;
+        }
+
+        // Signal C — rapid-fire exchange errors in the Laravel log. Counting
+        // matching lines is deterministic; the LLM narrates, never decides.
+        $exchangeErrorThreshold = (int) config('kraite.guard.exchange_error_log_threshold', 15);
+        $exchangeErrors = $this->countRecentExchangeErrorsInLog($since);
+
+        if ($exchangeErrors >= $exchangeErrorThreshold) {
+            $this->enterCooldown('exchange_error_storm', [
+                'exchange_errors' => $exchangeErrors,
+                'threshold' => $exchangeErrorThreshold,
+                'window_minutes' => $windowMinutes,
+            ]);
+        }
+    }
+
+    /**
+     * Count exchange-facing API error lines in today's Laravel log within
+     * the window. Deliberately simple + defensive: reads only the tail,
+     * never throws (a log-read failure must never break the safety cron).
+     */
+    private function countRecentExchangeErrorsInLog(Carbon $since): int
+    {
+        try {
+            $logFile = storage_path('logs/laravel-'.Carbon::now()->format('Y-m-d').'.log');
+            if (! File::exists($logFile)) {
+                return 0;
+            }
+
+            // Read the last ~4000 lines only — a storm is recent and dense.
+            $lines = array_slice(file($logFile) ?: [], -4000);
+            $count = 0;
+
+            foreach ($lines as $line) {
+                // Only lines that look like a timestamped ERROR mentioning an
+                // exchange-side failure. Keep the pattern broad but anchored
+                // to error level so INFO/DEBUG noise never counts.
+                if (! str_contains($line, '.ERROR')) {
+                    continue;
+                }
+                if (preg_match('/binance|bybit|bitget|kucoin|exchange|api.?error|-\d{4}\b/i', $line) !== 1) {
+                    continue;
+                }
+                if (preg_match('/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/', $line, $m) === 1) {
+                    if (Carbon::parse($m[1])->greaterThan($since)) {
+                        $count++;
+                    }
+                }
+            }
+
+            return $count;
+        } catch (Throwable $e) {
+            Log::warning('[monitor-guard] exchange-error log scan failed; treating as 0', [
+                'message' => $e->getMessage(),
+            ]);
+
+            return 0;
+        }
+    }
+
+    /**
+     * True when the position's exit has already fired — any take-profit
+     * or stop-loss order in FILLED / TRIGGERED. Such a position is
+     * closing, so a missing protective leg is the normal consequence of
+     * the close workflow cancelling orders, not a structural break.
+     */
+    private function exitHasFired(Position $position): bool
+    {
+        return $position->orders
+            ->whereIn('type', ['PROFIT-LIMIT', 'PROFIT-MARKET', 'STOP-MARKET'])
+            ->whereIn('status', ['FILLED', 'TRIGGERED'])
+            ->isNotEmpty();
     }
 
     /**
@@ -583,26 +749,122 @@ final class CheckDriftsCommand extends BaseCommand
     }
 
     /**
-     * Flip `kraite.allow_opening_positions` to false so the existing
-     * `HasTradingGuards` gate halts every new-position dispatch path
-     * across all accounts. Idempotent — already-false stays false. The
-     * flag is sticky on purpose: only an operator clears it after
-     * inspecting the broken position.
+     * True when opening is already halted (the bot is cooled), whatever
+     * the cause. Used as the latch: once cooled, the cooling detectors
+     * (Scopes 3 + 4) skip so they never re-alarm the same incident.
      */
-    private function haltOpensGlobally(Position $position): void
+    private function isCooled(): bool
+    {
+        $value = Kraite::query()->value('allow_opening_positions');
+
+        return $value !== null && (bool) $value === false;
+    }
+
+    /**
+     * Enter cooldown: globally halt opening new positions and write one
+     * incident file for later operator review. Idempotent + alarm-once:
+     * only the true→false transition writes an incident and marks the
+     * latch. The flag is sticky — only the operator clears it after the
+     * fix. `HasTradingGuards` reads the flag and blocks every new-position
+     * dispatch path across all accounts.
+     *
+     * @param  array<string, mixed>  $evidence
+     */
+    private function enterCooldown(string $reason, array $evidence): void
     {
         $engine = Kraite::query()->first();
         if ($engine === null) {
             return;
         }
 
+        // Latch — already cooled. Never re-cool, never re-write an incident.
         if ((bool) $engine->allow_opening_positions === false) {
             return;
         }
 
         $engine->update(['allow_opening_positions' => false]);
 
-        $this->verboseComment("  Position #{$position->id}: kraite.allow_opening_positions flipped to false (global open halt).");
+        $this->verboseComment("  Cooldown entered ({$reason}) — allow_opening_positions=false (global open halt).");
+
+        $this->writeIncident($reason, $evidence);
+        $this->sendGuardPushover($reason, $evidence);
+    }
+
+    /**
+     * The money-guard's own one-shot Pushover. Sent direct (not through the
+     * notification-template system) so a money-critical alarm never depends
+     * on template/DB state being healthy. Fires once per incident (called
+     * only on the true→false cooldown transition). Never throws.
+     *
+     * @param  array<string, mixed>  $evidence
+     */
+    private function sendGuardPushover(string $reason, array $evidence): void
+    {
+        try {
+            $token = (string) config('kraite.admin_user_pushover_application_key');
+            $user = (string) config('kraite.admin_user_pushover_user_key');
+            if ($token === '' || $user === '') {
+                return;
+            }
+
+            $summary = collect($evidence)
+                ->map(fn ($v, $k) => is_scalar($v) ? "{$k}={$v}" : $k)
+                ->implode(', ');
+
+            Http::asForm()->timeout(10)->post('https://api.pushover.net/1/messages.json', [
+                'token' => $token,
+                'user' => $user,
+                'priority' => 1,
+                'title' => 'KRAITE COOLED — opens halted',
+                'message' => "Trigger: {$reason}\n{$summary}\n\nBot stopped opening new positions. Existing positions safe. Incident file written for review.",
+            ]);
+        } catch (Throwable $e) {
+            Log::error('[monitor-guard] guard pushover failed (cooldown still applied)', [
+                'reason' => $reason,
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Write the deterministic incident stub to `monitoring/<ts>.md` and
+     * point the `monitoring/OPEN-INCIDENT` marker at it. The stub stands
+     * alone if the Haiku narrator never runs; the narrator later expands
+     * it in place. Never throws — a documentation failure must not break
+     * the safety cron (the cooldown itself already happened).
+     */
+    private function writeIncident(string $reason, array $evidence): void
+    {
+        try {
+            $dir = base_path('monitoring');
+            File::ensureDirectoryExists($dir);
+
+            $now = Carbon::now();
+            $stamp = $now->format('Ymd_His');
+            $file = $dir.'/'.$stamp.'.md';
+
+            $body = "# Kraite trading incident — {$stamp}\n\n";
+            $body .= "- detected_at: {$now->toDateTimeString()} (server time)\n";
+            $body .= "- trigger: **{$reason}**\n";
+            $body .= "- action_taken: cooled the bot (allow_opening_positions=false)\n";
+            $body .= "- narrated: NO  <!-- the Haiku narrator flips this to YES -->\n\n";
+            $body .= "## Evidence (deterministic)\n\n```json\n".json_encode($evidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n```\n\n";
+            $body .= "## For the operator / terminal LLM\n\n";
+            $body .= "The bot has stopped opening new positions. Existing positions keep trading and stay protected.\n";
+            $body .= "Diagnose the trigger above, fix the root cause, then clear the cooldown:\n";
+            $body .= "`allow_opening_positions=true` on the kraite singleton, and delete `monitoring/OPEN-INCIDENT`.\n\n";
+            $body .= "## Narration (Haiku fills this in)\n\n_pending_\n";
+
+            File::put($file, $body);
+            File::put($dir.'/OPEN-INCIDENT', $stamp.'.md');
+
+            $this->verboseComment("  Incident written: monitoring/{$stamp}.md");
+        } catch (Throwable $e) {
+            Log::error('[monitor-guard] failed to write incident file (cooldown still applied)', [
+                'reason' => $reason,
+                'message' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.67.0 - 2026-07-13
+
+### Features
+
+- [NEW FEATURE] **Trading money-guard (CheckDrifts Scopes 3+4).** The 5-minute safety cron gains a deterministic cooling contract: a broken active-position structure, a burst of freshly-failed positions, a storm of Failed trading steps, or rapid-fire exchange errors in the log flips `allow_opening_positions=false` (global open halt — existing positions keep trading/closing), writes one incident file under `monitoring/` + an `OPEN-INCIDENT` marker, and fires one direct Pushover that bypasses the template system. Alarm-once latch: while cooled, the cooling detectors skip. Thresholds live in `kraite.guard.*` config. Positions whose TP/SL already FILLED/TRIGGERED are exempt from the structure check (position #503 false-cool, 2026-07-12).
+- [NEW FEATURE] **`kraite:monitor-narrate` — Haiku incident narrator.** Documentation-only layer: enriches an open, un-narrated incident file into a readable narrative via the Claude CLI (argv-array invocation, no shell). Never detects, never decides; CLI absent/failed → the deterministic stub stands alone.
+- [NEW FEATURE] **Black subscription plan seeded.** Seeder now seeds `basic` / `unlimited` / `black` (invite-only, free forever, uncapped) and no longer resurrects the renamed `starter` row on every seed run.
+
+### Improvements
+
+- [IMPROVED] **`allow_other_positions` now forces margin sizing onto available-balance.** `Account::balanceForTradingSnapshotKey()` returns `available-balance` whenever the account allows the user's own positions — capital locked in personal trades is never counted when sizing Kraite's positions. Regression-tested (ingestion `AccountBalanceForTradingTest`).
+- [IMPROVED] Billing-columns migration backfills the entry tier by either canonical (`starter`/`basic`) so fresh installs seed rates correctly after the seeder rename.
+
 ## 1.66.0 - 2026-07-12
 
 Second external SME code-review batch (GPT-5.6 "Sol Ultra"), adjudicated adversarially: 12 findings implemented, 4 discarded with evidence. Every fix carries a regression test; the money-path ones are the headline. See deploy-notes Entry 100.

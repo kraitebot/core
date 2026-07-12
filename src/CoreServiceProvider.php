@@ -29,6 +29,7 @@ use Kraite\Core\Commands\Cronjobs\DetectMarketShockCommand;
 use Kraite\Core\Commands\Cronjobs\DisableVolatileTokensCommand;
 use Kraite\Core\Commands\Cronjobs\FetchKlinesCommand;
 use Kraite\Core\Commands\Cronjobs\FlushDispatcherSaturationCommand;
+use Kraite\Core\Commands\Cronjobs\MonitorNarrateCommand;
 use Kraite\Core\Commands\Cronjobs\OptimizeBreadcrumbTablesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeCandlesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeFailedBacktestedKlinesCommand;
@@ -108,6 +109,7 @@ final class CoreServiceProvider extends ServiceProvider
             BacktestTokenCommand::class,
             AnalyseBscsCommand::class,
             CheckDriftsCommand::class,
+            MonitorNarrateCommand::class,
             ComputeMarketRegimeCommand::class,
             DetectMarketShockCommand::class,
             ConcludeSymbolsDirectionCommand::class,

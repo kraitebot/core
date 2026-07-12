@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Carbon;
 use Kraite\Core\Abstracts\BaseModel;
 use Kraite\Core\Concerns\Account\HasAccessors;
 use Kraite\Core\Concerns\Account\HasCollections;
@@ -17,6 +18,7 @@ use Kraite\Core\Concerns\Account\HasScopes;
 use Kraite\Core\Concerns\Account\HasStatuses;
 use Kraite\Core\Concerns\Account\HasTokenDiscovery;
 use Kraite\Core\Concerns\Account\InteractsWithApis;
+use Kraite\Core\Database\Factories\AccountFactory;
 
 /**
  * @property int $id
@@ -54,9 +56,9 @@ use Kraite\Core\Concerns\Account\InteractsWithApis;
  * @property string|null $bitget_api_key
  * @property string|null $bitget_api_secret
  * @property string|null $bitget_passphrase
- * @property \Illuminate\Support\Carbon $created_at
- * @property \Illuminate\Support\Carbon $updated_at
- * @property \Illuminate\Support\Carbon|null $deleted_at
+ * @property Carbon $created_at
+ * @property Carbon $updated_at
+ * @property Carbon|null $deleted_at
  * @property-read ApiSystem $apiSystem
  */
 final class Account extends BaseModel
@@ -288,6 +290,10 @@ final class Account extends BaseModel
      *
      * `balance_for_trading_basis=total` uses `total-wallet-balance`.
      * `balance_for_trading_basis=available` uses `available-balance`.
+     * `allow_other_positions=true` forces `available-balance` regardless
+     * of the basis: capital locked in the user's own positions must never
+     * be counted when sizing Kraite's, or the bot over-commits a wallet
+     * it doesn't fully own.
      * Cold starts fall back to the persisted absolute `margin`.
      */
     public function balanceForTrading(): string
@@ -307,6 +313,10 @@ final class Account extends BaseModel
 
     public function balanceForTradingSnapshotKey(): string
     {
+        if ($this->allow_other_positions) {
+            return 'available-balance';
+        }
+
         return $this->balance_for_trading_basis === 'available'
             ? 'available-balance'
             : 'total-wallet-balance';
@@ -322,6 +332,6 @@ final class Account extends BaseModel
 
     protected static function newFactory()
     {
-        return \Kraite\Core\Database\Factories\AccountFactory::new();
+        return AccountFactory::new();
     }
 }

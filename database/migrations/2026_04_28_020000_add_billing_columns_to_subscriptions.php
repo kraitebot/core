@@ -23,7 +23,10 @@ return new class extends Migration
                 ->comment('Free-trial duration granted on first activation, per Kraite user.');
         });
 
-        DB::table('subscriptions')->where('canonical', 'starter')->update([
+        // The entry tier was canonical `starter` when this migration first
+        // shipped; the seeder now creates it as `basic` directly, so fresh
+        // installs must match either name.
+        DB::table('subscriptions')->whereIn('canonical', ['starter', 'basic'])->update([
             'daily_rate_usdt' => 2.5,
             'trial_days' => 7,
         ]);

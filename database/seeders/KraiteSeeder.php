@@ -995,9 +995,9 @@ final class KraiteSeeder extends Seeder
         // later migration — omitted here so the create-subscriptions
         // migration's seed call works before those columns exist.
         Subscription::updateOrCreate(
-            ['canonical' => 'starter'],
+            ['canonical' => 'basic'],
             [
-                'name' => 'Starter',
+                'name' => 'Basic',
                 'description' => 'Entry-level plan with 1 account, 1 exchange, and up to 10K balance.',
                 'max_accounts' => 1,
                 'max_exchanges' => 1,
@@ -1011,6 +1011,20 @@ final class KraiteSeeder extends Seeder
             [
                 'name' => 'Unlimited',
                 'description' => 'Full access with unlimited accounts, exchanges, and no balance cap.',
+                'max_accounts' => null,
+                'max_exchanges' => null,
+                'max_balance' => null,
+                'is_active' => true,
+            ]
+        );
+
+        // Black: free forever, no caps, never offered publicly —
+        // hand-assigned to special-case accounts only.
+        Subscription::updateOrCreate(
+            ['canonical' => 'black'],
+            [
+                'name' => 'Black',
+                'description' => 'Invite-only plan. Free forever, unlimited accounts, exchanges, and balance.',
                 'max_accounts' => null,
                 'max_exchanges' => null,
                 'max_balance' => null,

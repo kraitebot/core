@@ -378,6 +378,51 @@ return [
         'max_run_spread_seconds' => (int) env('INDICATORS_MAX_RUN_SPREAD_SECONDS', 300),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Trading money-guard
+    |--------------------------------------------------------------------------
+    | The CheckDrifts safety cron's trading-engine-health scope (Scope 4).
+    | When a threshold trips it enters cooldown — globally halts opening new
+    | positions and writes a monitoring incident file for later review. All
+    | thresholds are conservative on purpose (a false cool costs missed
+    | trades; a missed real bug costs money — and Bruno's rule is cool-first
+    | when in doubt). Tune these once real baselines are observed. Set
+    | `engine_health_enabled=false` to run only the structure/drift scopes.
+    */
+    'guard' => [
+        'engine_health_enabled' => (bool) env('KRAITE_GUARD_ENGINE_HEALTH', true),
+
+        // Look-back window (minutes) for the "recent" trading-health signals.
+        'window_minutes' => (int) env('KRAITE_GUARD_WINDOW_MINUTES', 20),
+
+        // A position transitioning to `failed` is abnormal (positions should
+        // close, not fail). This many fresh failed positions in the window
+        // cools the bot.
+        'failed_positions_threshold' => (int) env('KRAITE_GUARD_FAILED_POSITIONS', 2),
+
+        // A storm of Failed trading steps means the engine is choking on the
+        // money path. Set well above benign TAAPI/kline noise (<10 is normal).
+        'failed_steps_threshold' => (int) env('KRAITE_GUARD_FAILED_STEPS', 25),
+
+        // Rapid-fire exchange API errors in the Laravel log within the window.
+        // Detected by counting matching log lines (deterministic — the LLM
+        // narrates, it does not decide).
+        'exchange_error_log_threshold' => (int) env('KRAITE_GUARD_EXCHANGE_ERRORS', 15),
+
+        // The Haiku documentation layer (kraite:monitor-narrate). Cheapest
+        // model, prompt fed on stdin. Binary + model are configurable so they
+        // can be tuned after `claude login` on the server without a code
+        // change; the narrator invokes them as an argv ARRAY (no shell), so a
+        // binary path containing spaces can never break the call. If the CLI
+        // is absent/unauthenticated the narrator no-ops and the deterministic
+        // incident stub stands alone.
+        'narrator_binary' => env('KRAITE_GUARD_NARRATOR_BIN', 'claude'),
+        'narrator_model' => env('KRAITE_GUARD_NARRATOR_MODEL', 'claude-haiku-4-5'),
+        'narrator_argv' => null, // test hook: override the whole argv array
+        'narrator_timeout' => (int) env('KRAITE_GUARD_NARRATOR_TIMEOUT', 120),
+    ],
+
     'token_discovery' => [
         'sr_safe_zone' => (float) env('TOKEN_DISCOVERY_SR_SAFE_ZONE', 0.20),
         'correlation_type' => env('TOKEN_DISCOVERY_CORRELATION_TYPE', 'rolling'),
