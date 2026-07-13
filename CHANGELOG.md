@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.67.1 - 2026-07-13
+
+### Bug fixes
+
+- [FIXED] **Aborted-open unwind no longer crashes on an empty close response.** When a position is refused at open before any order reaches the exchange (e.g. the market slice sizes below the exchange minimum notional), the compensating cancel/rollback calls `Position::apiClose()`, which for a never-opened position returns an empty "nothing to close" `ApiResponse`. That value object typed `$response` non-nullable while its own constructor advertised `?Response = null`, so the empty-response branch threw `TypeError: Cannot assign null to property ApiResponse::$response` and flipped the position to `failed` with a false `position_opening_failed` alarm. `ApiResponse::$response` is now nullable; the sole consumer reads `->result`, never `->response`, so the widening moves no crash downstream. (LTCUSDT #736, deploy-notes Entry 102.)
+
 ## 1.67.0 - 2026-07-13
 
 ### Features

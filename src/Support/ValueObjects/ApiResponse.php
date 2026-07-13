@@ -8,7 +8,7 @@ use GuzzleHttp\Psr7\Response;
 
 final class ApiResponse
 {
-    public Response $response;
+    public ?Response $response;
 
     public array $result;
 
