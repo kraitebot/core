@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.68.0 - 2026-07-13
+
+### Improvements
+
+- [IMPROVED] **Audit trail no longer floods on recomputed indicator analytics.** ExchangeSymbol logged every attribute change, and the indicator refresh cycle rewrites BTC-correlation, elasticity, pivot levels, and indicator sync markers across all ~2,250 symbols each cycle — 98% of model_logs (~260K rows/day) was this recompute churn, not trade history. `ExchangeSymbol::$skipsLogging` now excludes those 17 columns from the audit trail (honoured by ModelLogObserver's per-model blacklist). The trading-relevant snapshot is already captured per-trade on `positions.indicators_values` at open, so no decision context is lost. Write rate drops ~95%; Position/Order/Account audit and symbol direction/tradability flags stay fully logged. See deploy-notes Entry 103.
+
 ## 1.67.1 - 2026-07-13
 
 ### Bug fixes

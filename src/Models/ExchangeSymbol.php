@@ -81,6 +81,39 @@ final class ExchangeSymbol extends BaseModel
     use InteractsWithApis;
     use SendsNotifications;
 
+    /**
+     * Attributes excluded from the model_logs audit trail (honoured by
+     * ModelLogObserver's per-model blacklist).
+     *
+     * These are recomputed analytics — BTC correlation/elasticity, pivot
+     * levels, and the indicator sync markers — rewritten across all
+     * exchange symbols on every indicator refresh cycle. Logging each
+     * recompute drowned the audit trail (~95% of model_logs) with data
+     * that is not a business event: the trading-relevant snapshot is
+     * already captured per-trade on `positions.indicators_values` at open.
+     * The audit trail keeps everything else (direction, tradability flags,
+     * exchange metadata) fully logged.
+     */
+    public array $skipsLogging = [
+        'btc_correlation_pearson',
+        'btc_correlation_spearman',
+        'btc_correlation_rolling',
+        'btc_correlation_stability',
+        'btc_elasticity_long',
+        'btc_elasticity_short',
+        'indicators_values',
+        'indicators_synced_at',
+        'indicators_timeframe',
+        'pivot_p',
+        'pivot_r1',
+        'pivot_r2',
+        'pivot_r3',
+        'pivot_s1',
+        'pivot_s2',
+        'pivot_s3',
+        'pivot_synced_at',
+    ];
+
     protected $casts = [
         'is_manually_enabled' => 'boolean',
         'was_backtesting_approved' => 'boolean',
