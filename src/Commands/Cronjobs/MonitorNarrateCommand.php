@@ -47,7 +47,7 @@ final class MonitorNarrateCommand extends BaseCommand
             return self::SUCCESS;
         }
 
-        $incidentFile = $dir.'/'.trim((string) File::get($marker));
+        $incidentFile = $dir.'/'.mb_trim((string) File::get($marker));
         if (! File::exists($incidentFile)) {
             $this->verboseComment('OPEN-INCIDENT marker points at a missing file — skipping.');
 
@@ -131,7 +131,7 @@ final class MonitorNarrateCommand extends BaseCommand
             ];
             $timeout = (int) config('kraite.guard.narrator_timeout', 120);
 
-            $result = Process::timeout($timeout)->input($prompt)->run($argv);
+            $result = Process::path(sys_get_temp_dir())->timeout($timeout)->input($prompt)->run($argv);
 
             if (! $result->successful()) {
                 Log::warning('[monitor-narrate] narrator command failed — leaving stub', [
@@ -142,7 +142,7 @@ final class MonitorNarrateCommand extends BaseCommand
                 return null;
             }
 
-            $out = trim($result->output());
+            $out = mb_trim($result->output());
 
             return $out === '' ? null : $out;
         } catch (Throwable $e) {

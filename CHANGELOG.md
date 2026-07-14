@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.70.2 - 2026-07-15
+
+### Bug fixes
+
+- [FIXED] **The incident narrator no longer starts project development MCP servers in production.** Its Claude subprocess runs from the system temporary directory, so the tracked local Laravel Boost configuration is outside Claude's project discovery path while the incident prompt, user authentication, timeout, and fail-safe behavior remain unchanged.
+
+### Tests
+
+- [ADDED] Regression coverage proves the narrator subprocess uses the isolated working directory.
+
 ## 1.70.1 - 2026-07-15
 
 ### Bug fixes
