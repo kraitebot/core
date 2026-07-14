@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.69.1 - 2026-07-14
+
+### Bug fixes
+
+- [FIXED] **A safe pre-entry rejection no longer becomes a failed position when there are no orders to synchronize.** ETCUSDT position #763 correctly stopped before market placement because its projected margin was below the configured minimum, but the cleanup sync treated the intentionally empty order set as a failure. Only an empty sync after the workflow has entered `cancelling` becomes a skipped no-op; active/opening positions with no syncable protection still fail loud, and a total exchange-query failure still retries and alerts.
+- [FIXED] **Price-alignment checks no longer compare a renamed token with a stale delisted Binance sibling.** DATAUSDT on Tyche was compared with delisted IPUSDT and disabled by a false threshold mismatch. Both parent candidate selection and the atomic lookup now require a non-delisted Binance reference. The notification describes contract-unit, rebrand, and genuine venue-divergence possibilities instead of claiming one diagnosis. This gate affects new-position eligibility only; active positions remain selected by position/order state for sync, WAP, protection, and closure.
+
 ## 1.69.0 - 2026-07-14
 
 ### Bug fixes

@@ -47,16 +47,30 @@ final class SyncPositionOrdersJob extends BaseApiableJob
     }
 
     /**
-     * Verify the position can have orders synced.
+     * Verify normal position syncs still own at least one exchange order.
      */
     public function startOrFail(): bool
     {
-        // Position must be in an "opened" status
         if (! in_array($this->position->status, $this->position->openedStatuses(), true)) {
             return false;
         }
 
-        // Must have at least one syncable order
+        if ($this->position->status === 'cancelling') {
+            return true;
+        }
+
+        return $this->position->orders()->syncable()->exists();
+    }
+
+    /**
+     * Skip an empty opening-failure cleanup after it has entered cancelling.
+     */
+    public function startOrSkip(): bool
+    {
+        if ($this->position->status !== 'cancelling') {
+            return true;
+        }
+
         return $this->position->orders()->syncable()->exists();
     }
 
@@ -64,7 +78,7 @@ final class SyncPositionOrdersJob extends BaseApiableJob
     {
         // The flip to 'syncing' lives inside the atomic (not in the parent
         // orchestrator) so that the flip and the flip-back share a single
-        // owner. If startOrFail rejected us upstream, this line never runs
+        // owner. If a start guard rejected us upstream, this line never runs
         // and no transition needs unwinding. The framework's complete()
         // hook (see below) owns the flip-back on success; retry / ignore /
         // fail paths are handled by the framework's handleException chain

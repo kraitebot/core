@@ -62,6 +62,7 @@ final class VerifyPriceAlignmentJob extends BaseApiableJob
             ->whereHas('apiSystem', function ($query): void {
                 $query->where('canonical', 'binance');
             })
+            ->notDelisted()
             ->where('symbol_id', $this->exchangeSymbol->symbol_id)
             ->where('quote', $this->exchangeSymbol->quote)
             ->first();

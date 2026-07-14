@@ -91,6 +91,11 @@ final class VerifyPriceAlignmentsJob extends BaseQueueableJob
             ->whereExists(function (QueryBuilder $query) use ($binanceSystemId): void {
                 $query->from('exchange_symbols as binance_es')
                     ->where('binance_es.api_system_id', $binanceSystemId)
+                    ->where('binance_es.is_marked_for_delisting', false)
+                    ->where(function (QueryBuilder $query): void {
+                        $query->whereNull('binance_es.delivery_at')
+                            ->orWhere('binance_es.delivery_at', '>', now());
+                    })
                     ->whereColumn('binance_es.symbol_id', 'exchange_symbols.symbol_id')
                     ->whereColumn('binance_es.quote', 'exchange_symbols.quote')
                     // NAME divergence is the trigger — same asset, different

@@ -480,11 +480,11 @@ final class NotificationMessageBuilder
                 return [
                     'severity' => NotificationSeverity::High,
                     'title' => "Price mismatch — {$symbol} on {$exchangeName} disabled",
-                    'emailMessage' => "{$symbol} on {$exchangeName} was switched off — its live price does not match the Binance same-asset reference, which means it lists a different contract unit (e.g. a plain token vs Binance's 1000x contract).\n\n".
+                    'emailMessage' => "{$symbol} on {$exchangeName} was switched off because its live price diverged from the active Binance same-asset reference. This may indicate a different contract unit, a token rebrand, or genuine venue price divergence.\n\n".
                         "Live price: {$liveStr}\n".
                         "Binance reference: {$binanceStr}\n".
                         "Ratio (live / Binance): {$ratioStr}\n\n".
-                        "The price stream replicates Binance's mark_price onto same-asset rows with no contract-ratio scaling, so this symbol carried a wrong price. It is now is_price_aligned=false and is_manually_enabled=false, so it is excluded from trading. No action needed unless you intend to trade this contract — that would require a per-symbol scale factor on the price replication first.",
+                        'It is now is_price_aligned=false and is_manually_enabled=false, so it is excluded from trading. Review the symbol mapping and both venue contracts before re-enabling it.',
                     'pushoverMessage' => "Price mismatch {$symbol} ({$exchangeName}) — ratio {$ratioStr}, symbol disabled",
                     'actionUrl' => null,
                     'actionLabel' => null,
