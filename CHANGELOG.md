@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.70.1 - 2026-07-15
+
+### Bug fixes
+
+- [FIXED] **A manual exchange close now sheds residual DCA LIMIT risk immediately.** A zero-quantity Binance account update starts an independent high-priority cancellation for the matching position's live opening LIMIT orders while the normal replacement workflow continues to own final reconciliation. Hedge LONG/SHORT and one-way BOTH rows are matched explicitly; duplicate frames and concurrent replacement work are deduplicated. TP and SL protection is not cancelled by this safety action.
+- [FIXED] **The pre-entry exchange guard blocks an already-open pair in every direction.** LONG, SHORT, and one-way BOTH snapshot keys all prevent either slot direction from opening the same trading pair.
+
+### Tests
+
+- [ADDED] End-to-end stream coverage for flat/non-flat updates, hedge and one-way matching, duplicate frames, replacement coexistence, high-priority routing, and LIMIT-only cancellation. Existing token selection and lifecycle cancellation behavior are pinned by regression tests.
+
 ## 1.70.0 - 2026-07-14
 
 ### Architecture

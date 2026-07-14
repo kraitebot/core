@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\Position;
 
+use Illuminate\Database\Eloquent\Builder;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Position;
@@ -45,8 +46,10 @@ final class CancelPositionOpenOrdersJob extends BaseApiableJob
 
     public Position $position;
 
-    public function __construct(int $positionId)
-    {
+    public function __construct(
+        int $positionId,
+        public bool $openingOrdersOnly = false,
+    ) {
         $this->position = Position::findOrFail($positionId);
     }
 
@@ -64,11 +67,7 @@ final class CancelPositionOpenOrdersJob extends BaseApiableJob
 
     public function computeApiable()
     {
-        $orders = $this->position->orders()
-            ->where('is_algo', false)
-            ->whereIn('status', self::CANCELLABLE_STATUSES)
-            ->whereNotNull('exchange_order_id')
-            ->get();
+        $orders = $this->cancellableOrdersQuery()->get();
 
         if ($orders->isEmpty()) {
             return [
@@ -84,11 +83,7 @@ final class CancelPositionOpenOrdersJob extends BaseApiableJob
 
         // Pre-bump intent flag so WS pushes for these cancellations
         // bypass the OrderObserver's replacement dispatch path.
-        $this->position->orders()
-            ->where('is_algo', false)
-            ->whereIn('status', self::CANCELLABLE_STATUSES)
-            ->whereNotNull('exchange_order_id')
-            ->update(['reference_status' => 'CANCELLED']);
+        $orders->toQuery()->update(['reference_status' => 'CANCELLED']);
 
         $cancelled = [];
         $idempotent = [];
@@ -136,5 +131,20 @@ final class CancelPositionOpenOrdersJob extends BaseApiableJob
             'idempotent' => $idempotent,
             'message' => 'Open orders cancelled per-order',
         ];
+    }
+
+    private function cancellableOrdersQuery(): Builder
+    {
+        $query = $this->position->orders()
+            ->where('is_algo', false)
+            ->whereIn('status', self::CANCELLABLE_STATUSES)
+            ->whereNotNull('exchange_order_id')
+            ->getQuery();
+
+        if ($this->openingOrdersOnly) {
+            $query->where('type', 'LIMIT');
+        }
+
+        return $query;
     }
 }

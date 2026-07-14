@@ -8,6 +8,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Kraite\Core\Abstracts\BaseQueueableJob;
+use Kraite\Core\Jobs\Atomic\Position\CancelPositionOpenOrdersJob;
 use Kraite\Core\Jobs\Lifecycles\Position\PreparePositionReplacementJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiDataStream;
@@ -48,9 +49,10 @@ use StepDispatcher\Models\Step;
  *     Order model untouched. Each execution type is enabled one at a
  *     time as its downstream workflow is validated end-to-end.
  *
- * For non-order events (account_update, listen_key_expired, margin_call)
- * the executionType is null and they are always record-only at this
- * layer. Daemon-level branches handle listen_key_expired separately.
+ * Account updates additionally dispatch an independent high-priority
+ * opening-order cancellation when a normalized position update reports
+ * that a locally opened position is flat. Other non-order events remain
+ * record-only here; daemon-level branches handle listen_key_expired.
  */
 final class ProcessUserDataEventJob extends BaseQueueableJob
 {
@@ -87,6 +89,7 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
             $orderDispatched = $this->applyToOrderModel($event);
         }
 
+        $openingOrdersCancelDispatched = $this->maybeDispatchOpeningOrderCancellation($event);
         $manualClose = $this->maybeDetectManualPositionClose($event, $orderDispatched);
 
         return [
@@ -97,8 +100,122 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
             'execution_type' => $event->executionType,
             'recorded' => $recorded,
             'order_dispatched' => $orderDispatched,
+            'opening_orders_cancel_dispatched' => $openingOrdersCancelDispatched,
             'manual_close_detected' => $manualClose,
         ];
+    }
+
+    private function maybeDispatchOpeningOrderCancellation(UserDataStreamEvent $event): bool
+    {
+        if ($event->eventType !== 'account_update') {
+            return false;
+        }
+
+        $dispatched = false;
+
+        foreach ($event->positionUpdates as $positionUpdate) {
+            if (! Math::equal($positionUpdate['quantity'], '0')) {
+                continue;
+            }
+
+            $position = $this->resolveOpenedPositionForUpdate($positionUpdate);
+
+            if ($position === null) {
+                continue;
+            }
+
+            $dispatched = $this->dispatchOpeningOrderCancellation($position, $positionUpdate) || $dispatched;
+        }
+
+        return $dispatched;
+    }
+
+    /**
+     * @param  array{symbol: string, position_side: string, quantity: string}  $positionUpdate
+     */
+    private function resolveOpenedPositionForUpdate(array $positionUpdate): ?Position
+    {
+        $query = Position::query()
+            ->where('account_id', $this->accountId)
+            ->opened()
+            ->where('parsed_trading_pair', $positionUpdate['symbol']);
+
+        if (in_array($positionUpdate['position_side'], ['LONG', 'SHORT'], strict: true)) {
+            $query->where('direction', $positionUpdate['position_side']);
+        }
+
+        $positions = $query->get();
+
+        if ($positions->count() !== 1) {
+            if ($positions->count() > 1) {
+                Log::channel('user-data')->warning('[USER-DATA] flat position update matched multiple local positions', [
+                    'account_id' => $this->accountId,
+                    'symbol' => $positionUpdate['symbol'],
+                    'position_side' => $positionUpdate['position_side'],
+                    'position_ids' => $positions->pluck('id')->all(),
+                ]);
+            }
+
+            return null;
+        }
+
+        return $positions->first();
+    }
+
+    /**
+     * @param  array{symbol: string, position_side: string, quantity: string}  $positionUpdate
+     */
+    private function dispatchOpeningOrderCancellation(Position $position, array $positionUpdate): bool
+    {
+        return DB::transaction(function () use ($position, $positionUpdate): bool {
+            $locked = Position::query()->whereKey($position->id)->lockForUpdate()->firstOrFail();
+
+            $hasLiveOpeningOrders = $locked->orders()
+                ->where('type', 'LIMIT')
+                ->where('is_algo', false)
+                ->whereIn('status', ['NEW', 'PARTIALLY_FILLED'])
+                ->whereNotNull('exchange_order_id')
+                ->exists();
+
+            if (! $hasLiveOpeningOrders) {
+                return false;
+            }
+
+            $resolvedClass = JobProxy::with($locked->account)
+                ->resolve(CancelPositionOpenOrdersJob::class);
+
+            $alreadyDispatched = Step::query()
+                ->forRelatable($locked)
+                ->forClasses($resolvedClass)
+                ->inProgress()
+                ->whereJsonContains('arguments->openingOrdersOnly', true)
+                ->exists();
+
+            if ($alreadyDispatched) {
+                return false;
+            }
+
+            Log::channel('user-data')->info('[USER-DATA] flat position detected; cancelling opening orders', [
+                'account_id' => $this->accountId,
+                'position_id' => $locked->id,
+                'symbol' => $positionUpdate['symbol'],
+                'position_side' => $positionUpdate['position_side'],
+            ]);
+
+            Step::create([
+                'class' => $resolvedClass,
+                'queue' => 'positions',
+                'priority' => 'high',
+                'relatable_type' => $locked->getMorphClass(),
+                'relatable_id' => $locked->getKey(),
+                'arguments' => [
+                    'positionId' => $locked->id,
+                    'openingOrdersOnly' => true,
+                ],
+            ]);
+
+            return true;
+        });
     }
 
     /**

@@ -36,6 +36,7 @@ final class UserDataStreamEvent
      * @param  int|null  $eventTimeMs  Exchange-claimed event time, milliseconds since epoch
      * @param  bool|null  $reduceOnly  Whether the underlying order carries the reduce-only flag (Binance `o.R`). When true on a FILLED frame for an order we do not own, the position-close detection branch in ProcessUserDataEventJob uses it as the signal that the operator manually flat-closed a position on the exchange. Null for events that have no concept of reduce-only (algo orders, account/margin updates).
      * @param  bool|null  $closePosition  Whether the underlying order is a close-position algo (Binance `o.cp`). Distinct from `reduceOnly`: a closePosition=true algo flattens whatever quantity is open at trigger time regardless of stored qty. Set on ALGO_UPDATE events only; null for non-algo frames or when the field is absent. Future stream-driven close detection branches will gate on this rather than reduceOnly so a manual algo-close path is distinguishable from a normal conditional update.
+     * @param  list<array{symbol: string, position_side: string, quantity: string}>  $positionUpdates  Exchange-normalized position deltas carried by account/position events. `position_side` uses LONG / SHORT / BOTH and `quantity` preserves exchange decimal precision as a string.
      */
     public function __construct(
         public string $rawEventType,
@@ -55,5 +56,6 @@ final class UserDataStreamEvent
         public ?int $eventTimeMs = null,
         public ?bool $reduceOnly = null,
         public ?bool $closePosition = null,
+        public array $positionUpdates = [],
     ) {}
 }

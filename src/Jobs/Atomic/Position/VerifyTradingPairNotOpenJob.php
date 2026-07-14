@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\Position;
 
+use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\Position;
@@ -42,15 +43,14 @@ class VerifyTradingPairNotOpenJob extends BaseQueueableJob
         $tradingPair = $this->position->exchangeSymbol->parsed_trading_pair;
         $direction = $this->position->direction;
 
-        // Build the lookup key used in api_snapshots (e.g., 'BTCUSDT:LONG')
-        $positionKey = $tradingPair . ':' . $direction;
-
         // 1. Check open positions from api_snapshots
         $openPositions = ApiSnapshot::getFrom($account, 'account-positions') ?? [];
+        $openPositionKey = collect(array_keys($openPositions))
+            ->first(static fn (string $key): bool => Str::before($key, ':') === $tradingPair);
 
-        if (array_key_exists(key: $positionKey, array: $openPositions)) {
+        if ($openPositionKey !== null) {
             $this->tradingPairIsOpen = true;
-            $this->reason = "Position {$positionKey} already exists on exchange";
+            $this->reason = "Position {$openPositionKey} already exists on exchange";
 
             return [
                 'position_id' => $this->position->id,

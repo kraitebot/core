@@ -113,7 +113,44 @@ trait MapsUserDataStream
             closePosition: $isAlgoEvent
                 ? $this->boolOrNull($order['cp'] ?? null)
                 : null,
+            positionUpdates: $eventType === 'account_update'
+                ? $this->normalizePositionUpdates($envelope['a']['P'] ?? [])
+                : [],
         );
+    }
+
+    /**
+     * @return list<array{symbol: string, position_side: string, quantity: string}>
+     */
+    private function normalizePositionUpdates(mixed $positions): array
+    {
+        if (! is_array($positions)) {
+            return [];
+        }
+
+        $updates = [];
+
+        foreach ($positions as $position) {
+            if (! is_array($position)) {
+                continue;
+            }
+
+            $symbol = $this->stringOrNull($position['s'] ?? null);
+            $positionSide = $this->stringOrNull($position['ps'] ?? null);
+            $quantity = $this->numericStringOrNull($position['pa'] ?? null);
+
+            if ($symbol === null || $positionSide === null || $quantity === null) {
+                continue;
+            }
+
+            $updates[] = [
+                'symbol' => mb_strtoupper(mb_trim($symbol)),
+                'position_side' => mb_strtoupper(mb_trim($positionSide)),
+                'quantity' => $quantity,
+            ];
+        }
+
+        return $updates;
     }
 
     /**
