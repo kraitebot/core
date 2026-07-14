@@ -9,9 +9,6 @@ use Illuminate\Support\Str;
 use Kraite\Core\Jobs\Lifecycles\Account\PreparePositionsOpeningJob;
 use Kraite\Core\Models\Account;
 use StepDispatcher\Models\Step;
-use StepDispatcher\States\Dispatched;
-use StepDispatcher\States\Pending;
-use StepDispatcher\States\Running;
 use StepDispatcher\Support\Steps;
 use Throwable;
 
@@ -65,19 +62,15 @@ final class AccountObserver
 
         try {
             Steps::usingPrefix('trading', function () use ($account): void {
-                $alreadyPending = Step::query()
-                    ->where('class', PreparePositionsOpeningJob::class)
-                    ->whereRaw("CAST(JSON_EXTRACT(arguments, '$.accountId') AS UNSIGNED) = ?", [$account->id])
-                    ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-                    ->exists();
-
-                if ($alreadyPending) {
+                if (Step::hasLiveWorkflow($account, PreparePositionsOpeningJob::class)) {
                     return;
                 }
 
                 Step::create([
                     'class' => PreparePositionsOpeningJob::class,
                     'queue' => 'cronjobs',
+                    'relatable_type' => $account->getMorphClass(),
+                    'relatable_id' => $account->getKey(),
                     'arguments' => ['accountId' => $account->id],
                 ]);
             });

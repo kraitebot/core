@@ -13,9 +13,6 @@ use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\JobProxy;
 use StepDispatcher\Models\Step;
-use StepDispatcher\States\Dispatched;
-use StepDispatcher\States\Pending;
-use StepDispatcher\States\Running;
 
 /**
  * VerifyPositionExistsOnExchangeJob (Atomic)
@@ -96,13 +93,9 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
             $locked = Position::query()->whereKey($position->id)->lockForUpdate()->firstOrFail();
 
             if (! $positionExistsOnExchange) {
-                $alreadyPending = Step::query()
-                    ->where('class', $resolver->resolve(ClosePositionJob::class))
-                    ->whereRaw("CAST(JSON_EXTRACT(arguments, '$.positionId') AS UNSIGNED) = ?", [$position->id])
-                    ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-                    ->exists();
+                $closePositionClass = $resolver->resolve(ClosePositionJob::class);
 
-                if ($alreadyPending) {
+                if (Step::hasLiveWorkflow($locked, $closePositionClass)) {
                     return 'ClosePositionJob (already pending)';
                 }
 
@@ -114,9 +107,11 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
                 $locked->updateToClosing();
 
                 Step::create([
-                    'class' => $resolver->resolve(ClosePositionJob::class),
+                    'class' => $closePositionClass,
                     'queue' => 'positions',
                     'priority' => $this->step->priority,
+                    'relatable_type' => $locked->getMorphClass(),
+                    'relatable_id' => $locked->getKey(),
                     'arguments' => [
                         'positionId' => $locked->id,
                         'message' => $this->message ?? "Position closed externally ({$this->triggerStatus})",
@@ -126,20 +121,18 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
                 return 'ClosePositionJob';
             }
 
-            $alreadyPending = Step::query()
-                ->where('class', $resolver->resolve(SmartReplaceOrdersJob::class))
-                ->whereRaw("CAST(JSON_EXTRACT(arguments, '$.positionId') AS UNSIGNED) = ?", [$position->id])
-                ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-                ->exists();
+            $smartReplaceClass = $resolver->resolve(SmartReplaceOrdersJob::class);
 
-            if ($alreadyPending) {
+            if (Step::hasLiveWorkflow($locked, $smartReplaceClass)) {
                 return 'SmartReplaceOrdersJob (already pending)';
             }
 
             Step::create([
-                'class' => $resolver->resolve(SmartReplaceOrdersJob::class),
+                'class' => $smartReplaceClass,
                 'queue' => 'positions',
                 'priority' => $this->step->priority,
+                'relatable_type' => $locked->getMorphClass(),
+                'relatable_id' => $locked->getKey(),
                 'arguments' => [
                     'positionId' => $locked->id,
                 ],

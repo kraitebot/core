@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -19,6 +20,7 @@ use Kraite\Core\Database\Factories\UserFactory;
 use Kraite\Core\Support\Billing\BillingManager;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
+use LogicException;
 use NotificationChannels\Pushover\PushoverChannel;
 use NotificationChannels\Pushover\PushoverReceiver;
 use NotificationChannels\Telegram\TelegramChannel;
@@ -163,6 +165,47 @@ final class User extends Authenticatable
     }
 
     /**
+     * Start the user's one-time trial and establish the first renewal
+     * anchor. Keeping both timestamps together prevents a completed trial
+     * from becoming permanently unrenewable.
+     */
+    public function startTrial(?CarbonInterface $startedAt = null): void
+    {
+        if ($this->trial_started_at !== null) {
+            return;
+        }
+
+        if ($this->subscription_id === null) {
+            throw new LogicException("User {$this->id} cannot start a trial without a subscription tier.");
+        }
+
+        $this->trial_started_at = ($startedAt ?? now())->copy();
+        $this->syncTrialRenewalAnchor();
+    }
+
+    /**
+     * Recalculate the first renewal from the active trial and current tier.
+     * This is used when a trial user changes plan or receives an override.
+     */
+    public function syncTrialRenewalAnchor(): void
+    {
+        if ($this->trial_started_at === null) {
+            return;
+        }
+
+        if ($this->subscription_id === null) {
+            throw new LogicException("User {$this->id} cannot establish a renewal without a subscription tier.");
+        }
+
+        $this->unsetRelation('subscription');
+        $this->load('subscription');
+        $this->subscription_renews_at = $this->trial_started_at
+            ->copy()
+            ->addDays(max(0, $this->effectiveTrialDays()));
+        $this->save();
+    }
+
+    /**
      * Trial is active when trial_started_at is set and the configured
      * trial duration hasn't elapsed yet.
      */
@@ -256,6 +299,13 @@ final class User extends Authenticatable
             return false;
         }
 
+        if (
+            $this->subscription !== null
+            && Math::lte((string) $this->subscription->monthly_rate_usdt, '0')
+        ) {
+            return false;
+        }
+
         if ($this->subscription_renews_at === null) {
             return true;
         }
@@ -288,12 +338,12 @@ final class User extends Authenticatable
             return;
         }
 
-        $pauseDays = (int) floor($this->subscription_paused_at->diffInDays(now()));
+        $pauseSeconds = (int) $this->subscription_paused_at->diffInSeconds(now());
 
-        if ($this->subscription_renews_at !== null && $pauseDays > 0) {
+        if ($this->subscription_renews_at !== null && $pauseSeconds > 0) {
             $this->subscription_renews_at = $this->subscription_renews_at
                 ->copy()
-                ->addDays($pauseDays);
+                ->addSeconds($pauseSeconds);
         }
 
         $this->subscription_paused_at = null;

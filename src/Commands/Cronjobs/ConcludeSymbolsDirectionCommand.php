@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Commands\Cronjobs;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Kraite\Core\Jobs\Models\ExchangeSymbol\ConcludeSymbolDirectionAtTimeframeJob;
 use Kraite\Core\Jobs\Models\Indicator\QuerySymbolIndicatorsJob;
@@ -38,6 +39,32 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
      * Execute the console command.
      */
     public function handle(): int
+    {
+        if ($this->option('clean') && ! app()->environment(['local', 'testing'])) {
+            $this->error(sprintf(
+                '[CONCLUDE-SYMBOLS-DIRECTION] --clean refused: current environment is "%s". This flag only runs in local or testing.',
+                app()->environment()
+            ));
+
+            return self::FAILURE;
+        }
+
+        $lock = Cache::lock('kraite:conclude-symbols-direction', 600);
+
+        if (! $lock->get()) {
+            $this->verboseInfo('Another symbols-direction pass is already running; skipped.');
+
+            return self::SUCCESS;
+        }
+
+        try {
+            return $this->executeLocked();
+        } finally {
+            $lock->release();
+        }
+    }
+
+    private function executeLocked(): int
     {
         // Truncate tables if --clean flag is provided
         if ($this->option('clean')) {

@@ -13,9 +13,6 @@ use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Proxies\JobProxy;
 use Kraite\Core\Trading\Kraite;
 use StepDispatcher\Models\Step;
-use StepDispatcher\States\Dispatched;
-use StepDispatcher\States\Pending;
-use StepDispatcher\States\Running;
 use StepDispatcher\Support\BaseCommand;
 use StepDispatcher\Support\Steps;
 use Throwable;
@@ -140,13 +137,10 @@ final class CreatePositionsCommand extends BaseCommand
                     // NEW opens are gated by readiness.
                     $this->recoverOrphanPositionsForAccount($account);
 
-                    // 3-gate per-account readiness: account.is_active +
-                    // account.can_trade (set 1) + user.can_trade (set 2)
-                    // + user.subscription.isActive() (set 3 — trial OR
-                    // wallet covers next renewal). The query already
-                    // covered sets 1 & 2 above; this re-check picks up
-                    // set 3 AND survives any account/user state that
-                    // shifted between the SELECT and the loop.
+                    // Per-account readiness covers the account and user
+                    // switches, subscription state, and the designated
+                    // account restriction on capped tiers. Re-check here
+                    // so state changes after the SELECT take effect.
                     if (! $account->isReadyToTrade()) {
                         $this->verboseComment("    → Account #{$account->id} not ready to trade (subscription gate), skipping");
 
@@ -198,37 +192,10 @@ final class CreatePositionsCommand extends BaseCommand
         // is being processed by an active workflow.
         $candidateClasses = array_unique([DispatchPositionJob::class, $exchangeDispatchClass]);
 
-        $terminalStates = Step::terminalStepStates();
-
         $recovered = 0;
 
         foreach ($orphanPositions as $position) {
-            // Indexed orphan lookup. The legacy
-            // `whereJsonContains('arguments->positionId', …)` predicate
-            // is unindexed and degrades to a near-full scan of the
-            // steps table at scale. The indexed
-            // (`relatable_type`, `relatable_id`, `state`) tuple is
-            // covered by `idx_p_steps_rel_state_idx`.
-            //
-            // The OR-fallback against the JSON path stays for the
-            // brief transition window where pre-existing Pending steps
-            // (created before this change) may not yet have their
-            // `relatable_*` columns populated — those columns are set
-            // by the framework when the worker picks the step up. The
-            // window closes as soon as the dispatcher promotes any
-            // such Pending row to Dispatched / Running.
-            $hasLiveStep = Step::query()
-                ->whereIn('class', $candidateClasses)
-                ->whereNotIn('state', $terminalStates)
-                ->where(static function ($query) use ($position) {
-                    $query->where(static function ($qq) use ($position) {
-                        $qq->where('relatable_type', Position::class)
-                            ->where('relatable_id', $position->id);
-                    })->orWhereJsonContains('arguments->positionId', $position->id);
-                })
-                ->exists();
-
-            if ($hasLiveStep) {
+            if (Step::hasLiveWorkflow($position, $candidateClasses)) {
                 continue;
             }
 
@@ -299,13 +266,7 @@ final class CreatePositionsCommand extends BaseCommand
         // duplicating expensive balance/open-positions/open-orders API
         // checks and adding pressure on the throttler that the
         // duplicate workflow can't pass anyway.
-        $alreadyPending = Step::query()
-            ->where('class', PreparePositionsOpeningJob::class)
-            ->whereRaw("CAST(JSON_EXTRACT(arguments, '$.accountId') AS UNSIGNED) = ?", [$account->id])
-            ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-            ->exists();
-
-        if ($alreadyPending) {
+        if (Step::hasLiveWorkflow($account, PreparePositionsOpeningJob::class)) {
             $this->verboseComment('    → Skipped: PreparePositionsOpeningJob already pending for this account');
 
             return;
@@ -313,13 +274,15 @@ final class CreatePositionsCommand extends BaseCommand
 
         // Dispatch workflow to cross-check with exchange and open positions.
         // The orchestrator self-elects to parent mode inside its compute()
-        // via $this->step->makeItAParent() — pre-setting child_block_uuid
+        // via buildChildChainOnce() — pre-setting child_block_uuid
         // here would commit the step to parent-mode before compute() can
         // decide, which is the zombie pattern documented in
         // ~/steps-dispatcher/issue.md.
         Step::create([
             'class' => PreparePositionsOpeningJob::class,
             'queue' => 'cronjobs',
+            'relatable_type' => $account->getMorphClass(),
+            'relatable_id' => $account->getKey(),
             'arguments' => [
                 'accountId' => $account->id,
             ],

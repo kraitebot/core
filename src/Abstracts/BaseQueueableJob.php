@@ -87,8 +87,8 @@ abstract class BaseQueueableJob extends BaseStepJob
     /**
      * Build an orchestrator's child chain exactly once, atomically.
      *
-     * Orchestrators persist their child_block_uuid the moment they elect to
-     * parent mode, then insert child steps one by one. Two retry vectors can
+     * Orchestrators elect their child_block_uuid and insert child steps in one
+     * locked transaction. Two retry vectors can
      * rerun compute() against that same block: a transient DB error mid-build
      * (classified retryable → parent back to Pending) and steps:recover-stale
      * reclaiming a zombie parent whose tree already settled. Without
@@ -97,11 +97,10 @@ abstract class BaseQueueableJob extends BaseStepJob
      * dispatchable: duplicate status flips at best, duplicate exchange
      * placements (double market entry) at worst.
      *
-     * Two layers, each covering the vector the other cannot:
-     *   - The transaction makes a partial build vanish on failure, so a
-     *     retry rebuilds from zero instead of appending to half a chain.
-     *   - The populated-block guard makes a rerun against a fully-committed
-     *     chain a no-op (the settled-tree recover-stale case).
+     * The locked parent row serializes stale job instances onto the same child
+     * block. The transaction also makes both parent election and partial child
+     * creation vanish on failure, while the populated-block guard makes a rerun
+     * against a fully committed chain a no-op.
      *
      * Returns true when this call built the chain, false when a prior run
      * already had — callers should return their normal response either way
@@ -109,23 +108,29 @@ abstract class BaseQueueableJob extends BaseStepJob
      */
     protected function buildChildChainOnce(Closure $builder): bool
     {
-        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
+        return DB::transaction(function () use ($builder): bool {
+            $lockedStep = Step::query()
+                ->whereKey($this->step->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        $alreadyBuilt = Step::query()
-            ->where('block_uuid', $blockUuid)
-            ->exists();
+            $blockUuid = $lockedStep->child_block_uuid ?? $lockedStep->makeItAParent();
+            $this->step->setAttribute('child_block_uuid', $blockUuid);
 
-        if ($alreadyBuilt) {
-            Step::log($this->step->id, 'lifecycle', 'Retry detected — child block already populated, skipping chain build.');
+            $alreadyBuilt = Step::query()
+                ->where('block_uuid', $blockUuid)
+                ->exists();
 
-            return false;
-        }
+            if ($alreadyBuilt) {
+                Step::log($lockedStep->id, 'lifecycle', 'Retry detected — child block already populated, skipping chain build.');
 
-        DB::transaction(function () use ($builder, $blockUuid): void {
+                return false;
+            }
+
             $builder($blockUuid);
-        });
 
-        return true;
+            return true;
+        });
     }
 
     /**

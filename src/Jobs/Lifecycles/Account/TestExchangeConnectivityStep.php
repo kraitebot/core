@@ -31,38 +31,46 @@ final class TestExchangeConnectivityStep extends BaseQueueableJob
             ];
         }
 
-        $childBlockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
         $workflowId = (string) Str::uuid();
         $dispatched = 0;
         $failed = 0;
 
-        foreach ($servers as $server) {
-            try {
-                Step::create([
-                    'class' => TestServerConnectivityStep::class,
-                    'queue' => $server->own_queue_name ?: 'default',
-                    'relatable_type' => Account::class,
-                    'relatable_id' => $account->id,
-                    'arguments' => [
-                        'accountId' => $account->id,
-                        'serverId' => $server->id,
-                    ],
-                    'block_uuid' => $childBlockUuid,
-                    'workflow_id' => $workflowId,
-                    'index' => 1,
-                ]);
+        $built = $this->buildChildChainOnce(function (string $childBlockUuid) use ($account, $servers, $workflowId, &$dispatched, &$failed): void {
+            foreach ($servers as $server) {
+                try {
+                    Step::create([
+                        'class' => TestServerConnectivityStep::class,
+                        'queue' => $server->own_queue_name ?: 'default',
+                        'relatable_type' => Account::class,
+                        'relatable_id' => $account->id,
+                        'arguments' => [
+                            'accountId' => $account->id,
+                            'serverId' => $server->id,
+                        ],
+                        'block_uuid' => $childBlockUuid,
+                        'workflow_id' => $workflowId,
+                        'index' => 1,
+                    ]);
 
-                $dispatched++;
-            } catch (Throwable $e) {
-                $failed++;
+                    $dispatched++;
+                } catch (Throwable $e) {
+                    $failed++;
 
-                Log::channel('jobs')->error('[CONNECTIVITY] Failed to create server child step', [
-                    'account_id' => $account->id,
-                    'server_id' => $server instanceof Server ? $server->id : null,
-                    'exception' => $e::class,
-                    'message' => $e->getMessage(),
-                ]);
+                    Log::channel('jobs')->error('[CONNECTIVITY] Failed to create server child step', [
+                        'account_id' => $account->id,
+                        'server_id' => $server instanceof Server ? $server->id : null,
+                        'exception' => $e::class,
+                        'message' => $e->getMessage(),
+                    ]);
+                }
             }
+        });
+
+        if (! $built) {
+            $dispatched = Step::query()
+                ->where('block_uuid', $this->step->child_block_uuid)
+                ->forClasses(TestServerConnectivityStep::class)
+                ->count();
         }
 
         return [

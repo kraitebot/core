@@ -11,9 +11,6 @@ use Kraite\Core\Jobs\Lifecycles\Order\SyncPositionOrdersJob as SyncPositionOrder
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Proxies\JobProxy;
 use StepDispatcher\Models\Step;
-use StepDispatcher\States\Dispatched;
-use StepDispatcher\States\Pending;
-use StepDispatcher\States\Running;
 
 /**
  * PrepareSyncOrdersJob (Orchestrator)
@@ -61,21 +58,17 @@ final class PrepareSyncOrdersJob extends BaseQueueableJob
         }
 
         $resolver = JobProxy::with($this->position->account);
-        $lifecycleClass = $resolver->resolve(SyncPositionOrdersLifecycle::class);
-        $lifecycle = new $lifecycleClass($this->position);
 
-        // Self-elect to parent mode now that we've decided to spawn a child.
-        // The early-return path above (position not 'active') skips this and
-        // leaves child_block_uuid null, so the framework lets the step
-        // Complete normally as an orphan instead of waiting forever for
-        // children that never come.
-        $childBlockUuid = $this->step->makeItAParent();
+        $this->buildChildChainOnce(function (string $childBlockUuid) use ($resolver): void {
+            $lifecycleClass = $resolver->resolve(SyncPositionOrdersLifecycle::class);
+            $lifecycle = new $lifecycleClass($this->position);
 
-        $lifecycle->dispatch(
-            blockUuid: $childBlockUuid,
-            startIndex: 1,
-            workflowId: null
-        );
+            $lifecycle->dispatch(
+                blockUuid: $childBlockUuid,
+                startIndex: 1,
+                workflowId: null
+            );
+        });
 
         $this->dispatchPartialFillQuantitySyncSafetyNet();
 
@@ -115,19 +108,15 @@ final class PrepareSyncOrdersJob extends BaseQueueableJob
         DB::transaction(function (): void {
             Position::query()->whereKey($this->position->id)->lockForUpdate()->first();
 
-            $alreadyPending = Step::query()
-                ->where('class', SyncPositionQuantityFromExchangeJob::class)
-                ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$this->position->id])
-                ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-                ->exists();
-
-            if ($alreadyPending) {
+            if (Step::hasLiveWorkflow($this->position, SyncPositionQuantityFromExchangeJob::class)) {
                 return;
             }
 
             Step::create([
                 'class' => SyncPositionQuantityFromExchangeJob::class,
                 'queue' => 'positions',
+                'relatable_type' => $this->position->getMorphClass(),
+                'relatable_id' => $this->position->getKey(),
                 'arguments' => [
                     'positionId' => $this->position->id,
                 ],

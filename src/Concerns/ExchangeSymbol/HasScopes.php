@@ -7,6 +7,7 @@ namespace Kraite\Core\Concerns\ExchangeSymbol;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Kraite\Core\Models\Kraite;
+use Kraite\Core\Models\Position;
 
 trait HasScopes
 {
@@ -81,6 +82,24 @@ trait HasScopes
                 $q->whereNull('delivery_at')
                     ->orWhere('delivery_at', '>', now());
             });
+    }
+
+    /**
+     * Keep delisted rows out of new-trading work while retaining symbols that
+     * still carry positions requiring price and exchange-state monitoring.
+     */
+    public function scopeNeedsOperationalMonitoring(Builder $query): Builder
+    {
+        $openedStatuses = (new Position)->openedStatuses();
+
+        return $query->where(static function (Builder $query) use ($openedStatuses): void {
+            $query->notDelisted()
+                ->orWhereExists(static fn (QueryBuilder $positions) => $positions
+                    ->selectRaw('1')
+                    ->from('positions')
+                    ->whereColumn('positions.exchange_symbol_id', 'exchange_symbols.id')
+                    ->whereIn('positions.status', $openedStatuses));
+        });
     }
 
     /**

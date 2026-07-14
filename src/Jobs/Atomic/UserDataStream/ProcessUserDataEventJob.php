@@ -18,9 +18,6 @@ use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 use Kraite\Core\Support\Proxies\JobProxy;
 use Kraite\Core\Support\ValueObjects\UserDataStreamEvent;
 use StepDispatcher\Models\Step;
-use StepDispatcher\States\Dispatched;
-use StepDispatcher\States\Pending;
-use StepDispatcher\States\Running;
 
 /**
  * ProcessUserDataEventJob (Atomic)
@@ -394,15 +391,11 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
         // serialises every replacement-dispatch attempt for that
         // position across every worker.
         return DB::transaction(function () use ($event, $position): bool {
-            Position::query()->whereKey($position->id)->lockForUpdate()->first();
+            $locked = Position::query()->whereKey($position->id)->lockForUpdate()->firstOrFail();
+            $resolvedClass = JobProxy::with($locked->account)
+                ->resolve(PreparePositionReplacementJob::class);
 
-            $alreadyPending = Step::query()
-                ->where('class', PreparePositionReplacementJob::class)
-                ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
-                ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-                ->exists();
-
-            if ($alreadyPending) {
+            if (Step::hasLiveWorkflow($locked, $resolvedClass)) {
                 return false;
             }
 
@@ -413,14 +406,14 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
                 'exchange_order_id' => $event->exchangeOrderId,
             ]);
 
-            $resolver = JobProxy::with($position->account);
-
             Step::create([
-                'class' => $resolver->resolve(PreparePositionReplacementJob::class),
+                'class' => $resolvedClass,
                 'queue' => 'positions',
                 'priority' => 'high',
+                'relatable_type' => $locked->getMorphClass(),
+                'relatable_id' => $locked->getKey(),
                 'arguments' => [
-                    'positionId' => $position->id,
+                    'positionId' => $locked->id,
                     'triggerStatus' => 'EXTERNAL_FILL',
                     'message' => 'Reduce-only fill on unowned order — verifying position state',
                 ],

@@ -67,9 +67,9 @@ final class PrepareCancelOrphanOrdersJob extends BaseQueueableJob
             ];
         }
 
-        $childBlockUuid = $this->step->makeItAParent();
-
-        $this->dispatchCancelLifecycle($childBlockUuid);
+        $this->buildChildChainOnce(function (string $childBlockUuid): void {
+            $this->dispatchCancelLifecycle($childBlockUuid);
+        });
 
         return [
             'position_id' => $this->position->id,

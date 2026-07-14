@@ -18,9 +18,6 @@ use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\JobProxy;
 use StepDispatcher\Models\Step;
-use StepDispatcher\States\Dispatched;
-use StepDispatcher\States\Pending;
-use StepDispatcher\States\Running;
 use StepDispatcher\Support\Steps;
 
 /**
@@ -286,13 +283,7 @@ final class OrderObserver
                     return;
                 }
 
-                $alreadyPending = Step::query()
-                    ->where('class', ClosePositionJob::class)
-                    ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
-                    ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-                    ->exists();
-
-                if ($alreadyPending) {
+                if (Step::hasLiveWorkflow($locked, ClosePositionJob::class)) {
                     return;
                 }
 
@@ -319,6 +310,8 @@ final class OrderObserver
                     'class' => ClosePositionJob::class,
                     'queue' => 'positions',
                     'priority' => 'high',
+                    'relatable_type' => $locked->getMorphClass(),
+                    'relatable_id' => $locked->getKey(),
                     'arguments' => [
                         'positionId' => $locked->id,
                         'message' => "{$model->type} order #{$model->id} filled — closing position",
@@ -365,13 +358,7 @@ final class OrderObserver
                     return;
                 }
 
-                $alreadyPending = Step::query()
-                    ->where('class', PreparePositionReplacementJob::class)
-                    ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
-                    ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-                    ->exists();
-
-                if ($alreadyPending) {
+                if (Step::hasLiveWorkflow($locked, PreparePositionReplacementJob::class)) {
                     return;
                 }
 
@@ -381,6 +368,8 @@ final class OrderObserver
                     'class' => PreparePositionReplacementJob::class,
                     'queue' => 'positions',
                     'priority' => 'high',
+                    'relatable_type' => $locked->getMorphClass(),
+                    'relatable_id' => $locked->getKey(),
                     'arguments' => [
                         'positionId' => $locked->id,
                         'triggerStatus' => $model->status,
@@ -434,13 +423,7 @@ final class OrderObserver
                     return;
                 }
 
-                $alreadyPending = Step::query()
-                    ->where('class', ApplyWapJob::class)
-                    ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
-                    ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-                    ->exists();
-
-                if ($alreadyPending) {
+                if (Step::hasLiveWorkflow($locked, ApplyWapJob::class)) {
                     return;
                 }
 
@@ -450,6 +433,8 @@ final class OrderObserver
                     'class' => ApplyWapJob::class,
                     'queue' => 'positions',
                     'priority' => 'high',
+                    'relatable_type' => $locked->getMorphClass(),
+                    'relatable_id' => $locked->getKey(),
                     'arguments' => [
                         'positionId' => $locked->id,
                         'message' => "LIMIT order #{$model->id} filled — applying WAP",
@@ -501,19 +486,15 @@ final class OrderObserver
                     return;
                 }
 
-                $alreadyPending = Step::query()
-                    ->where('class', SyncPositionQuantityFromExchangeJob::class)
-                    ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
-                    ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-                    ->exists();
-
-                if ($alreadyPending) {
+                if (Step::hasLiveWorkflow($locked, SyncPositionQuantityFromExchangeJob::class)) {
                     return;
                 }
 
                 Step::create([
                     'class' => SyncPositionQuantityFromExchangeJob::class,
                     'queue' => 'positions',
+                    'relatable_type' => $locked->getMorphClass(),
+                    'relatable_id' => $locked->getKey(),
                     'arguments' => [
                         'positionId' => $locked->id,
                     ],
@@ -618,9 +599,9 @@ final class OrderObserver
 
                 // Deduplicate: skip if a correction is already pending for this order.
                 $alreadyPending = Step::query()
-                    ->where('class', $resolvedClass)
+                    ->forClasses($resolvedClass)
                     ->whereRaw("JSON_EXTRACT(arguments, '$.orderId') = ?", [$model->id])
-                    ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+                    ->inProgress()
                     ->exists();
 
                 if ($alreadyPending) {
@@ -637,6 +618,8 @@ final class OrderObserver
                     'class' => $resolvedClass,
                     'queue' => 'positions',
                     'priority' => 'high',
+                    'relatable_type' => $locked->getMorphClass(),
+                    'relatable_id' => $locked->getKey(),
                     'arguments' => [
                         'positionId' => $position->id,
                         'orderId' => $model->id,

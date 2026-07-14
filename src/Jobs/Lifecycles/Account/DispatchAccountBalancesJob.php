@@ -33,39 +33,43 @@ final class DispatchAccountBalancesJob extends BaseQueueableJob
             ];
         }
 
-        $childBlockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
         $workflowId = (string) Str::uuid();
 
         $dispatched = 0;
         $failed = 0;
 
-        foreach ($accounts as $account) {
-            // Per-account try/catch — at 200+ accounts, one transient
-            // Step::create failure must not abort the rest of the
-            // fan-out. Each child step is independent; logging the
-            // failure and continuing keeps the balance pipeline
-            // tracking 199 healthy accounts even if one row's
-            // dispatch chokes.
-            try {
-                Step::create([
-                    'class' => StoreAccountBalanceJob::class,
-                    'queue' => 'cronjobs',
-                    'relatable_type' => Account::class,
-                    'relatable_id' => $account->id,
-                    'arguments' => ['accountId' => $account->id],
-                    'block_uuid' => $childBlockUuid,
-                    'workflow_id' => $workflowId,
-                    'index' => 1,
-                ]);
-                $dispatched++;
-            } catch (Throwable $e) {
-                $failed++;
-                Log::channel('jobs')->error('[DISPATCH-BALANCES] per-account dispatch threw — continuing', [
-                    'account_id' => $account->id,
-                    'exception' => $e::class,
-                    'message' => $e->getMessage(),
-                ]);
+        $built = $this->buildChildChainOnce(function (string $childBlockUuid) use ($accounts, $workflowId, &$dispatched, &$failed): void {
+            foreach ($accounts as $account) {
+                // Per-account try/catch — at 200+ accounts, one transient
+                // Step::create failure must not abort the rest of the fan-out.
+                try {
+                    Step::create([
+                        'class' => StoreAccountBalanceJob::class,
+                        'queue' => 'cronjobs',
+                        'relatable_type' => Account::class,
+                        'relatable_id' => $account->id,
+                        'arguments' => ['accountId' => $account->id],
+                        'block_uuid' => $childBlockUuid,
+                        'workflow_id' => $workflowId,
+                        'index' => 1,
+                    ]);
+                    $dispatched++;
+                } catch (Throwable $e) {
+                    $failed++;
+                    Log::channel('jobs')->error('[DISPATCH-BALANCES] per-account dispatch threw — continuing', [
+                        'account_id' => $account->id,
+                        'exception' => $e::class,
+                        'message' => $e->getMessage(),
+                    ]);
+                }
             }
+        });
+
+        if (! $built) {
+            $dispatched = Step::query()
+                ->where('block_uuid', $this->step->child_block_uuid)
+                ->forClasses(StoreAccountBalanceJob::class)
+                ->count();
         }
 
         return [

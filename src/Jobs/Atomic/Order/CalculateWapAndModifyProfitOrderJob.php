@@ -389,6 +389,8 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
                     Step::create([
                         'class' => ApplyWapJob::class,
                         'queue' => 'positions',
+                        'relatable_type' => $this->position->getMorphClass(),
+                        'relatable_id' => $this->position->getKey(),
                         'arguments' => [
                             'positionId' => $this->position->id,
                             'message' => 'Follow-up WAP for LIMIT fills that arrived during the prior WAP run',

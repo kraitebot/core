@@ -76,113 +76,113 @@ final class ClosePositionJob extends BaseApiableJob
     public function computeApiable()
     {
         $resolver = JobProxy::with($this->position->account);
-        // Self-elect to parent mode now (always spawns children below).
-        // Idempotent: returns existing child_block_uuid on retry.
-        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
 
-        // Step 1: Update status to 'closing'. Guard against a stale
-        // close lifecycle clobbering newer state — only allow the
-        // transition from 'active' / 'syncing' / 'opening' (the legal
-        // predecessors). If a competing workflow has moved the
-        // position to 'cancelling' / 'closed' / 'failed' between
-        // observer dispatch and this step running, the atomic job
-        // no-ops cleanly instead of overwriting.
-        $statusLifecycleClass = $resolver->resolve(UpdatePositionStatusJob::class);
-        $statusLifecycle = new $statusLifecycleClass($this->position);
-        $nextIndex = $statusLifecycle
-            ->withStatus('closing')
-            ->withOnlyFromStatus(['active', 'syncing', 'opening', 'waping'])
-            ->dispatch(
-                blockUuid: $blockUuid,
-                startIndex: 1,
-                workflowId: null
-            );
+        $this->buildChildChainOnce(function (string $blockUuid) use ($resolver): void {
 
-        // Step 2: Cancel all open orders FIRST (key difference from cancel workflow)
-        $cancelOrdersLifecycleClass = $resolver->resolve(CancelPositionOpenOrdersJob::class);
-        $cancelOrdersLifecycle = new $cancelOrdersLifecycleClass($this->position);
-        $nextIndex = $cancelOrdersLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+            // Step 1: Update status to 'closing'. Guard against a stale
+            // close lifecycle clobbering newer state — only allow the
+            // transition from 'active' / 'syncing' / 'opening' (the legal
+            // predecessors). If a competing workflow has moved the
+            // position to 'cancelling' / 'closed' / 'failed' between
+            // observer dispatch and this step running, the atomic job
+            // no-ops cleanly instead of overwriting.
+            $statusLifecycleClass = $resolver->resolve(UpdatePositionStatusJob::class);
+            $statusLifecycle = new $statusLifecycleClass($this->position);
+            $nextIndex = $statusLifecycle
+                ->withStatus('closing')
+                ->withOnlyFromStatus(['active', 'syncing', 'opening', 'waping'])
+                ->dispatch(
+                    blockUuid: $blockUuid,
+                    startIndex: 1,
+                    workflowId: null
+                );
 
-        // Step 3: Close position on exchange
-        $closeLifecycleClass = $resolver->resolve(ClosePositionAtomicallyJob::class);
-        $closeLifecycle = new $closeLifecycleClass($this->position);
-        $nextIndex = $closeLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
-
-        // Step 4: Sync orders from exchange
-        $syncOrdersLifecycleClass = $resolver->resolve(SyncPositionOrdersLifecycle::class);
-        $syncOrdersLifecycle = new $syncOrdersLifecycleClass($this->position);
-        $nextIndex = $syncOrdersLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
-
-        // Step 5: Query account positions snapshot
-        $queryPositionsLifecycleClass = $resolver->resolve(QueryAccountPositionsLifecycle::class);
-        $queryPositionsLifecycle = new $queryPositionsLifecycleClass($this->position->account);
-        $nextIndex = $queryPositionsLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
-
-        // Step 6: Verify no residual amount remains
-        $verifyResidualLifecycleClass = $resolver->resolve(VerifyPositionResidualAmountJob::class);
-        $verifyResidualLifecycle = new $verifyResidualLifecycleClass($this->position);
-        $nextIndex = $verifyResidualLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
-
-        // Step 7: Update remaining closing data (close-only step)
-        $updateClosingDataLifecycleClass = $resolver->resolve(UpdateRemainingClosingDataJob::class);
-        $updateClosingDataLifecycle = new $updateClosingDataLifecycleClass($this->position);
-        $nextIndex = $updateClosingDataLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
-
-        // Step 8: Update status to 'closed'. Guard against a stale
-        // step transitioning a position back to 'closed' from a
-        // terminal-but-different state ('cancelled' / 'failed') a
-        // newer workflow may have set — only legal predecessor is
-        // 'closing' itself.
-        $finalStatusLifecycleClass = $resolver->resolve(UpdatePositionStatusJob::class);
-        $finalStatusLifecycle = new $finalStatusLifecycleClass($this->position);
-        $nextIndex = $finalStatusLifecycle
-            ->withStatus('closed')
-            ->withOnlyFromStatus(['closing'])
-            ->dispatch(
+            // Step 2: Cancel all open orders FIRST (key difference from cancel workflow)
+            $cancelOrdersLifecycleClass = $resolver->resolve(CancelPositionOpenOrdersJob::class);
+            $cancelOrdersLifecycle = new $cancelOrdersLifecycleClass($this->position);
+            $nextIndex = $cancelOrdersLifecycle->dispatch(
                 blockUuid: $blockUuid,
                 startIndex: $nextIndex,
                 workflowId: null
             );
 
-        // resolve-exception step: Update status to 'failed' if close workflow fails
-        // Note: index=1 allows immediate dispatch when promoted to Pending
-        Step::create([
-            'class' => $resolver->resolve(AtomicUpdatePositionStatusJob::class),
-            'queue' => 'positions',
-            'arguments' => [
-                'positionId' => $this->position->id,
-                'status' => 'failed',
-                'message' => 'Close workflow failed: '.($this->message ?? 'Unknown error'),
-            ],
-            'block_uuid' => $blockUuid,
-            'index' => 1,
-            'type' => 'resolve-exception',
-            'workflow_id' => null,
-        ]);
+            // Step 3: Close position on exchange
+            $closeLifecycleClass = $resolver->resolve(ClosePositionAtomicallyJob::class);
+            $closeLifecycle = new $closeLifecycleClass($this->position);
+            $nextIndex = $closeLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
+
+            // Step 4: Sync orders from exchange
+            $syncOrdersLifecycleClass = $resolver->resolve(SyncPositionOrdersLifecycle::class);
+            $syncOrdersLifecycle = new $syncOrdersLifecycleClass($this->position);
+            $nextIndex = $syncOrdersLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
+
+            // Step 5: Query account positions snapshot
+            $queryPositionsLifecycleClass = $resolver->resolve(QueryAccountPositionsLifecycle::class);
+            $queryPositionsLifecycle = new $queryPositionsLifecycleClass($this->position->account);
+            $nextIndex = $queryPositionsLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
+
+            // Step 6: Verify no residual amount remains
+            $verifyResidualLifecycleClass = $resolver->resolve(VerifyPositionResidualAmountJob::class);
+            $verifyResidualLifecycle = new $verifyResidualLifecycleClass($this->position);
+            $nextIndex = $verifyResidualLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
+
+            // Step 7: Update remaining closing data (close-only step)
+            $updateClosingDataLifecycleClass = $resolver->resolve(UpdateRemainingClosingDataJob::class);
+            $updateClosingDataLifecycle = new $updateClosingDataLifecycleClass($this->position);
+            $nextIndex = $updateClosingDataLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
+
+            // Step 8: Update status to 'closed'. Guard against a stale
+            // step transitioning a position back to 'closed' from a
+            // terminal-but-different state ('cancelled' / 'failed') a
+            // newer workflow may have set — only legal predecessor is
+            // 'closing' itself.
+            $finalStatusLifecycleClass = $resolver->resolve(UpdatePositionStatusJob::class);
+            $finalStatusLifecycle = new $finalStatusLifecycleClass($this->position);
+            $nextIndex = $finalStatusLifecycle
+                ->withStatus('closed')
+                ->withOnlyFromStatus(['closing'])
+                ->dispatch(
+                    blockUuid: $blockUuid,
+                    startIndex: $nextIndex,
+                    workflowId: null
+                );
+
+            // resolve-exception step: Update status to 'failed' if close workflow fails
+            // Note: index=1 allows immediate dispatch when promoted to Pending
+            Step::create([
+                'class' => $resolver->resolve(AtomicUpdatePositionStatusJob::class),
+                'queue' => 'positions',
+                'arguments' => [
+                    'positionId' => $this->position->id,
+                    'status' => 'failed',
+                    'message' => 'Close workflow failed: '.($this->message ?? 'Unknown error'),
+                ],
+                'block_uuid' => $blockUuid,
+                'index' => 1,
+                'type' => 'resolve-exception',
+                'workflow_id' => null,
+            ]);
+        });
 
         return [
             'position_id' => $this->position->id,

@@ -81,13 +81,28 @@ final class PrepareOrderCorrectionJob extends BaseQueueableJob
     public function compute(): array
     {
         $resolver = JobProxy::with($this->position->account);
-        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
+        $isAlgo = (bool) $this->order->is_algo;
+        $response = $isAlgo
+            ? [
+                'position_id' => $this->position->id,
+                'order_id' => $this->order->id,
+                'strategy' => 'modify_tpsl',
+                'message' => 'Bitget algo order correction initiated via modify-tpsl-order',
+            ]
+            : [
+                'position_id' => $this->position->id,
+                'order_id' => $this->order->id,
+                'strategy' => 'modify',
+                'message' => 'LIMIT order correction initiated via apiModify()',
+            ];
 
-        if ($this->order->is_algo) {
-            return $this->dispatchModifyAlgoWorkflow($resolver, $blockUuid);
-        }
+        $this->buildChildChainOnce(function (string $blockUuid) use ($resolver, $isAlgo, &$response): void {
+            $response = $isAlgo
+                ? $this->dispatchModifyAlgoWorkflow($resolver, $blockUuid)
+                : $this->dispatchLimitCorrectionWorkflow($resolver, $blockUuid);
+        });
 
-        return $this->dispatchLimitCorrectionWorkflow($resolver, $blockUuid);
+        return $response;
     }
 
     /**

@@ -17,7 +17,7 @@ use StepDispatcher\Models\Step;
  * Orchestrator for the risk-gated backtest data pipeline. On compute():
  *  - audits current coverage; if it already passes the gate, records the
  *    verdict in its own `response` and completes as an orphan (no children);
- *  - otherwise self-elects to parent mode (makeItAParent — only here, only
+ *  - otherwise self-elects to parent mode (buildChildChainOnce — only here, only
  *    when children are actually created, to avoid the documented zombie
  *    pattern) and fans out a sequential child block:
  *      index 1  FetchVisionCandlesStep   (bulk completed months, Binance)
@@ -71,44 +71,45 @@ final class EnsureBacktestCandleCoverageStep extends BaseQueueableJob
             ];
         }
 
-        $childBlockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
         $args = ['exchangeSymbolId' => $this->exchangeSymbol->id, 'timeframe' => $this->timeframe];
 
-        Step::create([
-            'class' => FetchVisionCandlesStep::class,
-            'queue' => 'indicators',
-            'arguments' => $args + ['maxMonths' => $this->maxMonths],
-            'block_uuid' => $childBlockUuid,
-            'index' => 1,
-        ]);
+        $this->buildChildChainOnce(function (string $childBlockUuid) use ($args): void {
+            Step::create([
+                'class' => FetchVisionCandlesStep::class,
+                'queue' => 'indicators',
+                'arguments' => $args + ['maxMonths' => $this->maxMonths],
+                'block_uuid' => $childBlockUuid,
+                'index' => 1,
+            ]);
 
-        Step::create([
-            'class' => FetchRestCandlesStep::class,
-            'queue' => 'indicators',
-            'arguments' => $args + ['gapLookbackTs' => $this->gapLookbackTs],
-            'block_uuid' => $childBlockUuid,
-            'index' => 2,
-        ]);
+            Step::create([
+                'class' => FetchRestCandlesStep::class,
+                'queue' => 'indicators',
+                'arguments' => $args + ['gapLookbackTs' => $this->gapLookbackTs],
+                'block_uuid' => $childBlockUuid,
+                'index' => 2,
+            ]);
 
-        Step::create([
-            'class' => FetchTaapiCandlesStep::class,
-            'queue' => 'indicators',
-            'arguments' => $args,
-            'block_uuid' => $childBlockUuid,
-            'index' => 3,
-        ]);
+            Step::create([
+                'class' => FetchTaapiCandlesStep::class,
+                'queue' => 'indicators',
+                'arguments' => $args,
+                'block_uuid' => $childBlockUuid,
+                'index' => 3,
+            ]);
 
-        Step::create([
-            'class' => VerifyCoverageResultStep::class,
-            'queue' => 'indicators',
-            'arguments' => $args,
-            'block_uuid' => $childBlockUuid,
-            'index' => 4,
-        ]);
+            Step::create([
+                'class' => VerifyCoverageResultStep::class,
+                'queue' => 'indicators',
+                'arguments' => $args,
+                'block_uuid' => $childBlockUuid,
+                'index' => 4,
+            ]);
+        });
 
         return [
             'spawned' => true,
-            'child_block_uuid' => $childBlockUuid,
+            'child_block_uuid' => $this->step->child_block_uuid,
             'pre_fetch_coverage' => $coverage,
         ];
     }

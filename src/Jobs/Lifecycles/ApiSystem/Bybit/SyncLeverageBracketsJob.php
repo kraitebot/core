@@ -61,17 +61,17 @@ final class SyncLeverageBracketsJob extends BaseQueueableJob
             ];
         }
 
-        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
-
-        foreach ($symbols->values() as $position => $symbol) {
-            Step::create([
-                'class' => SyncLeverageBracketJob::class,
-                'queue' => 'indicators',
-                'arguments' => ['exchangeSymbolId' => $symbol->id],
-                'block_uuid' => $blockUuid,
-                'index' => intdiv($position, self::BATCH_SIZE) + 1,
-            ]);
-        }
+        $this->buildChildChainOnce(function (string $blockUuid) use ($symbols): void {
+            foreach ($symbols->values() as $position => $symbol) {
+                Step::create([
+                    'class' => SyncLeverageBracketJob::class,
+                    'queue' => 'indicators',
+                    'arguments' => ['exchangeSymbolId' => $symbol->id],
+                    'block_uuid' => $blockUuid,
+                    'index' => intdiv($position, self::BATCH_SIZE) + 1,
+                ]);
+            }
+        });
 
         return [
             'exchange' => $this->apiSystem->canonical,

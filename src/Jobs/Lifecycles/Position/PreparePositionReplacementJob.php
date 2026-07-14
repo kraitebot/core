@@ -72,31 +72,32 @@ final class PreparePositionReplacementJob extends BaseApiableJob
     public function computeApiable()
     {
         $resolver = JobProxy::with($this->position->account);
-        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
 
-        // Step 1: Query account positions snapshot from exchange
-        $queryPositionsLifecycleClass = $resolver->resolve(QueryAccountPositionsLifecycle::class);
-        $queryPositionsLifecycle = new $queryPositionsLifecycleClass($this->position->account);
-        $nextIndex = $queryPositionsLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: 1,
-            workflowId: null
-        );
+        $this->buildChildChainOnce(function (string $blockUuid) use ($resolver): void {
+            // Step 1: Query account positions snapshot from exchange
+            $queryPositionsLifecycleClass = $resolver->resolve(QueryAccountPositionsLifecycle::class);
+            $queryPositionsLifecycle = new $queryPositionsLifecycleClass($this->position->account);
+            $nextIndex = $queryPositionsLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: 1,
+                workflowId: null
+            );
 
-        // Step 2: Verify position exists on exchange and dispatch appropriate workflow
-        $verifyExistsClass = $resolver->resolve(VerifyPositionExistsOnExchangeJob::class);
-        Step::create([
-            'class' => $verifyExistsClass,
-            'queue' => 'positions',
-            'arguments' => [
-                'positionId' => $this->position->id,
-                'triggerStatus' => $this->triggerStatus,
-                'message' => $this->message,
-            ],
-            'block_uuid' => $blockUuid,
-            'index' => $nextIndex,
-            'workflow_id' => null,
-        ]);
+            // Step 2: Verify position exists on exchange and dispatch appropriate workflow
+            $verifyExistsClass = $resolver->resolve(VerifyPositionExistsOnExchangeJob::class);
+            Step::create([
+                'class' => $verifyExistsClass,
+                'queue' => 'positions',
+                'arguments' => [
+                    'positionId' => $this->position->id,
+                    'triggerStatus' => $this->triggerStatus,
+                    'message' => $this->message,
+                ],
+                'block_uuid' => $blockUuid,
+                'index' => $nextIndex,
+                'workflow_id' => null,
+            ]);
+        });
 
         return [
             'position_id' => $this->position->id,

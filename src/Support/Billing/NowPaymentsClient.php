@@ -29,6 +29,7 @@ final class NowPaymentsClient
     {
         $engine = Kraite::first();
         $apiKey = (string) ($engine?->nowpayments_api_key ?? '');
+        $baseUrl = rtrim((string) config('services.nowpayments.base_url'), '/');
 
         if ($apiKey === '') {
             throw new RuntimeException(
@@ -36,7 +37,14 @@ final class NowPaymentsClient
             );
         }
 
-        return new self($apiKey, 'https://api.nowpayments.io/v1');
+        if ($baseUrl === '') {
+            $baseUrl = 'https://api.nowpayments.io/v1';
+        }
+
+        return new self(
+            $apiKey,
+            $baseUrl,
+        );
     }
 
     public static function ipnSecret(): string
@@ -106,13 +114,43 @@ final class NowPaymentsClient
      */
     public function getPayment(string $paymentId): array
     {
-        $response = $this->client()
+        $response = $this->readClient()
             ->get("/payment/{$paymentId}")
             ->throw();
 
         $data = $response->json();
 
         return is_array($data) ? $data : [];
+    }
+
+    public function minimumAmount(string $currencyFrom, string $currencyTo = 'usdttrc20'): float
+    {
+        $minimum = $this->readClient()
+            ->get('/min-amount', [
+                'currency_from' => $currencyFrom,
+                'currency_to' => $currencyTo,
+            ])
+            ->throw()
+            ->json('min_amount');
+
+        return is_numeric($minimum) ? (float) $minimum : 0.0;
+    }
+
+    public function estimate(
+        float $amount,
+        string $currencyFrom,
+        string $currencyTo = 'usdttrc20',
+    ): float {
+        $estimate = $this->readClient()
+            ->get('/estimate', [
+                'amount' => $amount,
+                'currency_from' => $currencyFrom,
+                'currency_to' => $currencyTo,
+            ])
+            ->throw()
+            ->json('estimated_amount');
+
+        return is_numeric($estimate) ? (float) $estimate : 0.0;
     }
 
     private function client(): PendingRequest
@@ -123,7 +161,12 @@ final class NowPaymentsClient
                 'Accept' => 'application/json',
             ])
             ->acceptJson()
-            ->timeout(15)
-            ->retry(2, 200);
+            ->connectTimeout(5)
+            ->timeout(15);
+    }
+
+    private function readClient(): PendingRequest
+    {
+        return $this->client()->retry([200, 500]);
     }
 }

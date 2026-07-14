@@ -25,12 +25,12 @@ final class SubscriptionState
 
     /**
      * True when the user is allowed to trade from a subscription POV:
-     * trial in progress OR wallet covers the next renewal AND not
-     * paused AND a renewal anchor is set in the future.
+     * trial in progress, a paid renewal anchor is still in the future,
+     * or a free tier applies; paused users are never active.
      *
      * Pair with `User::can_trade` (user/bot pause switch) and the
-     * account-level `Account::isReadyToTrade` to get the full
-     * 3-gate trading guard.
+     * account-level `Account::isReadyToTrade` to get the full trading
+     * readiness decision.
      */
     public function isActive(): bool
     {

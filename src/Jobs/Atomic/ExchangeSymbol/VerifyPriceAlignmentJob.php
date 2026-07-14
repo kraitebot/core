@@ -10,6 +10,7 @@ use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Kraite;
+use Kraite\Core\Models\Position;
 use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 
@@ -54,6 +55,10 @@ final class VerifyPriceAlignmentJob extends BaseApiableJob
     public function computeApiable()
     {
         $canonical = $this->exchangeSymbol->apiSystem->canonical;
+        $hasOpenPosition = Position::query()
+            ->opened()
+            ->where('exchange_symbol_id', $this->exchangeSymbol->id)
+            ->exists();
 
         // The Binance same-asset sibling is the price reference. Its mark_price
         // is the one the stream replicates everywhere; we measure THIS symbol's
@@ -62,7 +67,7 @@ final class VerifyPriceAlignmentJob extends BaseApiableJob
             ->whereHas('apiSystem', function ($query): void {
                 $query->where('canonical', 'binance');
             })
-            ->notDelisted()
+            ->when(! $hasOpenPosition, fn ($query) => $query->notDelisted())
             ->where('symbol_id', $this->exchangeSymbol->symbol_id)
             ->where('quote', $this->exchangeSymbol->quote)
             ->first();

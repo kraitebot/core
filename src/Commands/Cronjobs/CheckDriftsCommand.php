@@ -21,9 +21,6 @@ use Kraite\Core\Support\Drift\PositionDriftReport;
 use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\NotificationService;
 use StepDispatcher\Models\Step;
-use StepDispatcher\States\Dispatched;
-use StepDispatcher\States\Pending;
-use StepDispatcher\States\Running;
 use StepDispatcher\Support\BaseCommand;
 use StepDispatcher\Support\Steps;
 use Throwable;
@@ -510,13 +507,7 @@ final class CheckDriftsCommand extends BaseCommand
                     return false;
                 }
 
-                $alreadyPending = Step::query()
-                    ->where('class', ApplyWapJob::class)
-                    ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
-                    ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-                    ->exists();
-
-                if ($alreadyPending) {
+                if (Step::hasLiveWorkflow($locked, ApplyWapJob::class)) {
                     return false;
                 }
 
@@ -524,6 +515,8 @@ final class CheckDriftsCommand extends BaseCommand
                     'class' => ApplyWapJob::class,
                     'queue' => 'positions',
                     'priority' => 'high',
+                    'relatable_type' => $locked->getMorphClass(),
+                    'relatable_id' => $locked->getKey(),
                     'arguments' => [
                         'positionId' => $locked->id,
                         'message' => 'Drift spotter self-heal: TP quantity under-covers the filled DCA ladder — re-applying WAP',

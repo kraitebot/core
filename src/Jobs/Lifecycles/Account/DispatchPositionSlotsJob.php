@@ -96,7 +96,6 @@ final class DispatchPositionSlotsJob extends BaseQueueableJob
         // override. Either one in a non-terminal state means the position is
         // already being processed by an active workflow.
         $candidateClasses = array_unique([DispatchPositionJob::class, $dispatchJobClass]);
-        $terminalStates = Step::terminalStepStates();
 
         $dispatched = 0;
         $skipped = 0;
@@ -126,27 +125,7 @@ final class DispatchPositionSlotsJob extends BaseQueueableJob
             // dispatch — the account would silently lose every position
             // after the failing index in the iteration order.
             try {
-                // Indexed orphan / live-step lookup. The legacy
-                // `whereJsonContains('arguments->positionId', …)`
-                // predicate was unindexed and slow at scale; the
-                // (`relatable_type`, `relatable_id`, `state`) tuple is
-                // covered by `idx_p_steps_rel_state_idx`. The
-                // OR-fallback against the JSON path stays for the
-                // brief transition window where pre-existing Pending
-                // steps may not yet have `relatable_*` populated by
-                // the framework's HandlesStepLifecycle hook.
-                $hasLiveStep = Step::query()
-                    ->whereIn('class', $candidateClasses)
-                    ->whereNotIn('state', $terminalStates)
-                    ->where(static function ($query) use ($position) {
-                        $query->where(static function ($qq) use ($position) {
-                            $qq->where('relatable_type', Position::class)
-                                ->where('relatable_id', $position->id);
-                        })->orWhereJsonContains('arguments->positionId', $position->id);
-                    })
-                    ->exists();
-
-                if ($hasLiveStep) {
+                if (Step::hasLiveWorkflow($position, $candidateClasses)) {
                     $skipped++;
 
                     continue;

@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.70.0 - 2026-07-14
+
+### Architecture
+
+- [IMPROVED] **Every remaining orchestrator now builds its child chain under one locked transaction.** Parent election and child insertion share a row lock, partial builds roll back, and stale concurrent job instances converge on the existing block instead of duplicating exchange-facing work. Step ownership and live-state filters now use the reusable relational scopes shipped by `brunocfalcao/step-dispatcher` 1.18.0.
+- [IMPROVED] **Workflow dispatches persist their owning account or position at creation time.** WAP, replacement, close, sync, opening, recovery, and observer dedupe paths use indexed `relatable_type` / `relatable_id` lookups instead of repeated JSON scans. Production was audited before removing the legacy argument fallback.
+
+### Bug fixes
+
+- [FIXED] **Delisted symbols remain operationally monitored while they carry an open position.** Idle delisted rows stay excluded from new-trading candidates and atomic price comparison, but active exposure continues through mark-price health and renamed-contract alignment checks, including a delisted Binance sibling when it is the required reference.
+- [FIXED] **`waping` now owns the database open-position slot.** The generated `positions.is_open` constraint matches `Position::openedStatuses()`, preventing a scheduler race from inserting a second same-account, same-symbol, same-direction position during WAP.
+- [FIXED] **Trading readiness is centralized and complete.** Account and user activation, user pause switch, subscription window, free-tier state, and the designated account on one-account tiers are evaluated by `Account::isReadyToTrade()` everywhere position opening is considered.
+- [FIXED] **Trial and pause timing no longer strand valid subscriptions.** Starting a trial establishes its first renewal anchor, legacy missing anchors are backfilled, free tiers remain active without an anchor, and sub-day pauses extend renewal by their exact duration.
+- [FIXED] **Partial NOWPayments updates credit only the newly settled delta.** Payments track cumulative `credited_amount`, previously credited rows are backfilled, read endpoints use retry-safe HTTP behavior, and the gateway base URL follows application configuration.
+- [FIXED] **Direction conclusion cannot overlap and its destructive reset is local-only.** A distributed lock serializes runs; `--clean` is refused outside local/testing.
+- [FIXED] **Queue-depth health reads the physical Horizon lanes workers actually consume.** Each logical threshold sums its routed per-host queue set instead of inspecting an orphan logical Redis list.
+
+### Tests
+
+- [ADDED] Regression coverage for stale-orchestrator concurrency, relational workflow scopes, open-slot uniqueness during WAP, delisted active-exposure monitoring, physical Horizon queue depth, billing readiness and timing, and destructive command safety.
+
 ## 1.69.1 - 2026-07-14
 
 ### Bug fixes

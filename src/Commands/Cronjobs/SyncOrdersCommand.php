@@ -10,9 +10,6 @@ use Kraite\Core\Jobs\Lifecycles\Order\PrepareSyncOrdersJob;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use StepDispatcher\Models\Step;
-use StepDispatcher\States\Dispatched;
-use StepDispatcher\States\Pending;
-use StepDispatcher\States\Running;
 use StepDispatcher\Support\BaseCommand;
 use StepDispatcher\Support\Steps;
 use Throwable;
@@ -138,13 +135,7 @@ final class SyncOrdersCommand extends BaseCommand
                     // when the positions queue fell behind, that backlog
                     // turned into more backlog and a burst of duplicate
                     // exchange reads at hundreds of positions.
-                    $alreadyPending = Step::query()
-                        ->where('class', PrepareSyncOrdersJob::class)
-                        ->whereRaw("CAST(JSON_EXTRACT(arguments, '$.positionId') AS UNSIGNED) = ?", [$position->id])
-                        ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
-                        ->exists();
-
-                    if ($alreadyPending) {
+                    if (Step::hasLiveWorkflow($position, PrepareSyncOrdersJob::class)) {
                         $this->verboseComment("  Position #{$position->id}: Skipped (sync already pending)");
 
                         continue;
@@ -153,7 +144,7 @@ final class SyncOrdersCommand extends BaseCommand
                     // Don't pre-set child_block_uuid here. The orchestrator's
                     // compute() decides whether to spawn children (early-return
                     // when position isn't 'active' produces no children) and
-                    // calls $this->step->makeItAParent() inline at the moment
+                    // calls buildChildChainOnce() at the moment
                     // it actually dispatches its child lifecycle. Pre-setting
                     // would commit the step to parent-mode before compute()
                     // runs, which leaves a zombie when the early-return path

@@ -203,18 +203,19 @@ final class Account extends BaseModel
     }
 
     /**
-     * The 3-gate per-account readiness check used by
-     * `CreatePositionsCommand` (and any future code path that decides
-     * whether positions can open). All three must be true:
+     * The central per-account readiness check used before dispatching
+     * workflows that can open positions. Every gate must be true:
      *
      *   1. The account itself is `is_active=true && can_trade=true`
      *      (system-controlled — connectivity test gate).
-     *   2. The user's pause switch is on (`users.can_trade=true`,
-     *      user- or bot-controllable).
+     *   2. The user is active and their pause switch is on
+     *      (`users.is_active=true && users.can_trade=true`).
      *   3. The user's subscription is currently active (trial in
-     *      progress OR wallet covers next renewal AND not paused AND
-     *      renewal anchor in the future) — computed by
+     *      progress, a paid renewal anchor is still in the future, or
+     *      a free tier applies; always not paused) — computed by
      *      `$user->billing()->subscription()->isActive()`.
+     *   4. On a one-account tier, this account is the user's explicitly
+     *      designated active account.
      *
      * Global gates (BSCS, pump protection, exchange cooldown,
      * directional, slot count, dedupe) stay on the Kraite engine /
@@ -228,11 +229,22 @@ final class Account extends BaseModel
 
         $user = $this->user;
 
-        if ($user === null || ! $user->can_trade) {
+        if ($user === null || ! $user->is_active || ! $user->can_trade) {
             return false;
         }
 
-        return $user->billing()->subscription()->isActive();
+        if (! $user->billing()->subscription()->isActive()) {
+            return false;
+        }
+
+        $tier = $user->subscription;
+
+        if ($tier !== null && ! $tier->hasUnlimitedAccounts() && $tier->max_accounts === 1) {
+            return $user->active_account_id !== null
+                && (int) $user->active_account_id === (int) $this->id;
+        }
+
+        return true;
     }
 
     /**

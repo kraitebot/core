@@ -67,7 +67,7 @@ final class StoreAccountsBalancesCommand extends BaseCommand
     private function dispatchJob(): void
     {
         // Orchestrator self-elects to parent mode inside compute() via
-        // $this->step->makeItAParent() — only when at least one account is
+        // buildChildChainOnce() — only when at least one account is
         // active and gets a child step. Pre-setting here would zombie the
         // step on the no-active-accounts edge case.
         Step::create([

@@ -57,19 +57,19 @@ final class TouchTaapiDataForExchangeSymbolsJob extends BaseQueueableJob
             ];
         }
 
-        $childBlockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
-
-        foreach ($symbolsToVerify as $exchangeSymbol) {
-            Step::create([
-                'class' => TouchTaapiDataForExchangeSymbolJob::class,
-                'queue' => 'indicators',
-                'arguments' => [
-                    'exchangeSymbolId' => $exchangeSymbol->id,
-                ],
-                'block_uuid' => $childBlockUuid,
-                'index' => 1,
-            ]);
-        }
+        $this->buildChildChainOnce(function (string $childBlockUuid) use ($symbolsToVerify): void {
+            foreach ($symbolsToVerify as $exchangeSymbol) {
+                Step::create([
+                    'class' => TouchTaapiDataForExchangeSymbolJob::class,
+                    'queue' => 'indicators',
+                    'arguments' => [
+                        'exchangeSymbolId' => $exchangeSymbol->id,
+                    ],
+                    'block_uuid' => $childBlockUuid,
+                    'index' => 1,
+                ]);
+            }
+        });
 
         return [
             'symbols_to_verify' => $symbolsToVerify->count(),

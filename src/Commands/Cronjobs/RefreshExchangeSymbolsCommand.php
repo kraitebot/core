@@ -121,7 +121,7 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
             // All run at index 3 so they execute in parallel.
             //
             // Each orchestrator self-elects to parent mode inside its own compute()
-            // via $this->step->makeItAParent() — only when it actually has work
+            // via buildChildChainOnce() — only when it actually has work
             // to spawn. Pre-setting child_block_uuid here would zombie the step
             // when the orchestrator's empty-work early-return fires.
             Step::create([

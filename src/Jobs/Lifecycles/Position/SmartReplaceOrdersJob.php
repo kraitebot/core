@@ -68,50 +68,52 @@ final class SmartReplaceOrdersJob extends BaseQueueableJob
     public function compute()
     {
         $resolver = JobProxy::with($this->position->account);
-        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
-        $index = 1;
 
-        // Step 1: Scrub orphan algo orders on the exchange for this
-        // symbol. On exchanges where the UI's "modify" on algo orders
-        // actually cancels+recreates (Binance), the user's moved stop
-        // lands as a ghost we don't know about. Without this step, our
-        // recreation below lives alongside the ghost and both stops
-        // trigger. Exchanges whose modify is in-place resolve to the
-        // base no-op so this step completes immediately.
-        Step::create([
-            'class' => $resolver->resolve(CancelOrphanAlgoOrdersJob::class),
-            'queue' => 'positions',
-            'arguments' => [
-                'positionId' => $this->position->id,
-            ],
-            'block_uuid' => $blockUuid,
-            'index' => $index++,
-        ]);
+        $this->buildChildChainOnce(function (string $blockUuid) use ($resolver): void {
+            $index = 1;
 
-        // Recreate each cancelled order
-        foreach ($this->ordersToRecreate as $order) {
+            // Step 1: Scrub orphan algo orders on the exchange for this
+            // symbol. On exchanges where the UI's "modify" on algo orders
+            // actually cancels+recreates (Binance), the user's moved stop
+            // lands as a ghost we don't know about. Without this step, our
+            // recreation below lives alongside the ghost and both stops
+            // trigger. Exchanges whose modify is in-place resolve to the
+            // base no-op so this step completes immediately.
             Step::create([
-                'class' => $resolver->resolve(RecreateCancelledOrderJob::class),
+                'class' => $resolver->resolve(CancelOrphanAlgoOrdersJob::class),
                 'queue' => 'positions',
                 'arguments' => [
                     'positionId' => $this->position->id,
-                    'orderId' => $order->id,
                 ],
                 'block_uuid' => $blockUuid,
                 'index' => $index++,
             ]);
-        }
 
-        // Final step: Sync position orders to update status
-        Step::create([
-            'class' => $resolver->resolve(SyncPositionOrdersJob::class),
-            'queue' => 'positions',
-            'arguments' => [
-                'positionId' => $this->position->id,
-            ],
-            'block_uuid' => $blockUuid,
-            'index' => $index,
-        ]);
+            // Recreate each cancelled order
+            foreach ($this->ordersToRecreate as $order) {
+                Step::create([
+                    'class' => $resolver->resolve(RecreateCancelledOrderJob::class),
+                    'queue' => 'positions',
+                    'arguments' => [
+                        'positionId' => $this->position->id,
+                        'orderId' => $order->id,
+                    ],
+                    'block_uuid' => $blockUuid,
+                    'index' => $index++,
+                ]);
+            }
+
+            // Final step: Sync position orders to update status
+            Step::create([
+                'class' => $resolver->resolve(SyncPositionOrdersJob::class),
+                'queue' => 'positions',
+                'arguments' => [
+                    'positionId' => $this->position->id,
+                ],
+                'block_uuid' => $blockUuid,
+                'index' => $index,
+            ]);
+        });
 
         return [
             'position_id' => $this->position->id,

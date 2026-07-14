@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Carbon;
 use Kraite\Core\Abstracts\BaseModel;
 
 /**
@@ -18,11 +20,13 @@ use Kraite\Core\Abstracts\BaseModel;
  * @property int|null $max_exchanges
  * @property string|null $max_balance
  * @property bool $is_active
- * @property \Illuminate\Support\Carbon|null $created_at
- * @property \Illuminate\Support\Carbon|null $updated_at
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
  */
 final class Subscription extends BaseModel
 {
+    public const CANONICAL_BLACK = 'black';
+
     protected $casts = [
         'is_active' => 'boolean',
         'max_accounts' => 'integer',
@@ -38,6 +42,17 @@ final class Subscription extends BaseModel
     public function users(): HasMany
     {
         return $this->hasMany(User::class);
+    }
+
+    /**
+     * @param  Builder<Subscription>  $query
+     * @return Builder<Subscription>
+     */
+    public function scopePubliclyAvailable(Builder $query): Builder
+    {
+        return $query
+            ->where('is_active', true)
+            ->where('canonical', '!=', self::CANONICAL_BLACK);
     }
 
     /**

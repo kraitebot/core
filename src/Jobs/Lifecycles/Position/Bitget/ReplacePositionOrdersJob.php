@@ -42,74 +42,76 @@ final class ReplacePositionOrdersJob extends BaseReplacePositionOrdersJob
     public function computeApiable(): array
     {
         $resolver = JobProxy::with($this->position->account);
-        $blockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
 
-        // Step 1: Update status to 'syncing'
-        $statusLifecycleClass = $resolver->resolve(UpdatePositionStatusJob::class);
-        $statusLifecycle = new $statusLifecycleClass($this->position);
-        $nextIndex = $statusLifecycle->withStatus('syncing')->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: 1,
-            workflowId: null
-        );
+        $this->buildChildChainOnce(function (string $blockUuid) use ($resolver): void {
 
-        // Step 2: Cancel remaining orders on exchange
-        $cancelOrdersLifecycleClass = $resolver->resolve(CancelPositionOpenOrdersJob::class);
-        $cancelOrdersLifecycle = new $cancelOrdersLifecycleClass($this->position);
-        $nextIndex = $cancelOrdersLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+            // Step 1: Update status to 'syncing'
+            $statusLifecycleClass = $resolver->resolve(UpdatePositionStatusJob::class);
+            $statusLifecycle = new $statusLifecycleClass($this->position);
+            $nextIndex = $statusLifecycle->withStatus('syncing')->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: 1,
+                workflowId: null
+            );
 
-        // Step 3: Sync all orders from exchange
-        $syncOrdersLifecycleClass = $resolver->resolve(SyncPositionOrdersLifecycle::class);
-        $syncOrdersLifecycle = new $syncOrdersLifecycleClass($this->position);
-        $nextIndex = $syncOrdersLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+            // Step 2: Cancel remaining orders on exchange
+            $cancelOrdersLifecycleClass = $resolver->resolve(CancelPositionOpenOrdersJob::class);
+            $cancelOrdersLifecycle = new $cancelOrdersLifecycleClass($this->position);
+            $nextIndex = $cancelOrdersLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
 
-        // Step 4: Recreate limit ladder orders
-        $placeLimitOrdersLifecycleClass = $resolver->resolve(PlaceLimitOrdersLifecycle::class);
-        $placeLimitOrdersLifecycle = new $placeLimitOrdersLifecycleClass($this->position);
-        $nextIndex = $placeLimitOrdersLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+            // Step 3: Sync all orders from exchange
+            $syncOrdersLifecycleClass = $resolver->resolve(SyncPositionOrdersLifecycle::class);
+            $syncOrdersLifecycle = new $syncOrdersLifecycleClass($this->position);
+            $nextIndex = $syncOrdersLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
 
-        // Step 5: Recreate TP+SL combined (Bitget position-level TPSL)
-        $placeTpslLifecycleClass = $resolver->resolve(PlacePositionTpslLifecycle::class);
-        $placeTpslLifecycle = new $placeTpslLifecycleClass($this->position);
-        $nextIndex = $placeTpslLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+            // Step 4: Recreate limit ladder orders
+            $placeLimitOrdersLifecycleClass = $resolver->resolve(PlaceLimitOrdersLifecycle::class);
+            $placeLimitOrdersLifecycle = new $placeLimitOrdersLifecycleClass($this->position);
+            $nextIndex = $placeLimitOrdersLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
 
-        // Step 6: Activate position (validate orders, set status='active')
-        $activatePositionLifecycleClass = $resolver->resolve(ActivatePositionLifecycle::class);
-        $activatePositionLifecycle = new $activatePositionLifecycleClass($this->position);
-        $nextIndex = $activatePositionLifecycle->dispatch(
-            blockUuid: $blockUuid,
-            startIndex: $nextIndex,
-            workflowId: null
-        );
+            // Step 5: Recreate TP+SL combined (Bitget position-level TPSL)
+            $placeTpslLifecycleClass = $resolver->resolve(PlacePositionTpslLifecycle::class);
+            $placeTpslLifecycle = new $placeTpslLifecycleClass($this->position);
+            $nextIndex = $placeTpslLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
 
-        // resolve-exception: Cancel position if replacement workflow fails
-        Step::create([
-            'class' => $resolver->resolve(CancelPositionJob::class),
-            'queue' => 'positions',
-            'block_uuid' => $blockUuid,
-            'index' => 1,
-            'type' => 'resolve-exception',
-            'arguments' => [
-                'positionId' => $this->position->id,
-                'message' => 'Position replacement failed: '.($this->message ?? 'Unknown error'),
-            ],
-        ]);
+            // Step 6: Activate position (validate orders, set status='active')
+            $activatePositionLifecycleClass = $resolver->resolve(ActivatePositionLifecycle::class);
+            $activatePositionLifecycle = new $activatePositionLifecycleClass($this->position);
+            $activatePositionLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
+
+            // resolve-exception: Cancel position if replacement workflow fails
+            Step::create([
+                'class' => $resolver->resolve(CancelPositionJob::class),
+                'queue' => 'positions',
+                'block_uuid' => $blockUuid,
+                'index' => 1,
+                'type' => 'resolve-exception',
+                'arguments' => [
+                    'positionId' => $this->position->id,
+                    'message' => 'Position replacement failed: '.($this->message ?? 'Unknown error'),
+                ],
+            ]);
+        });
 
         return [
             'position_id' => $this->position->id,

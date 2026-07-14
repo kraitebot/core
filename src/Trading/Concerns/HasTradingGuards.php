@@ -115,8 +115,8 @@ trait HasTradingGuards
      * Rules:
      * - User must be active and allowed to trade.
      * - Account must be allowed to trade.
-     * - User's billing state must permit opens (trial active OR wallet
-     *   covers at least one daily debit).
+     * - User's billing state must permit opens (trial active, paid
+     *   renewal not yet due, or free tier; never paused).
      * - If user is on a tier capped at 1 account, only their designated
      *   active_account opens new positions.
      * - If no positions are open, allow.
@@ -126,29 +126,8 @@ trait HasTradingGuards
     {
         $opened = $this->account->positions()->opened();
 
-        // User/account gates
-        if (! $this->account->user->is_active) {
+        if (! $this->account->isReadyToTrade()) {
             return false;
-        }
-        if (! $this->account->user->can_trade) {
-            return false;
-        }
-        if (! $this->account->can_trade) {
-            return false;
-        }
-
-        if ($this->account->user->isInClosingMode()) {
-            return false;
-        }
-
-        $tier = $this->account->user->subscription;
-
-        if ($tier !== null && ! $tier->hasUnlimitedAccounts() && (int) $tier->max_accounts === 1) {
-            $activeId = $this->account->user->active_account_id;
-
-            if ($activeId !== null && (int) $this->account->id !== (int) $activeId) {
-                return false;
-            }
         }
 
         // No positions opened?

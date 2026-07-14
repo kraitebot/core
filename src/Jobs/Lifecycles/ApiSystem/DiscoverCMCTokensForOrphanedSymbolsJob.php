@@ -54,22 +54,19 @@ final class DiscoverCMCTokensForOrphanedSymbolsJob extends BaseQueueableJob
             ];
         }
 
-        // Self-elect to parent mode now that we have children to spawn.
-        // Idempotent: returns existing child_block_uuid on retry so re-runs
-        // don't lose the link to children created on the first attempt.
-        $childBlockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
-
-        foreach ($orphanedSymbols as $exchangeSymbol) {
-            Step::create([
-                'class' => DiscoverCMCTokenForExchangeSymbolJob::class,
-                'queue' => 'indicators',
-                'arguments' => [
-                    'exchangeSymbolId' => $exchangeSymbol->id,
-                ],
-                'block_uuid' => $childBlockUuid,
-                'index' => 1,
-            ]);
-        }
+        $this->buildChildChainOnce(function (string $childBlockUuid) use ($orphanedSymbols): void {
+            foreach ($orphanedSymbols as $exchangeSymbol) {
+                Step::create([
+                    'class' => DiscoverCMCTokenForExchangeSymbolJob::class,
+                    'queue' => 'indicators',
+                    'arguments' => [
+                        'exchangeSymbolId' => $exchangeSymbol->id,
+                    ],
+                    'block_uuid' => $childBlockUuid,
+                    'index' => 1,
+                ]);
+            }
+        });
 
         return [
             'orphaned_count' => $orphanedSymbols->count(),

@@ -37,17 +37,15 @@ final class SyncLeverageBracketsJob extends BaseQueueableJob
 
     public function compute()
     {
-        // Default implementation always creates one child — self-elect to
-        // parent mode now. Idempotent on retry via the ?? fallback.
-        $childBlockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
-
-        Step::create([
-            'class' => AtomicSyncLeverageBracketsJob::class,
-            'queue' => 'cronjobs',
-            'arguments' => ['apiSystemId' => $this->apiSystem->id],
-            'block_uuid' => $childBlockUuid,
-            'index' => 1,
-        ]);
+        $this->buildChildChainOnce(function (string $childBlockUuid): void {
+            Step::create([
+                'class' => AtomicSyncLeverageBracketsJob::class,
+                'queue' => 'cronjobs',
+                'arguments' => ['apiSystemId' => $this->apiSystem->id],
+                'block_uuid' => $childBlockUuid,
+                'index' => 1,
+            ]);
+        });
 
         return [
             'exchange' => $this->apiSystem->canonical,

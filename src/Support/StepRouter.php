@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Support;
 
+use Illuminate\Database\Eloquent\Collection;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ForbiddenHostname;
@@ -163,6 +164,26 @@ final class StepRouter
         $map = $this->candidateMap();
 
         return $map[$logical] ?? [];
+    }
+
+    /**
+     * Resolve every Redis queue that can receive a logical queue's jobs.
+     * Unknown logical queues remain unrouted and therefore keep their raw name.
+     *
+     * @return array<int, string>
+     */
+    public function physicalQueuesFor(string $logical): array
+    {
+        $candidates = $this->candidatesFor($logical);
+
+        if ($candidates === []) {
+            return [$logical];
+        }
+
+        return array_map(
+            fn (string $hostname): string => $this->buildPhysicalQueue($logical, $hostname),
+            $candidates,
+        );
     }
 
     /**
@@ -349,9 +370,9 @@ final class StepRouter
      * still open). Includes BOTH account-scoped rows and system-wide
      * rows (account_id IS NULL applies to all accounts).
      *
-     * @return \Illuminate\Database\Eloquent\Collection<int, ForbiddenHostname>
+     * @return Collection<int, ForbiddenHostname>
      */
-    private function loadActiveBans(int $apiSystemId, int $accountId): \Illuminate\Database\Eloquent\Collection
+    private function loadActiveBans(int $apiSystemId, int $accountId): Collection
     {
         return ForbiddenHostname::query()
             ->where('api_system_id', $apiSystemId)
@@ -365,9 +386,9 @@ final class StepRouter
     }
 
     /**
-     * @param  \Illuminate\Database\Eloquent\Collection<int, ForbiddenHostname>  $bans
+     * @param  Collection<int, ForbiddenHostname>  $bans
      */
-    private function hasAccountBlocked(\Illuminate\Database\Eloquent\Collection $bans): bool
+    private function hasAccountBlocked(Collection $bans): bool
     {
         return $bans->contains(
             static fn (ForbiddenHostname $ban): bool => $ban->type === ForbiddenHostname::TYPE_ACCOUNT_BLOCKED
@@ -375,9 +396,9 @@ final class StepRouter
     }
 
     /**
-     * @param  \Illuminate\Database\Eloquent\Collection<int, ForbiddenHostname>  $bans
+     * @param  Collection<int, ForbiddenHostname>  $bans
      */
-    private function hasPermanentBan(\Illuminate\Database\Eloquent\Collection $bans): bool
+    private function hasPermanentBan(Collection $bans): bool
     {
         return $bans->contains(
             static fn (ForbiddenHostname $ban): bool => $ban->type === ForbiddenHostname::TYPE_IP_NOT_WHITELISTED
@@ -389,10 +410,10 @@ final class StepRouter
      * ip_banned. account_blocked is excluded here because it doesn't
      * depend on the IP — it's about the credentials.
      *
-     * @param  \Illuminate\Database\Eloquent\Collection<int, ForbiddenHostname>  $bans
+     * @param  Collection<int, ForbiddenHostname>  $bans
      * @return array<int, string>
      */
-    private function rotationBannedIps(\Illuminate\Database\Eloquent\Collection $bans): array
+    private function rotationBannedIps(Collection $bans): array
     {
         return $bans
             ->whereIn('type', [

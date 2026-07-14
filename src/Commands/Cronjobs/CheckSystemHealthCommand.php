@@ -22,6 +22,7 @@ use Kraite\Core\Support\Health\OrphanReconciler;
 use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
+use Kraite\Core\Support\StepRouter;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 use RuntimeException;
 use StepDispatcher\Models\Step;
@@ -194,6 +195,11 @@ final class CheckSystemHealthCommand extends BaseCommand
 
     protected $description = 'Run ten staleness / connectivity checks across the bot\'s critical data paths and alert per failed signal.';
 
+    public function __construct(private readonly StepRouter $stepRouter)
+    {
+        parent::__construct();
+    }
+
     /**
      * Pure-function disk-pressure evaluation. Extracted so the alert
      * path is unit-testable without a host with low disk. Returns null
@@ -351,7 +357,6 @@ final class CheckSystemHealthCommand extends BaseCommand
         // the freshness threshold. Daemon was running, then stopped or
         // got pair-mapper drift mid-flight.
         $stale = $this->eligibleExchangeSymbolsQuery()
-            ->notDelisted()
             ->join('exchange_symbol_prices', 'exchange_symbol_prices.exchange_symbol_id', '=', 'exchange_symbols.id')
             ->whereNotNull('exchange_symbol_prices.mark_price_synced_at')
             ->where('exchange_symbol_prices.mark_price_synced_at', '<', $threshold)
@@ -383,7 +388,6 @@ final class CheckSystemHealthCommand extends BaseCommand
         // Distinct signal name lets ops triage "never synced" (likely
         // pair-mapping issue) vs "stale" (likely daemon issue).
         $missing = $this->eligibleExchangeSymbolsQuery()
-            ->notDelisted()
             ->join('exchange_symbol_prices', 'exchange_symbol_prices.exchange_symbol_id', '=', 'exchange_symbols.id')
             ->whereNull('exchange_symbol_prices.mark_price_synced_at')
             ->where('exchange_symbol_prices.created_at', '<', $missingGraceCutoff)
@@ -780,7 +784,10 @@ final class CheckSystemHealthCommand extends BaseCommand
         try {
             $depths = [];
             foreach (array_keys(self::HORIZON_QUEUE_DEPTH_THRESHOLDS) as $queue) {
-                $depths[$queue] = (int) Redis::connection()->llen("queues:{$queue}");
+                $depths[$queue] = array_sum(array_map(
+                    fn (string $physicalQueue): int => (int) Redis::connection()->llen("queues:{$physicalQueue}"),
+                    $this->stepRouter->physicalQueuesFor($queue),
+                ));
             }
         } catch (Throwable) {
             // Redis already covered by check #8; don't double-alert.
@@ -1323,7 +1330,8 @@ final class CheckSystemHealthCommand extends BaseCommand
                         ->from('positions')
                         ->whereColumn('positions.exchange_symbol_id', 'exchange_symbols.id')
                         ->whereIn('positions.status', $openedStatuses));
-            });
+            })
+            ->needsOperationalMonitoring();
     }
 
     /**
@@ -1365,24 +1373,12 @@ final class CheckSystemHealthCommand extends BaseCommand
             return 0;
         }
 
-        $terminalStates = Step::terminalStepStates();
         $candidateClasses = [PrepareSyncOrdersJob::class, AtomicSyncPositionOrdersJob::class];
 
         $alerts = 0;
 
         foreach ($candidates as $position) {
-            $hasLiveStep = Step::query()
-                ->whereIn('class', $candidateClasses)
-                ->whereNotIn('state', $terminalStates)
-                ->where(static function ($query) use ($position): void {
-                    $query->where(static function ($qq) use ($position): void {
-                        $qq->where('relatable_type', Position::class)
-                            ->where('relatable_id', $position->id);
-                    })->orWhereJsonContains('arguments->positionId', $position->id);
-                })
-                ->exists();
-
-            if ($hasLiveStep) {
+            if (Step::hasLiveWorkflow($position, $candidateClasses)) {
                 continue;
             }
 

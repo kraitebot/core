@@ -268,9 +268,7 @@ final class RecoverPositionsCommand extends BaseCommand
         // referencing that id, which would then mutate the rebuilt
         // state on the next dispatcher tick.
         $cancelOne = function () use ($positionIds, $orderIds): int {
-            $terminal = Step::terminalStepStates();
-
-            $query = Step::query()->whereNotIn('state', $terminal);
+            $query = Step::query()->nonTerminal();
 
             $query->where(function ($q) use ($positionIds, $orderIds): void {
                 if ($positionIds !== []) {

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Models;
 
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 use Kraite\Core\Abstracts\BaseModel;
 
 /**
@@ -16,13 +17,14 @@ use Kraite\Core\Abstracts\BaseModel;
  * @property string|null $pay_amount
  * @property string $price_amount
  * @property string|null $outcome_amount
+ * @property string $credited_amount
  * @property string $outcome_currency
  * @property string $status
  * @property string|null $invoice_url
- * @property \Illuminate\Support\Carbon|null $credited_at
+ * @property Carbon|null $credited_at
  * @property array<string, mixed>|null $raw_payload
- * @property \Illuminate\Support\Carbon $created_at
- * @property \Illuminate\Support\Carbon $updated_at
+ * @property Carbon $created_at
+ * @property Carbon $updated_at
  */
 final class Payment extends BaseModel
 {
@@ -60,6 +62,7 @@ final class Payment extends BaseModel
         'pay_amount' => 'decimal:12',
         'price_amount' => 'decimal:4',
         'outcome_amount' => 'decimal:4',
+        'credited_amount' => 'decimal:4',
         'credited_at' => 'datetime',
         'raw_payload' => 'array',
     ];

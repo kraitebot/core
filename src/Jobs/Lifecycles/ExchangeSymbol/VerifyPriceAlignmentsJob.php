@@ -10,6 +10,7 @@ use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Jobs\Atomic\ExchangeSymbol\VerifyPriceAlignmentJob;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
+use Kraite\Core\Models\Position;
 use StepDispatcher\Models\Step;
 
 /**
@@ -45,17 +46,17 @@ final class VerifyPriceAlignmentsJob extends BaseQueueableJob
             ];
         }
 
-        $childBlockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
-
-        foreach ($candidateIds as $exchangeSymbolId) {
-            Step::create([
-                'class' => VerifyPriceAlignmentJob::class,
-                'queue' => 'cronjobs',
-                'arguments' => ['exchangeSymbolId' => (int) $exchangeSymbolId],
-                'block_uuid' => $childBlockUuid,
-                'index' => 1,
-            ]);
-        }
+        $this->buildChildChainOnce(function (string $childBlockUuid) use ($candidateIds): void {
+            foreach ($candidateIds as $exchangeSymbolId) {
+                Step::create([
+                    'class' => VerifyPriceAlignmentJob::class,
+                    'queue' => 'cronjobs',
+                    'arguments' => ['exchangeSymbolId' => (int) $exchangeSymbolId],
+                    'block_uuid' => $childBlockUuid,
+                    'index' => 1,
+                ]);
+            }
+        });
 
         return [
             'steps_created' => $candidateIds->count(),
@@ -82,19 +83,25 @@ final class VerifyPriceAlignmentsJob extends BaseQueueableJob
 
         return ExchangeSymbol::query()
             ->where('api_system_id', '!=', $binanceSystemId)
-            // Delisted rows must never reach the live price check — a dead
-            // ticker (TON after the GRAM rebrand) makes the exchange answer
-            // "parameter does not exist" on every pass (Bitget 40034,
-            // 2026-07-11, 36 failed steps). scopeNotDelisted's contract.
-            ->notDelisted()
+            ->needsOperationalMonitoring()
             ->whereNotNull('symbol_id')
             ->whereExists(function (QueryBuilder $query) use ($binanceSystemId): void {
+                $openedStatuses = (new Position)->openedStatuses();
+
                 $query->from('exchange_symbols as binance_es')
                     ->where('binance_es.api_system_id', $binanceSystemId)
-                    ->where('binance_es.is_marked_for_delisting', false)
-                    ->where(function (QueryBuilder $query): void {
-                        $query->whereNull('binance_es.delivery_at')
-                            ->orWhere('binance_es.delivery_at', '>', now());
+                    ->where(function (QueryBuilder $query) use ($openedStatuses): void {
+                        $query->where(function (QueryBuilder $query): void {
+                            $query->where('binance_es.is_marked_for_delisting', false)
+                                ->where(function (QueryBuilder $query): void {
+                                    $query->whereNull('binance_es.delivery_at')
+                                        ->orWhere('binance_es.delivery_at', '>', now());
+                                });
+                        })->orWhereExists(static fn (QueryBuilder $positions) => $positions
+                            ->selectRaw('1')
+                            ->from('positions')
+                            ->whereColumn('positions.exchange_symbol_id', 'exchange_symbols.id')
+                            ->whereIn('positions.status', $openedStatuses));
                     })
                     ->whereColumn('binance_es.symbol_id', 'exchange_symbols.symbol_id')
                     ->whereColumn('binance_es.quote', 'exchange_symbols.quote')

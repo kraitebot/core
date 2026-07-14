@@ -44,91 +44,60 @@ final class PreparePositionsOpeningJob extends BaseQueueableJob
 
     public function compute()
     {
-        // Self-elect to parent mode. Idempotent: returns the existing
-        // child_block_uuid on retry (set on the prior run that may have
-        // crashed mid-flight) so the idempotency guard below can detect
-        // already-spawned children.
-        $childBlockUuid = $this->step->child_block_uuid ?? $this->step->makeItAParent();
-
-        // Idempotency guard — if a prior invocation already wrote children
-        // into this block, this is a retry (typically triggered by
-        // steps:recover-stale flipping the parent Running → Pending after
-        // the stale threshold, because the framework cannot distinguish a
-        // parent legitimately waiting for its child tree from an orphaned
-        // Running step). Without this guard, every retry would create
-        // another full round of Verify/Query/Assign/Dispatch steps, and
-        // AssignBestTokensToPositionSlotsJob would spawn duplicate Position
-        // rows on every round.
-        $alreadyDispatched = Step::query()
-            ->where('block_uuid', $childBlockUuid)
-            ->exists();
-
-        if ($alreadyDispatched) {
-            return [
-                'account_id' => $this->account->id,
-                'message' => 'Retry detected — child block already populated, no-op.',
-            ];
-        }
-
         $resolver = JobProxy::with($this->account);
         $workflowId = (string) Str::uuid();
 
-        // Step 1: Query balance + verify minimum (showstopper)
-        // Uses Lifecycle pattern for exchange-specific behavior
-        $lifecycleClass = $resolver->resolve(VerifyMinAccountBalanceLifecycle::class);
-        $lifecycle = new $lifecycleClass($this->account);
-        $nextIndex = $lifecycle->dispatch(
-            blockUuid: $childBlockUuid,
-            startIndex: 1,
-            workflowId: $workflowId
-        );
+        $built = $this->buildChildChainOnce(function (string $childBlockUuid) use ($resolver, $workflowId): void {
+            $lifecycleClass = $resolver->resolve(VerifyMinAccountBalanceLifecycle::class);
+            $lifecycle = new $lifecycleClass($this->account);
+            $nextIndex = $lifecycle->dispatch(
+                blockUuid: $childBlockUuid,
+                startIndex: 1,
+                workflowId: $workflowId
+            );
 
-        // Step 2: Query exchange for open positions (parallel)
-        $positionsLifecycleClass = $resolver->resolve(QueryAccountPositionsLifecycle::class);
-        $positionsLifecycle = new $positionsLifecycleClass($this->account);
-        $positionsLifecycle->dispatch(
-            blockUuid: $childBlockUuid,
-            startIndex: $nextIndex,
-            workflowId: $workflowId
-        );
+            $positionsLifecycleClass = $resolver->resolve(QueryAccountPositionsLifecycle::class);
+            $positionsLifecycle = new $positionsLifecycleClass($this->account);
+            $positionsLifecycle->dispatch(
+                blockUuid: $childBlockUuid,
+                startIndex: $nextIndex,
+                workflowId: $workflowId
+            );
 
-        // Step 2: Query exchange for open orders (parallel - same index)
-        $ordersLifecycleClass = $resolver->resolve(QueryAccountOpenOrdersLifecycle::class);
-        $ordersLifecycle = new $ordersLifecycleClass($this->account);
-        $nextIndex = $ordersLifecycle->dispatch(
-            blockUuid: $childBlockUuid,
-            startIndex: $nextIndex,
-            workflowId: $workflowId
-        );
+            $ordersLifecycleClass = $resolver->resolve(QueryAccountOpenOrdersLifecycle::class);
+            $ordersLifecycle = new $ordersLifecycleClass($this->account);
+            $nextIndex = $ordersLifecycle->dispatch(
+                blockUuid: $childBlockUuid,
+                startIndex: $nextIndex,
+                workflowId: $workflowId
+            );
 
-        // Step 3: Create slots + assign best tokens (no resolver needed - same for all exchanges)
-        Step::create([
-            'class' => AssignBestTokensToPositionSlotsJob::class,
-            'queue' => 'cronjobs',
-            'arguments' => ['accountId' => $this->account->id],
-            'block_uuid' => $childBlockUuid,
-            'workflow_id' => $workflowId,
-            'index' => $nextIndex,
-        ]);
+            Step::create([
+                'class' => AssignBestTokensToPositionSlotsJob::class,
+                'queue' => 'cronjobs',
+                'arguments' => ['accountId' => $this->account->id],
+                'block_uuid' => $childBlockUuid,
+                'workflow_id' => $workflowId,
+                'index' => $nextIndex,
+            ]);
 
-        $nextIndex++;
+            $nextIndex++;
 
-        // Step 4: Dispatch positions for trading
-        // No child_block_uuid — each position is dispatched in its own isolated
-        // block_uuid (see DispatchPositionSlotsJob), so this step has no
-        // children of its own and must self-complete once compute() returns.
-        Step::create([
-            'class' => DispatchPositionSlotsJob::class,
-            'queue' => 'cronjobs',
-            'arguments' => ['accountId' => $this->account->id],
-            'block_uuid' => $childBlockUuid,
-            'workflow_id' => $workflowId,
-            'index' => $nextIndex,
-        ]);
+            Step::create([
+                'class' => DispatchPositionSlotsJob::class,
+                'queue' => 'cronjobs',
+                'arguments' => ['accountId' => $this->account->id],
+                'block_uuid' => $childBlockUuid,
+                'workflow_id' => $workflowId,
+                'index' => $nextIndex,
+            ]);
+        });
 
         return [
             'account_id' => $this->account->id,
-            'message' => 'Position opening preparation initiated',
+            'message' => $built
+                ? 'Position opening preparation initiated'
+                : 'Retry detected — child block already populated, no-op.',
         ];
     }
 }
