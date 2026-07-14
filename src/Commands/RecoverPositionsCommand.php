@@ -6,17 +6,19 @@ namespace Kraite\Core\Commands;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+use Kraite\Core\Jobs\Recovery\RecoverAccountPositionsJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
-use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
-use Kraite\Core\Support\Recovery\RecovererResolver;
+use Kraite\Core\Support\Recovery\AccountRecoveryRunner;
 use Kraite\Core\Support\Recovery\RecoveryReport;
 use StepDispatcher\Models\Step;
 use StepDispatcher\States\Cancelled;
-use StepDispatcher\States\NotRunnable;
+use StepDispatcher\States\Failed;
+use StepDispatcher\States\Stopped;
 use StepDispatcher\Support\BaseCommand;
 use StepDispatcher\Support\StepDispatcher;
 use StepDispatcher\Support\Steps;
@@ -53,7 +55,9 @@ final class RecoverPositionsCommand extends BaseCommand
                             {--override : Delete matching local positions+orders BEFORE recovery so the rebuild is from scratch (scoped by --account_id and --token if set)}
                             {--allow-untested-exchange : Permit recoverers flagged as untested (Bybit, KuCoin) to run; they are gated off by default to prevent disaster paths from running unverified code at the worst possible time}
                             {--force : Required for unscoped --override (no --account_id, no --token). Without this gate a fleet-wide wipe would only need a single mistyped flag — explicit --force makes the destructive intent visible}
-                            {--allow-snapshot-failure : Required for --override to proceed when the pre-run mysqldump snapshot fails. Default refusal protects the only restore point}';
+                            {--allow-snapshot-failure : Required for --override to proceed when the pre-run mysqldump snapshot fails. Default refusal protects the only restore point}
+                            {--inline : Run single-box + sequential (the deepest-disaster path: full dispatcher freeze, direct execution). Default is fleet fan-out across the workers. --dry-run always forces --inline}
+                            {--poll-timeout-minutes=30 : Fan-out mode: how long to wait for the per-account recovery jobs to settle before reporting a timeout}';
 
     protected $description = 'Reconstruct local positions + orders from the exchange APIs (disaster recovery, idempotent)';
 
@@ -63,6 +67,12 @@ final class RecoverPositionsCommand extends BaseCommand
         $tokenFilter = $this->option('token');
         $dryRun = (bool) $this->option('dry-run');
         $override = (bool) $this->option('override');
+
+        // A distributed dry-run cannot be rolled back across many committed
+        // per-account jobs, so a truthful dry-run must take the single-box
+        // transactional path. --inline forces it explicitly (deepest-disaster
+        // mode, or single-account targeted recovery).
+        $inline = $dryRun || (bool) $this->option('inline');
 
         $accounts = $this->resolveTargetAccounts($accountId);
         if ($accounts->isEmpty()) {
@@ -87,123 +97,55 @@ final class RecoverPositionsCommand extends BaseCommand
         $report = new RecoveryReport;
         $report->dryRun = $dryRun;
 
-        $this->printHeader($accounts->count(), $accountId, $tokenFilter, $dryRun, $override);
+        $this->printHeader($accounts->count(), $accountId, $tokenFilter, $dryRun, $override, $inline);
 
-        // Deactivate the step dispatcher in BOTH prefixes for the whole
-        // run so no workflow chains pick up half-recovered positions
-        // mid-write. `StepDispatcher::deactivate()` is prefix-scoped via
-        // `RuntimeContext::current()` — calling it once would only freeze
-        // the default `active.flag`, leaving `trading_active.flag`
-        // running. Trading workflows would keep dispatching against the
-        // half-rebuilt DB. The flag is restored in the finally regardless
-        // of outcome.
-        $this->deactivateAllDispatchers();
-
-        // Phase 5 — operational guards. Capture pre-run trading flag
-        // so we restore it on completion. Dump positions + orders
-        // BEFORE any writes happen so a botched recovery has a known
-        // restore point. Both are guarded in the finally so a
-        // mid-run exception doesn't leave the system frozen.
+        // Capture pre-run trading flag so we can restore it, and dump
+        // positions + orders BEFORE any writes so a botched recovery has a
+        // known restore point. Both modes freeze opening the same way; only
+        // the execution (inline vs fleet fan-out) differs below.
         $tradingWasOn = $this->freezeTrading();
         $snapshotPath = $dryRun ? null : $this->snapshotDatabase($report);
 
         // Snapshot is the only restore point a botched destructive
         // override can fall back on. Refuse to proceed with --override
         // when the snapshot failed unless the operator explicitly opts
-        // in via --allow-snapshot-failure. Pre-fix, the snapshot
-        // failure logged a warning and the destructive path continued.
+        // in via --allow-snapshot-failure.
         if ($override && ! $dryRun && $snapshotPath === null && ! (bool) $this->option('allow-snapshot-failure')) {
             $this->error('--override aborted: pre-run mysqldump snapshot failed and no restore point exists. Re-run with --allow-snapshot-failure if you have an alternative recovery plan.');
             $this->restoreTrading($tradingWasOn);
-            $this->activateAllDispatchers();
 
             return self::FAILURE;
         }
 
-        $rolledBack = false;
+        if ($inline) {
+            $result = $this->runInline($accounts, $tokenFilter, $override, $dryRun, $report);
 
-        // Per-account exchange-position keys captured during Phase 1
-        // and consumed by Phases 2 + 4. Format: account_id => array<int, "SYMBOL:DIRECTION">.
-        $exchangeKeysByAccount = [];
-
-        try {
-            if ($dryRun) {
-                // Wrap the entire run — wipe + rebuild — in an outer
-                // transaction that we explicitly roll back at the end.
-                // The per-position transactions inside become savepoints.
-                // The wipe MUST be inside this transaction; if it ran
-                // before the transaction began, --dry-run --override
-                // would actually delete positions and only the rebuild
-                // would roll back, leaving the DB in a permanently
-                // broken state.
-                DB::beginTransaction();
-            }
-
-            if ($override) {
-                $this->wipeMatchingState($accounts, $tokenFilter, $report, $dryRun);
-            }
-
-            // Phase 1 — exchange → local. Walk every open position on
-            // every in-scope account; create / reconcile.
-            foreach ($accounts as $account) {
-                $report->accountsChecked++;
-                $this->processAccount($account, $tokenFilter, $report);
-                $exchangeKeysByAccount[$account->id] = $this->fetchExchangePositionKeys($account);
-            }
-
-            // Phase 2 — local → exchange close-detection. Local
-            // open-status positions whose key isn't on the exchange
-            // closed during the gap. Mark closed.
-            $this->markClosedDuringGap($accounts, $tokenFilter, $exchangeKeysByAccount, $report);
-
-            // Phase 3 — order-status mirror. Local non-terminal
-            // orders on still-active positions get apiSync'd so any
-            // CANCELLED / FILLED / EXPIRED status drift from the gap
-            // is reflected locally.
-            $this->mirrorOrderStatuses($accounts, $tokenFilter, $report);
-
-            // Phase 4 — stuck-state reset. Positions in
-            // opening / syncing / cancelling that no longer have an
-            // in-flight workflow get reset based on exchange truth.
-            $this->resetStuckStates($accounts, $tokenFilter, $exchangeKeysByAccount, $report);
-
-            if ($dryRun) {
-                DB::rollBack();
-                $rolledBack = true;
-                $report->line('');
-                $report->line('[DRY-RUN] All writes rolled back. Re-run without --dry-run to persist.');
-            }
-        } catch (Throwable $e) {
-            if ($dryRun && ! $rolledBack) {
-                DB::rollBack();
-            }
-
-            $this->error('Recovery aborted: '.$e->getMessage());
-            $report->warning('Aborted: '.$e->getMessage());
             $this->renderReport($report);
             $this->restoreTrading($tradingWasOn);
 
-            return self::FAILURE;
-        } finally {
-            // Always restore the dispatcher flag in BOTH prefixes — even
-            // on exception — so workers don't stay idle indefinitely
-            // after a failed run. Mirrors the dual-prefix freeze above.
-            $this->activateAllDispatchers();
+            if ($result === self::SUCCESS && ! $dryRun) {
+                $this->notifyCompletion($report, $snapshotPath);
+            }
+
+            return $result;
         }
+
+        // Fleet fan-out.
+        $result = $this->runFanOut($accounts, $tokenFilter, $override, $report);
 
         $this->renderReport($report);
 
-        // Phase 5 — restore trading flag + fire completion notification.
-        // Trading restore lives outside the try/catch so a successful
-        // recovery flips it back exactly once; failures restored it
-        // in the catch block above.
-        $this->restoreTrading($tradingWasOn);
-
-        if (! $dryRun) {
+        if ($result === self::SUCCESS) {
+            $this->restoreTrading($tradingWasOn);
             $this->notifyCompletion($report, $snapshotPath);
+        } else {
+            // Recovery did not fully settle — leave trading frozen (a safe
+            // state: no new opens) rather than restore over half-recovered
+            // accounts. The per-account jobs keep running on the fleet.
+            $this->warn('Recovery did not fully settle — trading stays frozen (allow_opening_positions=false). Accounts may still be recovering on the fleet. Re-run to resume, or warm up to lift the freeze once verified.');
         }
 
-        return self::SUCCESS;
+        return $result;
     }
 
     /**
@@ -223,73 +165,7 @@ final class RecoverPositionsCommand extends BaseCommand
         return $query->where('is_active', true)->get();
     }
 
-    /**
-     * Run recovery for one account. Health-check first; on failure the
-     * account is logged and skipped without touching the DB.
-     */
-    protected function processAccount(Account $account, ?string $tokenFilter, RecoveryReport $report): void
-    {
-        $exchange = $account->apiSystem->canonical ?? 'unknown';
-
-        $report->line("=== Account #{$account->id} ({$account->name}, {$exchange}) ===");
-
-        if (! $this->healthCheck($account, $report)) {
-            $report->accountsSkipped++;
-
-            return;
-        }
-
-        try {
-            $recoverer = RecovererResolver::for($account, $report, $tokenFilter);
-
-            if ($recoverer->isUntested() && ! (bool) $this->option('allow-untested-exchange')) {
-                $report->accountsSkipped++;
-                $report->warning(
-                    "Account #{$account->id} ({$exchange}) skipped — recoverer flagged untested. Re-run with --allow-untested-exchange to permit."
-                );
-                $report->line('  ⚠ Recoverer is flagged UNTESTED for this exchange. Skipped (use --allow-untested-exchange to override).');
-
-                return;
-            }
-
-            $recoverer->run();
-            $report->accountsOk++;
-        } catch (Throwable $e) {
-            $report->accountsSkipped++;
-            $report->warning("Account #{$account->id} ({$exchange}) aborted: {$e->getMessage()}");
-            $report->line("  ✗ Recoverer aborted: {$e->getMessage()}");
-        }
-    }
-
-    /**
-     * Light authenticated round-trip via apiQueryBalance. Verifies
-     * API credentials are valid before recovery runs. Failure here
-     * means the rest of the recovery is guaranteed to fail too.
-     */
-    protected function healthCheck(Account $account, RecoveryReport $report): bool
-    {
-        try {
-            $response = $account->apiQueryBalance();
-
-            if ($response->result === []) {
-                $report->warning("Account #{$account->id}: empty balance response — credentials likely invalid");
-                $report->line('  ✗ API health-check returned empty body');
-
-                return false;
-            }
-
-            $report->line('  ✓ API credentials valid');
-
-            return true;
-        } catch (Throwable $e) {
-            $report->warning("Account #{$account->id}: balance call failed — {$e->getMessage()}");
-            $report->line("  ✗ API health-check failed: {$e->getMessage()}");
-
-            return false;
-        }
-    }
-
-    protected function printHeader(int $accountCount, $accountId, ?string $tokenFilter, bool $dryRun, bool $override): void
+    protected function printHeader(int $accountCount, $accountId, ?string $tokenFilter, bool $dryRun, bool $override, bool $inline): void
     {
         $this->line('');
         $this->line('======================================================================');
@@ -301,9 +177,10 @@ final class RecoverPositionsCommand extends BaseCommand
             $this->line(' Token filter:      '.$tokenFilter);
         }
 
+        $this->line(' Mode:              '.($inline ? 'INLINE (single-box, sequential)' : 'FLEET FAN-OUT (distributed across workers)'));
         $this->line(' Dry-run:           '.($dryRun ? 'YES (no writes will persist)' : 'NO'));
         $this->line(' Override:          '.($override ? 'YES (matching positions+orders will be wiped first)' : 'NO'));
-        $this->line(' Dispatcher:        deactivated for the duration of this run');
+        $this->line(' Dispatcher:        '.($inline ? 'deactivated for the duration of this run' : 'running (routes recovery jobs); opening frozen via flag'));
         $this->line('======================================================================');
         $this->line('');
     }
@@ -638,365 +515,275 @@ final class RecoverPositionsCommand extends BaseCommand
         }
     }
 
-    // =====================================================================
-    // PHASE 2 — close-detection sweep
-    // =====================================================================
-
     /**
-     * Pull a list of "SYMBOL:DIRECTION" keys from the exchange's
-     * current open-positions snapshot for the given account. Used
-     * by Phases 2 + 4 to compare against local DB state.
-     *
-     * Mirrors the normalisation logic in
-     * `CheckSystemHealthCommand::reconcileAccountOrphans` —
-     * one-way mode returns positions keyed `SYMBOL:BOTH`, derive
-     * LONG / SHORT from the `positionAmt` sign so the comparison
-     * is apples-to-apples regardless of mode.
-     *
-     * Failure (account API down, network blip) returns an EMPTY
-     * array. The Phase 2 sweep treats an empty exchange snapshot
-     * the same as "every local position closed during the gap"
-     * — which is exactly wrong if the API is just temporarily
-     * unreachable. To prevent false closes, callers should refuse
-     * to mutate state if this returns empty AND there are local
-     * open positions for the account; that guard lives in
-     * `markClosedDuringGap()`.
-     *
-     * @return array<int, string>
+     * Single-box sequential recovery (deepest-disaster / dry-run path).
+     * Full dispatcher freeze so no workflow picks up half-recovered state,
+     * then each account runs all four phases through the shared runner
+     * inside an optional dry-run transaction.
      */
-    protected function fetchExchangePositionKeys(Account $account): array
+    private function runInline($accounts, ?string $tokenFilter, bool $override, bool $dryRun, RecoveryReport $report): int
     {
+        // Deactivate the step dispatcher in BOTH prefixes for the whole run.
+        // `StepDispatcher::deactivate()` is prefix-scoped via
+        // `RuntimeContext::current()`, so a single call would only freeze the
+        // default `active.flag` and leave `trading_active.flag` running.
+        $this->deactivateAllDispatchers();
+
+        $allowUntested = (bool) $this->option('allow-untested-exchange');
+        $rolledBack = false;
+
         try {
-            $response = $account->apiQueryPositions();
-            $positions = collect($response->result ?? []);
-        } catch (Throwable) {
-            return [];
-        }
-
-        $keys = [];
-        foreach ($positions as $key => $row) {
-            // Multi-exchange quantity-field precedence — Binance uses
-            // `positionAmt`, Bybit uses `size`, Bitget uses `total`,
-            // KuCoin uses `currentQty` / `contracts`. Mirrors the same
-            // shape that AbstractPositionRecoverer::absQuantity() handles.
-            // Pre-fix, only `positionAmt` was read, which yielded an
-            // empty key list for non-Binance recoverers and would let
-            // Phase 4 close real positions as ghosts.
-            $amt = (string) ($row['positionAmt']
-                ?? $row['size']
-                ?? $row['total']
-                ?? $row['currentQty']
-                ?? $row['contracts']
-                ?? '0');
-
-            if (Math::equal($amt, '0')) {
-                continue;
+            if ($dryRun) {
+                // Outer transaction wraps wipe + rebuild so --dry-run
+                // --override previews the destructive path and rolls it back.
+                DB::beginTransaction();
             }
 
-            [$symbol, $side] = array_pad(explode(':', (string) $key), 2, 'BOTH');
-
-            if ($side === 'BOTH') {
-                $side = Math::gt($amt, '0') ? 'LONG' : 'SHORT';
+            if ($override) {
+                $this->wipeMatchingState($accounts, $tokenFilter, $report, $dryRun);
             }
 
-            $keys[] = "{$symbol}:{$side}";
+            foreach ($accounts as $account) {
+                $report->accountsChecked++;
+                (new AccountRecoveryRunner($account, $report, $tokenFilter, $allowUntested))->run();
+            }
+
+            if ($dryRun) {
+                DB::rollBack();
+                $rolledBack = true;
+                $report->line('');
+                $report->line('[DRY-RUN] All writes rolled back. Re-run without --dry-run to persist.');
+            }
+        } catch (Throwable $e) {
+            if ($dryRun && ! $rolledBack) {
+                DB::rollBack();
+            }
+
+            $this->error('Recovery aborted: '.$e->getMessage());
+            $report->warning('Aborted: '.$e->getMessage());
+
+            return self::FAILURE;
+        } finally {
+            // Always restore the dispatcher flag in BOTH prefixes.
+            $this->activateAllDispatchers();
         }
 
-        return $keys;
+        return self::SUCCESS;
     }
 
     /**
-     * Walk every LOCAL position in opened-status for in-scope
-     * accounts. For each whose `(symbol, direction)` key is NOT in
-     * the exchange snapshot for that account, flip status to
-     * `closed` with `closed_at = now()`. The position closed
-     * during the recovery gap (T-snapshot to T-recovery) and
-     * lost-history is acceptable per the disaster-recovery
-     * scope.
-     *
-     * Safety guard: if the exchange snapshot for an account is
-     * EMPTY but the local DB has open positions for that
-     * account, refuse to mutate. An empty snapshot can mean
-     * "API failure" rather than "no positions" and we don't want
-     * to mass-close real positions on a transient failure. The
-     * `fetchExchangePositionKeys()` health-check already runs
-     * inside the recoverer; this is belt + braces.
-     *
-     * @param  iterable<Account>  $accounts
-     * @param  array<int, array<int, string>>  $exchangeKeysByAccount
+     * Fleet-distributed recovery. Fans one job per account across the worker
+     * pool (StepRouter routes each away from IPs banned for that account's
+     * exchange), then polls until every account settles and aggregates the
+     * per-account reports. The dispatchers stay RUNNING — they route the
+     * jobs; the freeze is `allow_opening_positions=false` alone.
      */
-    protected function markClosedDuringGap(
-        $accounts,
-        ?string $tokenFilter,
-        array $exchangeKeysByAccount,
-        RecoveryReport $report,
-    ): void {
-        $report->line('');
-        $report->line('=== Phase 2 — close-detection sweep ===');
-
-        $closedCount = 0;
-
-        foreach ($accounts as $account) {
-            $exchangeKeys = $exchangeKeysByAccount[$account->id] ?? [];
-
-            $localOpenQuery = Position::query()
-                ->where('account_id', $account->id)
-                ->whereIn('status', (new Position)->openedStatuses());
-
-            if ($tokenFilter !== null) {
-                $localOpenQuery->where('parsed_trading_pair', mb_strtoupper($tokenFilter));
-            }
-
-            $localOpen = $localOpenQuery->get();
-
-            if ($localOpen->isEmpty()) {
-                continue;
-            }
-
-            // Safety guard: empty exchange snapshot + non-empty
-            // local set may indicate an API failure. Skip rather
-            // than mass-close on a transient blip. The recoverer's
-            // health-check already covers this but the guard is
-            // cheap insurance.
-            if ($exchangeKeys === [] && $localOpen->isNotEmpty()) {
-                $report->line("  → Account #{$account->id}: exchange snapshot empty + {$localOpen->count()} local open position(s) — skipping close-detection (treat as transient API failure)");
-
-                continue;
-            }
-
-            foreach ($localOpen as $position) {
-                $key = "{$position->parsed_trading_pair}:{$position->direction}";
-
-                if (in_array($key, $exchangeKeys, true)) {
-                    continue;
-                }
-
-                $position->updateSaving([
-                    'status' => 'closed',
-                    'closed_at' => now(),
-                    'error_message' => 'Closed during disaster-recovery gap; exchange snapshot at T-recovery did not contain this position',
-                ]);
-
-                $closedCount++;
-                $report->line("  ✓ Position #{$position->id} ({$position->parsed_trading_pair} {$position->direction}) marked closed (not on exchange)");
-            }
-        }
-
-        if ($closedCount === 0) {
-            $report->line('  → No phantom positions to close.');
-        } else {
-            $report->line("  → Closed {$closedCount} phantom position(s).");
-        }
-    }
-
-    // =====================================================================
-    // PHASE 3 — order-status mirror
-    // =====================================================================
-
-    /**
-     * Walk every LOCAL non-terminal order on STILL-active positions
-     * for in-scope accounts. For each, call `apiSync()` so any
-     * CANCELLED / FILLED / EXPIRED state drift from the recovery
-     * gap is reflected locally. Per-order failures (e.g. exchange
-     * "Unknown order sent" -2011) are caught + logged so a single
-     * stale row doesn't abort the whole pass.
-     *
-     * Cost: one REST call per order. For typical books (60–200
-     * orders) the latency is in the seconds range. Acceptable for
-     * a once-a-disaster command.
-     */
-    protected function mirrorOrderStatuses($accounts, ?string $tokenFilter, RecoveryReport $report): void
+    private function runFanOut($accounts, ?string $tokenFilter, bool $override, RecoveryReport $report): int
     {
-        $report->line('');
-        $report->line('=== Phase 3 — order-status mirror ===');
+        // Wrap the whole fan-out so nothing escapes into handle() uncaught.
+        // An uncaught throw here would skip restoreTrading() and leave the
+        // fleet frozen (allow_opening_positions=false) with no report and no
+        // notification — silently, until the operator noticed. Catching it
+        // keeps trading frozen *deliberately* (the safe state) while still
+        // rendering the report and returning FAILURE cleanly.
+        try {
+            $allowUntested = (bool) $this->option('allow-untested-exchange');
 
-        $synced = 0;
-        $failed = 0;
-
-        foreach ($accounts as $account) {
-            $orderQuery = Order::query()
-                ->whereIn('status', ['NEW', 'PARTIALLY_FILLED'])
-                ->whereNotNull('exchange_order_id')
-                ->whereHas('position', function ($q) use ($account, $tokenFilter): void {
-                    $q->where('account_id', $account->id)
-                        ->whereIn('status', (new Position)->openedStatuses());
-
-                    if ($tokenFilter !== null) {
-                        $q->where('parsed_trading_pair', mb_strtoupper($tokenFilter));
-                    }
-                });
-
-            $orders = $orderQuery->get();
-
-            if ($orders->isEmpty()) {
-                continue;
+            // Global, atomic wipe once — never distributed into per-account jobs.
+            if ($override) {
+                $this->wipeMatchingState($accounts, $tokenFilter, $report, dryRun: false);
             }
 
-            foreach ($orders as $order) {
+            $workflowId = (string) Str::uuid();
+            $dispatched = $this->fanOutRecoveryJobs($accounts, $tokenFilter, $allowUntested, $workflowId, $report);
+
+            if ($dispatched === 0) {
+                $report->warning('No recovery jobs were dispatched.');
+
+                return self::FAILURE;
+            }
+
+            $this->info("Dispatched {$dispatched} per-account recovery job(s) across the fleet (workflow {$workflowId}). Waiting for completion...");
+
+            if (! $this->pollUntilSettled($workflowId, $report)) {
+                return self::FAILURE;
+            }
+
+            $failures = $this->aggregateFanOutResults($workflowId, $report);
+
+            // "All steps reached a terminal state" is NOT "recovery
+            // succeeded" — Failed / Stopped / Cancelled are terminal too.
+            // If ANY account's job ended in a failed terminal state the DB
+            // may be only partially rebuilt, so refuse to declare success:
+            // returning FAILURE keeps trading frozen and suppresses the
+            // false "recovery completed" notification.
+            if ($failures > 0) {
+                $report->warning("{$failures} account recovery job(s) failed to complete — trading stays frozen for operator review.");
+
+                return self::FAILURE;
+            }
+
+            return self::SUCCESS;
+        } catch (Throwable $e) {
+            $report->warning('Fan-out recovery aborted with an exception — trading stays frozen: '.$e->getMessage());
+            Log::channel('jobs')->error('[recover-positions] fan-out aborted', ['error' => $e->getMessage()]);
+
+            return self::FAILURE;
+        }
+    }
+
+    /**
+     * Create one RecoverAccountPositionsJob step per account in the trading
+     * prefix, tagged with a shared workflow id so the poll + aggregate can
+     * find them. Per-account try/catch so one dispatch failure doesn't abort
+     * the fan-out.
+     */
+    private function fanOutRecoveryJobs($accounts, ?string $tokenFilter, bool $allowUntested, string $workflowId, RecoveryReport $report): int
+    {
+        return Steps::usingPrefix('trading', function () use ($accounts, $tokenFilter, $allowUntested, $workflowId, $report): int {
+            $dispatched = 0;
+
+            foreach ($accounts as $account) {
                 try {
-                    // Suppress OrderObserver during the mirror pass so a
-                    // status change (NEW → FILLED, NEW → CANCELLED) does
-                    // NOT dispatch Close / Wap / Replacement jobs against
-                    // the half-recovered DB. The remaining recovery
-                    // phases (4 stuck-state reset, post-recovery
-                    // reconciliation) handle the intentional state
-                    // transitions; the dispatcher stays deactivated
-                    // until the finally block re-activates it.
-                    Order::withoutEvents(fn () => $order->apiSync());
-                    $synced++;
-                } catch (Throwable $exception) {
-                    $failed++;
-                    Log::warning('[RecoverPositionsCommand] mirrorOrderStatuses apiSync failed', [
-                        'order_id' => $order->id,
-                        'exchange_order_id' => $order->exchange_order_id,
-                        'error' => $exception->getMessage(),
+                    Step::create([
+                        'class' => RecoverAccountPositionsJob::class,
+                        'queue' => 'positions',
+                        'relatable_type' => Account::class,
+                        'relatable_id' => $account->id,
+                        'arguments' => [
+                            'accountId' => $account->id,
+                            'tokenFilter' => $tokenFilter,
+                            'allowUntestedExchange' => $allowUntested,
+                        ],
+                        'workflow_id' => $workflowId,
+                        'index' => 1,
                     ]);
+                    $dispatched++;
+                } catch (Throwable $e) {
+                    $report->warning("Account #{$account->id}: recovery job dispatch failed — {$e->getMessage()}");
                 }
             }
-        }
 
-        $report->line("  → Synced {$synced} order(s); {$failed} failure(s) (logged).");
+            return $dispatched;
+        });
     }
 
-    // =====================================================================
-    // PHASE 4 — stuck-state reset
-    // =====================================================================
-
     /**
-     * Walk every LOCAL position in `opening` / `syncing` /
-     * `cancelling` for in-scope accounts. For each:
-     *   - If exchange shows the position open → flip to `active`.
-     *   - If exchange doesn't show it → flip to `closed`.
-     *
-     * The pre-condition is "no in-flight workflow can be running",
-     * which is enforced by the dispatcher freeze at the top of the
-     * run + the no-pending-step check below. Without this phase,
-     * positions that were mid-workflow when the disaster hit stay
-     * pinned in non-terminal status forever — the bot won't
-     * re-engage them and the operator must intervene by hand.
-     *
-     * @param  iterable<Account>  $accounts
-     * @param  array<int, array<int, string>>  $exchangeKeysByAccount
+     * Block until every per-account step for this workflow reaches a
+     * terminal state, or the poll timeout elapses. Returns false on timeout
+     * (jobs may still be running on the fleet).
      */
-    protected function resetStuckStates(
-        $accounts,
-        ?string $tokenFilter,
-        array $exchangeKeysByAccount,
-        RecoveryReport $report,
-    ): void {
-        $report->line('');
-        $report->line('=== Phase 4 — stuck-state reset ===');
+    private function pollUntilSettled(string $workflowId, RecoveryReport $report): bool
+    {
+        $timeoutMinutes = max(1, (int) $this->option('poll-timeout-minutes'));
+        $deadline = now()->addMinutes($timeoutMinutes);
 
-        $reset = 0;
-        $closedAsGhost = 0;
+        while (now()->lessThan($deadline)) {
+            [$total, $settled] = Steps::usingPrefix('trading', function () use ($workflowId): array {
+                $total = Step::query()->where('workflow_id', $workflowId)->count();
+                $settled = Step::query()->where('workflow_id', $workflowId)
+                    ->whereIn('state', Step::terminalStepStates())
+                    ->count();
 
-        $stuckStatuses = ['opening', 'syncing', 'cancelling'];
+                return [$total, $settled];
+            });
 
-        foreach ($accounts as $account) {
-            $exchangeKeys = $exchangeKeysByAccount[$account->id] ?? [];
-
-            $stuckQuery = Position::query()
-                ->where('account_id', $account->id)
-                ->whereIn('status', $stuckStatuses);
-
-            if ($tokenFilter !== null) {
-                $stuckQuery->where('parsed_trading_pair', mb_strtoupper($tokenFilter));
+            if ($total > 0 && $settled >= $total) {
+                return true;
             }
 
-            $stuck = $stuckQuery->get();
+            sleep(5);
+        }
 
-            // Belt-and-braces against false ghost-closing. An empty
-            // exchange-keys list for an account that DOES have stuck
-            // positions can mean (a) all those positions really did
-            // close during the gap, or (b) the API call to fetch
-            // positions failed and the stale-snapshot guard collapsed
-            // them all to "ghost". Phase 2 has the same shape of guard
-            // (markClosedDuringGap); Phase 4 inherits it here so both
-            // close-detection paths refuse to mass-close on empty
-            // snapshots that may just reflect transient API failure
-            // or non-Binance key extraction missing the quantity field.
-            if ($exchangeKeys === [] && $stuck->isNotEmpty()) {
-                $report->warning(
-                    "Account #{$account->id}: empty exchange snapshot but {$stuck->count()} stuck position(s) — refusing to ghost-close (likely API failure or non-Binance key extraction gap)"
-                );
-                $report->line("  ⚠ Account #{$account->id}: skipped Phase 4 — empty exchange snapshot, {$stuck->count()} stuck position(s) preserved");
+        $report->warning("Timed out after {$timeoutMinutes}m waiting for recovery jobs to settle — some accounts may still be recovering on the fleet.");
+
+        return false;
+    }
+
+    /**
+     * Roll each settled per-account step's result JSON up into the shared
+     * report and return the number of steps that ended in a FAILED terminal
+     * state. A failed step's `response` holds an exception dump, not recovery
+     * metrics, so it must be detected by state — never read as a zero-count
+     * success (that silently hid failed accounts and let the caller declare
+     * the whole fan-out successful over an unrecovered DB).
+     */
+    private function aggregateFanOutResults(string $workflowId, RecoveryReport $report): int
+    {
+        $steps = Steps::usingPrefix('trading', fn () => Step::query()->where('workflow_id', $workflowId)->get());
+
+        $failures = 0;
+
+        foreach ($steps as $step) {
+            $report->accountsChecked++;
+
+            if ($this->fanOutStepFailed($step)) {
+                $failures++;
+                $report->accountsSkipped++;
+                $report->warning("Account #{$step->relatable_id}: recovery job did not complete (state ".class_basename($step->state).').');
 
                 continue;
             }
 
-            foreach ($stuck as $position) {
-                // The Phase 4 invariant — "no in-flight workflow can be
-                // running" — requires an actual check, not just the
-                // dispatcher freeze above. A queued/pending Step row
-                // still REFERENCES the position via JSON arguments;
-                // resetting the position's status would mean that
-                // when the dispatcher reactivates in the finally block
-                // it picks up the queued step and mutates state recovery
-                // just rewrote. Skip + warn so the operator can manually
-                // cancel + re-run.
-                if ($this->hasInflightStepFor($position->id)) {
-                    $report->warning(
-                        "Position #{$position->id} ({$position->parsed_trading_pair} {$position->direction}) skipped — in-flight workflow step(s) still reference it"
-                    );
-                    $report->line("  ⚠ Position #{$position->id} ({$position->parsed_trading_pair} {$position->direction}): kept in {$position->status} (in-flight workflow still owns it)");
+            $result = $this->decodeStepResult($step);
 
-                    continue;
-                }
+            if ($result === null) {
+                $report->accountsSkipped++;
+                $report->warning("Account #{$step->relatable_id}: recovery job returned no result payload.");
 
-                $key = "{$position->parsed_trading_pair}:{$position->direction}";
+                continue;
+            }
 
-                if (in_array($key, $exchangeKeys, true)) {
-                    $position->updateSaving(['status' => 'active']);
-                    $reset++;
-                    $report->line("  ✓ Position #{$position->id} ({$position->parsed_trading_pair} {$position->direction}): {$position->getOriginal('status')} → active (exchange has it)");
+            $report->accountsOk += (int) ($result['accounts_ok'] ?? 0);
+            $report->accountsSkipped += (int) ($result['accounts_skipped'] ?? 0);
+            $report->positionsCreated += (int) ($result['positions_created'] ?? 0);
+            $report->positionsUpdated += (int) ($result['positions_updated'] ?? 0);
+            $report->positionsSkipped += (int) ($result['positions_skipped'] ?? 0);
+            $report->ordersCreated += (int) ($result['orders_created'] ?? 0);
+            $report->ordersSkipped += (int) ($result['orders_skipped'] ?? 0);
 
-                    continue;
-                }
-
-                $position->updateSaving([
-                    'status' => 'closed',
-                    'closed_at' => now(),
-                    'error_message' => "Closed during disaster-recovery (stuck in {$position->getOriginal('status')} with no exchange-side position)",
-                ]);
-                $closedAsGhost++;
-                $report->line("  ✓ Position #{$position->id} ({$position->parsed_trading_pair} {$position->direction}): {$position->getOriginal('status')} → closed (exchange has nothing)");
+            foreach ((array) ($result['warnings'] ?? []) as $warning) {
+                $report->warning((string) $warning);
             }
         }
 
-        $report->line("  → Reset {$reset} stuck position(s) to active; closed {$closedAsGhost} ghost(s).");
+        return $failures;
     }
 
     /**
-     * Returns true when any non-terminal Step row in EITHER the default
-     * `steps` table OR the `trading_steps` prefix references this
-     * positionId via JSON arguments. Used by Phase 4 to honour the
-     * "no in-flight workflow" invariant before rewriting status.
+     * A per-account fan-out step that ended Failed / Stopped / Cancelled did
+     * NOT complete its account's reconciliation. Detected by state (not by
+     * inspecting the payload) because a failed step still carries a
+     * `response` — an exception dump — that would otherwise read as a valid
+     * zero-count success.
      */
-    protected function hasInflightStepFor(int $positionId): bool
+    private function fanOutStepFailed(Step $step): bool
     {
-        $check = function () use ($positionId): bool {
-            // Exclude NotRunnable alongside the terminal states. NotRunnable is
-            // the parked state for resolve-exception ("rescue") steps that only
-            // run if a sibling in their block fails; on the happy path they sit
-            // there forever and the dispatcher itself excludes them from
-            // dispatch. Counting an inert rescue branch as an in-flight workflow
-            // makes recovery defer forever on any successfully-opened position
-            // (which always leaves a NotRunnable CancelPositionJob behind). A
-            // genuinely failing block still trips this guard via its real
-            // non-terminal sibling (Pending/Dispatched/Running).
-            return Step::query()
-                ->whereNotIn('state', array_merge(Step::terminalStepStates(), [NotRunnable::class]))
-                ->whereRaw(
-                    "CAST(JSON_EXTRACT(arguments, '$.positionId') AS UNSIGNED) = ?",
-                    [$positionId],
-                )
-                ->exists();
-        };
+        return $step->state instanceof Failed
+            || $step->state instanceof Stopped
+            || $step->state instanceof Cancelled;
+    }
 
-        if ($check()) {
-            return true;
+    /**
+     * Decode a step's stored return value (the `response` column) into an
+     * array, tolerating both an array cast and a raw JSON string.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function decodeStepResult(Step $step): ?array
+    {
+        $raw = $step->response ?? null;
+
+        if (is_array($raw)) {
+            return $raw;
         }
 
-        return (bool) Steps::usingPrefix('trading', $check);
+        if (is_string($raw) && $raw !== '') {
+            $decoded = json_decode($raw, associative: true);
+
+            return is_array($decoded) ? $decoded : null;
+        }
+
+        return null;
     }
 }

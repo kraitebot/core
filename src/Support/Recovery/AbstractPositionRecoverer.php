@@ -40,6 +40,34 @@ use Throwable;
  */
 abstract class AbstractPositionRecoverer
 {
+    /**
+     * Account-wide open orders pre-fetched ONCE by the caller (the fleet
+     * recovery job) so the concrete recoverer can filter them per symbol
+     * in memory instead of a per-symbol API call. Null = per-symbol
+     * fallback (the original inline behaviour).
+     *
+     * @var array<int, array<string, mixed>>|null
+     */
+    protected ?array $batchedOpenOrders = null;
+
+    /** @var array<int, array<string, mixed>>|null Account-wide algo orders, same batching contract as {@see}. */
+    protected ?array $batchedAlgoOrders = null;
+
+    /**
+     * Disaster-recovery readiness flag. Concrete recoverers that have NOT
+     * been verified against a live exchange account set {@see $untested} to
+     * true to gate themselves behind `--allow-untested-exchange`. Default
+     * false so verified exchanges (Binance/Bitget) run without ceremony.
+     *
+     * Backed by a property rather than an overridden method on purpose:
+     * Pint's `final_public_method_for_abstract_class` rule forces this
+     * public accessor to be `final`, and a `final` method a subclass tries
+     * to override fatals ("Cannot override final method") the instant that
+     * recoverer class loads. A property the subclass redeclares sidesteps
+     * the rule entirely while keeping the accessor final and stable.
+     */
+    protected bool $untested = false;
+
     public function __construct(
         protected Account $account,
         protected RecoveryReport $report,
@@ -66,14 +94,22 @@ abstract class AbstractPositionRecoverer
     abstract protected function toLocalOrderAttributes(Position $position, array $exchangeOrder, bool $isFilled): array;
 
     /**
-     * Disaster-recovery readiness flag. Concrete recoverers that have
-     * NOT been verified against a live exchange account return true here
-     * to gate themselves behind `--allow-untested-exchange`. Default
-     * false so verified exchanges (Binance/Bitget) run without ceremony.
+     * Inject the account-wide open + algo order batches. When set, the
+     * concrete recoverer filters these per symbol instead of hitting the
+     * exchange once per position — collapsing 2N per-position order calls
+     * into 2 per account. Fluent so callers can chain before run().
      */
-    public function isUntested(): bool
+    final public function withBatchedOrders(?array $openOrders, ?array $algoOrders): static
     {
-        return false;
+        $this->batchedOpenOrders = $openOrders;
+        $this->batchedAlgoOrders = $algoOrders;
+
+        return $this;
+    }
+
+    final public function isUntested(): bool
+    {
+        return $this->untested;
     }
 
     /**

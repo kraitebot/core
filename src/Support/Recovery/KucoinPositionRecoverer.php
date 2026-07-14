@@ -25,10 +25,9 @@ use Throwable;
  */
 final class KucoinPositionRecoverer extends AbstractPositionRecoverer
 {
-    public function isUntested(): bool
-    {
-        return true;
-    }
+    // No live KuCoin account exists for verification yet — gate behind
+    // --allow-untested-exchange (see AbstractPositionRecoverer::isUntested).
+    protected bool $untested = true;
 
     protected function fetchOpenPositions(): array
     {

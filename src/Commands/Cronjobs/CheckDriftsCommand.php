@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Kraite\Core\Jobs\Lifecycles\Position\ApplyWapJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Order;
@@ -19,7 +20,12 @@ use Kraite\Core\Support\Drift\OrderDriftReport;
 use Kraite\Core\Support\Drift\PositionDriftReport;
 use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\NotificationService;
+use StepDispatcher\Models\Step;
+use StepDispatcher\States\Dispatched;
+use StepDispatcher\States\Pending;
+use StepDispatcher\States\Running;
 use StepDispatcher\Support\BaseCommand;
+use StepDispatcher\Support\Steps;
 use Throwable;
 
 /**
@@ -49,6 +55,29 @@ use Throwable;
  *   - Per parent position, dispatches CancelSingleAlgoOrderJob for every
  *     orphan and sends one summary `position_orphan_orders_detected`
  *     pushover.
+ *
+ * Scope 2b — WAP under-application self-heal (the ONE scope that heals):
+ *   - DB-only detector, `active` positions exclusively — mid-flight
+ *     statuses (syncing / waping / closing / ...) are skipped so the
+ *     heal never races a workflow that is already mid-write on the row.
+ *   - A position whose FILLED entry ladder (MARKET + DCA LIMITs) totals
+ *     MORE quantity than its resting take-profit covers is a stuck WAP:
+ *     the DCA fill landed on the exchange but the TP resize never
+ *     committed (e.g. the resize crashed after the exchange had already
+ *     absorbed the fill — 2026-07-13, position #394 FILUSDT, TP left at
+ *     47.3 against a 141.9 exchange position).
+ *   - Heal = re-dispatch ApplyWapJob, the same idempotent lifecycle the
+ *     order observer uses on a LIMIT fill. Its chain re-verifies
+ *     everything against a fresh exchange snapshot before modifying the
+ *     TP, so dispatching from a stale local view is safe. Dedupe mirrors
+ *     the observer: position-row lock + skip when an ApplyWapJob step is
+ *     already pending/dispatched/running. Terminal (failed) prior steps
+ *     do NOT block — that IS the case being healed.
+ *   - No quiet window: the reactive sync touches busy positions every
+ *     few minutes, so a quiet-window gate would hide exactly the
+ *     positions that need this heal (it hid FILUSDT).
+ *   - Re-fires every 5 minutes (with one pushover each pass) while the
+ *     under-coverage persists, e.g. if the heal chain keeps failing.
  *
  * Scope 3 — Position structure integrity:
  *   - Iterates every position in `active` status (NO quiet window — a
@@ -108,9 +137,10 @@ final class CheckDriftsCommand extends BaseCommand
                             {--account_id= : Limit the audit to a single account}
                             {--skip-structure-audit : Skip the active-position structural integrity scope (drift + orphan scopes still run)}
                             {--skip-engine-health : Skip the Scope 4 trading-engine-health cooldown scope}
+                            {--skip-wap-heal : Skip the Scope 2b WAP under-application self-heal}
                             {--output : Display command output (silent by default)}';
 
-    protected $description = 'Alert-only 5-minute drift spotter — audits active positions and orphan orders, notifies admin. Heal dispatch is intentionally NOT wired here; the operator decides repairs.';
+    protected $description = '5-minute drift spotter — audits active positions and orphan orders, notifies admin. Alert-only except Scope 2b: a stuck WAP (TP under-covering the filled DCA ladder) self-heals via ApplyWapJob.';
 
     public function __construct(private readonly DriftChecker $driftService)
     {
@@ -146,6 +176,13 @@ final class CheckDriftsCommand extends BaseCommand
 
         $this->auditActivePositionDrift($cutoff, $accountFilter);
         $this->auditOrphanOrders($cutoff, $accountFilter);
+
+        // Scope 2b runs BEFORE the cooled latch on purpose: like Scopes
+        // 1 + 2 it maintains EXISTING positions, which keep trading and
+        // must stay correctly protected even while opening is halted.
+        if (! $this->option('skip-wap-heal')) {
+            $this->auditWapUnderApplication($accountFilter);
+        }
 
         // Scopes 3 + 4 are the cooling detectors. Once the bot is already
         // cooled (an incident is open), they'd only re-detect the same
@@ -368,6 +405,163 @@ final class CheckDriftsCommand extends BaseCommand
                 cancelLifecycleDispatched: false,
             );
         }
+    }
+
+    /**
+     * Scope 2b — WAP under-application self-heal.
+     *
+     * DB-only detector (no exchange roundtrip): on every `active`
+     * position, the FILLED entry ladder (MARKET + DCA LIMITs) must be
+     * fully covered by the resting take-profit's quantity. When fills
+     * total more than the TP covers, a WAP resize was lost mid-flight —
+     * the exchange absorbed the DCA fill but the TP never grew. The heal
+     * re-dispatches ApplyWapJob, whose chain re-verifies everything
+     * against a fresh exchange snapshot before touching the TP.
+     *
+     * Deliberately `active`-only: mid-flight statuses (syncing / waping /
+     * closing / ...) mean a workflow already owns the row — by the time
+     * it releases the position back to `active`, either the TP is
+     * correct or this scope catches it on the next 5-minute pass.
+     */
+    private function auditWapUnderApplication(?int $accountFilter): void
+    {
+        $activePositions = Position::query()
+            ->where('status', 'active')
+            ->when($accountFilter, fn ($q) => $q->where('account_id', $accountFilter))
+            ->with(['orders', 'exchangeSymbol', 'account.apiSystem'])
+            ->get();
+
+        if ($activePositions->isEmpty()) {
+            $this->verboseInfo('WAP heal audit: no active positions to inspect.');
+
+            return;
+        }
+
+        foreach ($activePositions as $position) {
+            // TP missing entirely is the structure audit's scope; a TP
+            // that is no longer resting NEW (partially filled / filled)
+            // means an exit is in flight and the close workflow owns the
+            // position — modifying its quantity now would fight the exit.
+            $profitOrder = $position->profitOrder();
+            if ($profitOrder === null || $profitOrder->status !== 'NEW') {
+                continue;
+            }
+
+            // The WAP signature requires at least one FILLED DCA LIMIT —
+            // an under-sized TP with no DCA fill behind it is a different
+            // anomaly and not this scope's call to repair.
+            $hasFilledLimit = $position->orders->contains(function (Order $order): bool {
+                return $order->type === 'LIMIT' && $order->status === 'FILLED';
+            });
+
+            if (! $hasFilledLimit) {
+                continue;
+            }
+
+            // Mirror of CalculateWapAndModifyProfitOrderJob::expectedPositionQty —
+            // the minimum quantity the TP must cover. Formatted through the
+            // symbol's quantity precision so truncation the exchange itself
+            // applies (141.94 → 141.9) never reads as under-coverage.
+            $filledQty = $position->orders
+                ->filter(function (Order $order): bool {
+                    return in_array($order->type, ['MARKET', 'LIMIT'], true)
+                        && $order->status === 'FILLED';
+                })
+                ->reduce(function (string $carry, Order $order): string {
+                    return bcadd($carry, (string) $order->quantity, 18);
+                }, '0');
+
+            $expectedQty = api_format_quantity($filledQty, $position->exchangeSymbol);
+
+            if (bccomp($expectedQty, (string) $profitOrder->quantity, 18) <= 0) {
+                continue;
+            }
+
+            $this->verboseComment(
+                "  Position #{$position->id} ({$position->parsed_trading_pair}): ".
+                "TP covers {$profitOrder->quantity}, fills total {$expectedQty} — dispatching WAP heal."
+            );
+
+            if ($this->dispatchWapHeal($position)) {
+                $this->notifyWapSelfHealed($position, (string) $profitOrder->quantity, $expectedQty);
+            }
+        }
+    }
+
+    /**
+     * Dispatch the ApplyWapJob heal for one under-covered position.
+     *
+     * Exact mirror of OrderObserver::dispatchApplyWap's concurrency
+     * discipline: position-row lock inside a transaction serialises us
+     * against the observer and against a concurrent spotter run; the
+     * pending-step dedupe makes the dispatch idempotent. Terminal states
+     * (Completed / Failed / Skipped) intentionally do NOT block — a
+     * previously FAILED ApplyWapJob is precisely the wound being healed.
+     *
+     * @return bool true when a fresh heal step was created
+     */
+    private function dispatchWapHeal(Position $position): bool
+    {
+        return (bool) Steps::usingPrefix('trading', function () use ($position): bool {
+            return DB::transaction(function () use ($position): bool {
+                $locked = Position::query()->whereKey($position->id)->lockForUpdate()->first();
+
+                if ($locked === null || $locked->status !== 'active') {
+                    return false;
+                }
+
+                $alreadyPending = Step::query()
+                    ->where('class', ApplyWapJob::class)
+                    ->whereRaw("JSON_EXTRACT(arguments, '$.positionId') = ?", [$position->id])
+                    ->whereIn('state', [Pending::class, Dispatched::class, Running::class])
+                    ->exists();
+
+                if ($alreadyPending) {
+                    return false;
+                }
+
+                Step::create([
+                    'class' => ApplyWapJob::class,
+                    'queue' => 'positions',
+                    'priority' => 'high',
+                    'arguments' => [
+                        'positionId' => $locked->id,
+                        'message' => 'Drift spotter self-heal: TP quantity under-covers the filled DCA ladder — re-applying WAP',
+                    ],
+                ]);
+
+                return true;
+            });
+        });
+    }
+
+    /**
+     * Audit trail for the Scope 2b heal — one pushover per dispatched
+     * heal so the operator knows a stuck WAP was found and is being
+     * repaired. Re-fires on subsequent passes while the under-coverage
+     * persists, which doubles as the "the heal itself keeps failing"
+     * alarm.
+     */
+    private function notifyWapSelfHealed(Position $position, string $tpQuantity, string $expectedQuantity): void
+    {
+        $account = $position->account;
+
+        NotificationService::send(
+            user: Kraite::admin(),
+            canonical: 'position_wap_self_healed',
+            referenceData: [
+                'account_id' => $account?->id,
+                'account_name' => $account?->name,
+                'exchange' => $account?->apiSystem?->canonical,
+                'position_id' => $position->id,
+                'pair' => $position->parsed_trading_pair,
+                'direction' => $position->direction,
+                'tp_quantity' => $tpQuantity,
+                'expected_quantity' => $expectedQuantity,
+            ],
+            relatable: $position,
+            cacheKeys: ['position' => $position->id],
+        );
     }
 
     /**

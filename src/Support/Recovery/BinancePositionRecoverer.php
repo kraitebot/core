@@ -62,7 +62,7 @@ final class BinancePositionRecoverer extends AbstractPositionRecoverer
      */
     protected function fetchOpenPositions(): array
     {
-        $response = $this->account->apiQueryPositions();
+        $response = RecoveryApiThrottle::call($this->account, fn () => $this->account->apiQueryPositions());
         $positions = $response->result ?? [];
 
         $leverages = $this->leverageMap();
@@ -103,7 +103,7 @@ final class BinancePositionRecoverer extends AbstractPositionRecoverer
         }
 
         try {
-            $response = $this->account->apiQuerySymbolConfig();
+            $response = RecoveryApiThrottle::call($this->account, fn () => $this->account->apiQuerySymbolConfig());
             $rows = $response->result ?? [];
         } catch (Throwable $e) {
             $this->report->warning("Binance symbolConfig fetch failed for account #{$this->account->id}: {$e->getMessage()}");
@@ -303,7 +303,7 @@ final class BinancePositionRecoverer extends AbstractPositionRecoverer
             $properties->set('options.endTime', (string) $endTimeMs);
 
             try {
-                $response = $this->account->withApi()->getAllOrders($properties);
+                $response = RecoveryApiThrottle::call($this->account, fn () => $this->account->withApi()->getAllOrders($properties));
                 $body = json_decode((string) $response->getBody(), associative: true);
             } catch (Throwable $e) {
                 $this->report->warning("Binance getAllOrders window failed for {$symbol} on account #{$this->account->id}: {$e->getMessage()}");
@@ -380,7 +380,7 @@ final class BinancePositionRecoverer extends AbstractPositionRecoverer
             }
 
             try {
-                $response = $this->account->withApi()->accountTrades($properties);
+                $response = RecoveryApiThrottle::call($this->account, fn () => $this->account->withApi()->accountTrades($properties));
                 $body = json_decode((string) $response->getBody(), associative: true);
             } catch (Throwable $e) {
                 $this->report->warning("userTrades window fetch failed for {$symbol} on account #{$this->account->id}: {$e->getMessage()}");
@@ -627,13 +627,19 @@ final class BinancePositionRecoverer extends AbstractPositionRecoverer
      */
     protected function fetchRegularOpenOrders(string $symbol): array
     {
+        // Batch mode (fleet recovery): filter the account-wide pre-fetch
+        // in memory — no per-symbol API call.
+        if ($this->batchedOpenOrders !== null) {
+            return $this->filterBatchBySymbol($this->batchedOpenOrders, $symbol, isAlgo: false);
+        }
+
         $properties = new ApiProperties;
         $properties->set('relatable', $this->account);
         $properties->set('account', $this->account);
         $properties->set('options.symbol', $symbol);
 
         try {
-            $response = $this->account->withApi()->getCurrentOpenOrders($properties);
+            $response = RecoveryApiThrottle::call($this->account, fn () => $this->account->withApi()->getCurrentOpenOrders($properties));
             $body = json_decode((string) $response->getBody(), associative: true);
         } catch (Throwable $e) {
             $this->report->warning("getCurrentOpenOrders failed for {$symbol} on account #{$this->account->id}: {$e->getMessage()}");
@@ -658,13 +664,18 @@ final class BinancePositionRecoverer extends AbstractPositionRecoverer
      */
     protected function fetchAlgoOpenOrders(string $symbol): array
     {
+        // Batch mode (fleet recovery): filter the account-wide pre-fetch.
+        if ($this->batchedAlgoOrders !== null) {
+            return $this->filterBatchBySymbol($this->batchedAlgoOrders, $symbol, isAlgo: true);
+        }
+
         $properties = new ApiProperties;
         $properties->set('relatable', $this->account);
         $properties->set('account', $this->account);
         $properties->set('options.symbol', $symbol);
 
         try {
-            $response = $this->account->withApi()->getAlgoOpenOrders($properties);
+            $response = RecoveryApiThrottle::call($this->account, fn () => $this->account->withApi()->getAlgoOpenOrders($properties));
             $body = json_decode((string) $response->getBody(), associative: true);
         } catch (Throwable $e) {
             $this->report->warning("getAlgoOpenOrders failed for {$symbol} on account #{$this->account->id}: {$e->getMessage()}");
@@ -754,5 +765,31 @@ final class BinancePositionRecoverer extends AbstractPositionRecoverer
             'EXPIRED' => 'CANCELLED',
             default => $raw,
         };
+    }
+
+    /**
+     * Filter an account-wide order batch down to one symbol, applying the
+     * same annotation the per-symbol fetch would (algo rows get `_isAlgo`
+     * and their `algoId` normalised into `orderId`).
+     *
+     * @param  array<int, array<string, mixed>>  $batch
+     * @return array<int, array<string, mixed>>
+     */
+    private function filterBatchBySymbol(array $batch, string $symbol, bool $isAlgo): array
+    {
+        $matched = array_filter(
+            $batch,
+            static fn (array $order): bool => (string) ($order['symbol'] ?? '') === $symbol,
+        );
+
+        return array_values(array_map(static function (array $order) use ($isAlgo): array {
+            $order['_isAlgo'] = $isAlgo;
+
+            if ($isAlgo) {
+                $order['orderId'] ??= $order['algoId'] ?? null;
+            }
+
+            return $order;
+        }, $matched));
     }
 }

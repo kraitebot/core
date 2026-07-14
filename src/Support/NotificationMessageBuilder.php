@@ -1139,6 +1139,35 @@ final class NotificationMessageBuilder
             // healer; this notification means the spotter found something
             // the reactive loop missed for ≥10 minutes and dispatched a
             // sync-orders pass to recover.
+            'position_wap_self_healed' => (static function () use ($context) {
+                $pair = is_string($context['pair'] ?? null) ? $context['pair'] : 'unknown';
+                $direction = is_string($context['direction'] ?? null) ? $context['direction'] : '?';
+                $accountName = is_string($context['account_name'] ?? null) ? $context['account_name'] : 'account';
+                $exchange = is_string($context['exchange'] ?? null) ? $context['exchange'] : 'exchange';
+                $positionId = isset($context['position_id']) ? (int) $context['position_id'] : null;
+                $tpQty = is_string($context['tp_quantity'] ?? null) ? $context['tp_quantity'] : '?';
+                $expectedQty = is_string($context['expected_quantity'] ?? null) ? $context['expected_quantity'] : '?';
+
+                $posRef = $positionId !== null ? "#{$positionId}" : '';
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'title' => 'WAP Self-Heal Dispatched',
+                    'emailMessage' => "🩹 Stuck WAP detected on position {$posRef} {$pair} {$direction}.\n\n".
+                        "Account: {$accountName} ({$exchange})\n".
+                        "Take-profit covers: {$tpQty}\n".
+                        "Filled entry ladder totals: {$expectedQty}\n\n".
+                        'A DCA fill landed on the exchange but the take-profit resize never committed — the position was under-covered. '.
+                        "The drift spotter has dispatched `ApplyWapJob` to recompute the WAP and resize the TP from a fresh exchange snapshot.\n\n".
+                        "If this notification keeps re-firing every 5 minutes, the heal itself is failing — inspect:\n".
+                        "[CMD]SELECT id, class, state, error_message FROM trading_steps WHERE JSON_EXTRACT(arguments, '$.positionId') = {$positionId} ORDER BY id DESC LIMIT 10;[/CMD]",
+                    'pushoverMessage' => "🩹 WAP heal: {$pair} {$direction} ({$accountName}) — TP covers {$tpQty}, fills total {$expectedQty}; re-applying WAP",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 1,
+                ];
+            })(),
+
             'position_drift_detected' => (static function () use ($context) {
                 $pair = is_string($context['pair'] ?? null) ? $context['pair'] : 'unknown';
                 $direction = is_string($context['direction'] ?? null) ? $context['direction'] : '?';

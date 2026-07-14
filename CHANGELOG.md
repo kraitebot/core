@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.69.0 - 2026-07-14
+
+### Bug fixes
+
+- [FIXED] **Stuck WAP: Binance `avgPrice` omission crashed the take-profit resize.** Binance omits `avgPrice` on order-modify (and query) responses for never-filled orders; the unguarded read crashed the WAP TP resize *after* the exchange had already applied it, the failed step never recorded `was_waped`, and the order observer's correction then reverted the resize — leaving position #394 FILUSDT with a take-profit covering 47.3 against a 141.9 exchange position, permanently. The modify + query response mappers are now null-safe on `avgPrice` (matching the cancel-mapper guard from the SKYUSDT incident). See deploy-notes Entry 104.
+- [FIXED] **Recovery fan-out declared success over failed accounts.** `terminalStepStates()` includes Failed/Stopped, so "all settled" was read as "all succeeded": a fan-out where per-account jobs failed still returned SUCCESS, un-froze trading, and sent a "recovery completed" notification over a database that was never rebuilt. The verdict now counts failed terminal states and returns FAILURE (trading stays frozen for operator review); a failed step's exception payload is never read as zero-count success; and the fan-out path is wrapped so an exception can't leave the fleet frozen with no report.
+
+### Features
+
+- [ADDED] **Stuck-WAP self-heal (drift spotter Scope 2b).** Every 5 minutes, each `active` position whose FILLED entry ladder (MARKET + DCA LIMITs, at the symbol's quantity precision) exceeds its resting take-profit quantity gets `ApplyWapJob` re-dispatched — the observer's exact dedupe (position-row lock; skip when a WAP step is pending/dispatched/running; terminal Failed steps do NOT block). Skips mid-flight statuses, no quiet-window gate (which had hidden busy positions), runs even while the bot is cooled, `--skip-wap-heal` kill switch, one `position_wap_self_healed` pushover per heal.
+- [ADDED] **Disaster recovery fleet fan-out.** `kraite:recover-positions` defaults to dispatching one per-account recovery job across the workers (shared API throttle + settle-poll), collapsing the old single-box freeze; `--inline` keeps the sequential path (dry-run always forces it).
+
 ## 1.68.0 - 2026-07-13
 
 ### Improvements

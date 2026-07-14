@@ -33,7 +33,13 @@ trait MapsOrderQuery
             // For STOP_MARKET: use executedQty if triggered/filled, otherwise origQty
             $quantity = Math::gt($result['executedQty'], '0') ? $result['executedQty'] : $result['origQty'];
         } else {
-            $price = Math::gt($result['avgPrice'], '0') ? $result['avgPrice'] : $result['price'];
+            // Binance omits `avgPrice` on payloads for never-filled orders —
+            // already fataled production twice on the cancel and modify
+            // mappers (see MapsOrderCancel / MapsOrderModify). Same guard
+            // here so a query response without the key degrades to `price`
+            // instead of crashing the sync worker mid-reconciliation.
+            $avgPrice = $result['avgPrice'] ?? '0';
+            $price = Math::gt($avgPrice, '0') ? $avgPrice : $result['price'];
             $quantity = Math::gt($result['executedQty'], '0') ? $result['executedQty'] : $result['origQty'];
         }
 

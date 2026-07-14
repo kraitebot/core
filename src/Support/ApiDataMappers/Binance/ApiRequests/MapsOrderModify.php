@@ -34,7 +34,16 @@ trait MapsOrderModify
             'status' => $result['status'],
             'price' => $result['price'],
             '_price' => $this->computeOrderModifyPrice($result),
-            'average_price' => $result['avgPrice'],
+            // Binance omits `avgPrice` on modify responses for never-filled
+            // orders — a PUT that amends a resting NEW take-profit comes back
+            // without the key. The unguarded read fataled the worker AFTER the
+            // modify had already landed exchange-side, which failed the WAP
+            // take-profit resize (CalculateWapAndModifyProfitOrderJob) and left
+            // the position's TP sized for the pre-WAP fill set while the
+            // exchange carried the full averaged quantity (2026-07-13,
+            // position #394 FILUSDT — TP stuck at 47.3 while the position was
+            // 141.9). Mirrors the guard on MapsOrderCancel::resolveOrderCancelResponse.
+            'average_price' => $result['avgPrice'] ?? '0',
             'original_quantity' => $result['origQty'],
             'executed_quantity' => $result['executedQty'],
             'type' => $result['type'],
