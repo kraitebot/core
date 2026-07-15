@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Support\ApiExceptionHandlers;
 
 use GuzzleHttp\Exception\RequestException;
+use Illuminate\Http\Client\RequestException as LaravelRequestException;
 use Illuminate\Support\Carbon;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Concerns\ApiExceptionHelpers;
@@ -296,7 +297,10 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
      */
     public function isSymbolDelisted(Throwable $exception): bool
     {
-        if (! $exception instanceof RequestException || ! $exception->hasResponse()) {
+        $hasResponse = ($exception instanceof RequestException && $exception->hasResponse())
+            || $exception instanceof LaravelRequestException;
+
+        if (! $hasResponse) {
             return false;
         }
 
@@ -338,16 +342,21 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
         $data = $this->baseExtractHttpErrorCodes($input);
 
         // BitGet uses "code" and "msg" fields
-        if ($input instanceof RequestException && $input->hasResponse()) {
+        if ($input instanceof LaravelRequestException) {
+            $json = $input->response->json();
+            $data['http_code'] = $input->response->status();
+        } elseif ($input instanceof RequestException && $input->hasResponse()) {
             $body = (string) $input->getResponse()->getBody();
             $json = json_decode($body, associative: true);
+        } else {
+            $json = null;
+        }
 
-            if (is_array($json)) {
-                // Extract BitGet error code and message
-                if (isset($json['code']) && $json['code'] !== '00000') {
-                    $data['api_code'] = $json['code'];
-                    $data['message'] = $json['msg'] ?? $data['message'];
-                }
+        if (is_array($json)) {
+            // Extract BitGet error code and message
+            if (isset($json['code']) && $json['code'] !== '00000') {
+                $data['api_code'] = $json['code'];
+                $data['message'] = $json['msg'] ?? $data['message'];
             }
         }
 

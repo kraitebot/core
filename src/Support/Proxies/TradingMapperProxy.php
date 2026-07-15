@@ -17,6 +17,8 @@ use Kraite\Core\Support\TradingMappers\KucoinTradingMapper;
  * Handles business rules that differ between exchanges (e.g., delisting detection).
  *
  * @method bool isNowDelisted(\Kraite\Core\Models\ExchangeSymbol $exchangeSymbol)
+ * @method int|null normalizeDeliveryTimestampMs(int|null $timestamp)
+ * @method bool missingFromCatalogueIsTerminal()
  */
 final class TradingMapperProxy
 {

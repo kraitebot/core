@@ -147,10 +147,10 @@ final class SyncLeverageBracketJob extends BaseApiableJob
     }
 
     /**
-     * Persist the `is_marked_for_delisting` flag and return a terminal
-     * "delisted" payload so the step completes cleanly instead of throwing
-     * and failing the shared parent SyncLeverageBracketsJob. On the next
-     * refresh cycle the lifecycle filter (`where('is_marked_for_delisting',
+     * Persist terminal removal on this exchange-specific row without changing
+     * the sysadmin-owned manual flag. Return a clean payload instead of
+     * throwing and failing the shared parent SyncLeverageBracketsJob. On the
+     * next refresh cycle the lifecycle filter (`where('is_marked_for_delisting',
      * false)`) excludes the symbol entirely, so it is no longer retried.
      * Mirrors FetchKlinesJob::handleSymbolDelisted().
      *
@@ -164,8 +164,11 @@ final class SyncLeverageBracketJob extends BaseApiableJob
                 ->lockForUpdate()
                 ->first();
 
-            if ($symbol !== null && ! $symbol->is_marked_for_delisting) {
-                $symbol->update(['is_marked_for_delisting' => true]);
+            if ($symbol !== null && ! $symbol->isDelisted()) {
+                $symbol->update([
+                    'is_marked_for_delisting' => true,
+                    'delivery_at' => now(),
+                ]);
             }
         });
 
@@ -176,7 +179,7 @@ final class SyncLeverageBracketJob extends BaseApiableJob
             'symbol' => $this->exchangeSymbol->asset,
             'status' => 'delisted',
             'delisted' => true,
-            'message' => "Symbol marked for delisting after {$apiSystem->canonical} reported it closed or invalid",
+            'message' => "Symbol recorded as delisted after {$apiSystem->canonical} reported it closed or invalid",
         ];
     }
 }

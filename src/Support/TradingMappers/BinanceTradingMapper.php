@@ -19,6 +19,16 @@ final class BinanceTradingMapper
      */
     public const PERPETUAL_DEFAULT = 4133404800000;
 
+    public function normalizeDeliveryTimestampMs(?int $timestamp): ?int
+    {
+        return $timestamp === self::PERPETUAL_DEFAULT ? null : $timestamp;
+    }
+
+    public function missingFromCatalogueIsTerminal(): bool
+    {
+        return true;
+    }
+
     /**
      * Determine if an exchange symbol is now being delisted.
      *

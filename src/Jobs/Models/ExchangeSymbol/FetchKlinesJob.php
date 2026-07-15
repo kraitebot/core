@@ -125,8 +125,8 @@ final class FetchKlinesJob extends BaseApiableJob
     }
 
     /**
-     * Persist the `is_marked_for_delisting` flag on the ExchangeSymbol and
-     * return a terminal "delisted" payload so the step completes cleanly.
+     * Persist terminal removal on this exchange-specific row and return a
+     * clean payload. The sysadmin-owned manual flag is untouched.
      *
      * Complements the proactive detection in ExchangeSymbolObserver +
      * *TradingMapper::isNowDelisted(): that path fires when the exchange
@@ -144,8 +144,11 @@ final class FetchKlinesJob extends BaseApiableJob
                 ->lockForUpdate()
                 ->first();
 
-            if ($symbol !== null && ! $symbol->is_marked_for_delisting) {
-                $symbol->update(['is_marked_for_delisting' => true]);
+            if ($symbol !== null && ! $symbol->isDelisted()) {
+                $symbol->update([
+                    'is_marked_for_delisting' => true,
+                    'delivery_at' => now(),
+                ]);
             }
         });
 
@@ -156,7 +159,7 @@ final class FetchKlinesJob extends BaseApiableJob
             'symbol' => $this->exchangeSymbol->parsed_trading_pair,
             'timeframe' => $this->timeframe,
             'delisted' => true,
-            'message' => "Symbol marked for delisting after {$canonical} reported it as removed",
+            'message' => "Symbol recorded as delisted after {$canonical} reported it as removed",
         ];
     }
 

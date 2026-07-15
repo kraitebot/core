@@ -28,8 +28,8 @@ use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
  *
  * If the live price matches Binance within `kraite.price_alignment.tolerance`,
  * the symbol is flagged `is_price_aligned = true`. Otherwise it is flagged
- * `is_price_aligned = false`, switched off (`is_manually_enabled = false` — so it
- * drops out of trading even if re-enabled), and the owner is notified once.
+ * `is_price_aligned = false`, which independently excludes it from trading,
+ * and the owner is notified once. The sysadmin-owned manual flag is untouched.
  */
 final class VerifyPriceAlignmentJob extends BaseApiableJob
 {
@@ -67,7 +67,9 @@ final class VerifyPriceAlignmentJob extends BaseApiableJob
             ->whereHas('apiSystem', function ($query): void {
                 $query->where('canonical', 'binance');
             })
-            ->when(! $hasOpenPosition, fn ($query) => $query->notDelisted())
+            ->when(! $hasOpenPosition, fn ($query) => $query
+                ->where('is_marked_for_delisting', false)
+                ->notDelisted())
             ->where('symbol_id', $this->exchangeSymbol->symbol_id)
             ->where('quote', $this->exchangeSymbol->quote)
             ->first();
@@ -124,7 +126,7 @@ final class VerifyPriceAlignmentJob extends BaseApiableJob
     }
 
     /**
-     * Flag the divergent symbol, switch it off, and notify once.
+     * Flag the divergent symbol and notify once.
      *
      * @return array<string, mixed>
      */
@@ -143,10 +145,7 @@ final class VerifyPriceAlignmentJob extends BaseApiableJob
                 ->first();
 
             if ($symbol !== null) {
-                $symbol->updateSaving([
-                    'is_price_aligned' => false,
-                    'is_manually_enabled' => false,
-                ]);
+                $symbol->updateSaving(['is_price_aligned' => false]);
             }
         });
 

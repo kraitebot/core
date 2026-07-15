@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Commands\Cronjobs;
 
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kraite\Core\Jobs\Models\ExchangeSymbol\CalculateBtcCorrelationJob;
@@ -192,16 +193,20 @@ final class FetchKlinesCommand extends BaseCommand
             $this->verboseInfo('  Timeframes: '.implode(', ', $timeframes));
 
             // Get all BTC symbols for this exchange (one per quote)
-            $btcSymbols = $this->getBtcSymbolsForApiSystem($apiSystem);
+            $btcSymbols = $this->getBtcSymbolsForApiSystem($apiSystem, operationalOnly: true);
             if ($btcSymbols->isEmpty()) {
                 $this->verboseWarn("  Skipping {$apiSystem->canonical}: no BTC symbols found");
 
                 continue;
             }
 
-            $btcSymbolIds = $btcSymbols->pluck('id')->all();
-            $symbols = ExchangeSymbol::query()->where('api_system_id', $apiSystem->id)->whereNotIn('id', $btcSymbolIds)->get();
-            $exchangeSymbolIds = $symbols->pluck('id')->all();
+            $btcSymbolIds = $btcSymbols->map(static fn (ExchangeSymbol $symbol): int => $symbol->id)->values()->all();
+            $symbols = ExchangeSymbol::query()
+                ->where('api_system_id', $apiSystem->id)
+                ->whereNotIn('id', $btcSymbolIds)
+                ->needsOperationalMonitoring()
+                ->get();
+            $exchangeSymbolIds = $symbols->map(static fn (ExchangeSymbol $symbol): int => $symbol->id)->values()->all();
 
             // BTC baselines share one block at index 1. The per-symbol
             // orchestrator at index 2 fires once BTC klines land in the DB,
@@ -309,6 +314,7 @@ final class FetchKlinesCommand extends BaseCommand
                 ->where('api_system_id', $apiSystem->id)
                 ->where('token', $token)
                 ->where('quote', $quote)
+                ->needsOperationalMonitoring()
                 ->first();
 
             if ($row !== null) {
@@ -365,7 +371,7 @@ final class FetchKlinesCommand extends BaseCommand
             return self::FAILURE;
         }
 
-        /** @var \Illuminate\Support\Collection<int, ExchangeSymbol> $exchangeSymbols */
+        /** @var Collection<int, ExchangeSymbol> $exchangeSymbols */
         $exchangeSymbols = Position::active()->whereNotNull('exchange_symbol_id')
             ->with('exchangeSymbol.apiSystem')->get()->pluck('exchangeSymbol')->filter()->unique('id');
         if ($exchangeSymbols->isEmpty()) {
@@ -393,9 +399,9 @@ final class FetchKlinesCommand extends BaseCommand
         }
         $this->verboseInfo("Mapped to {$binanceSymbolIds->count()} unique Binance exchange symbols.");
 
-        $btcSymbolIds = $btcSymbols->pluck('id')->all();
+        $btcSymbolIds = $btcSymbols->map(static fn (ExchangeSymbol $symbol): int => $symbol->id)->values()->all();
         $binanceSymbols = ExchangeSymbol::whereIn('id', $binanceSymbolIds)->whereNotIn('id', $btcSymbolIds)->get();
-        $binanceSymbolIdsList = $binanceSymbols->pluck('id')->all();
+        $binanceSymbolIdsList = $binanceSymbols->map(static fn (ExchangeSymbol $symbol): int => $symbol->id)->values()->all();
 
         // BTC klines run first (shared block, index 1). The orchestrator at
         // index 2 then spawns one block per active-position symbol so each
@@ -404,7 +410,8 @@ final class FetchKlinesCommand extends BaseCommand
             btcSymbolIds: $btcSymbolIds,
             exchangeSymbolIds: $binanceSymbolIdsList,
             timeframes: $timeframes,
-            limit: $limit
+            limit: $limit,
+            protectedExchangeSymbolIds: $binanceSymbolIdsList,
         );
 
         $btcStepsCreated = count($timeframes) * $btcSymbols->count();
@@ -479,13 +486,16 @@ final class FetchKlinesCommand extends BaseCommand
      *
      * @return \Illuminate\Database\Eloquent\Collection<int, ExchangeSymbol>
      */
-    private function getBtcSymbolsForApiSystem(ApiSystem $apiSystem): \Illuminate\Database\Eloquent\Collection
-    {
+    private function getBtcSymbolsForApiSystem(
+        ApiSystem $apiSystem,
+        bool $operationalOnly = false,
+    ): \Illuminate\Database\Eloquent\Collection {
         $btcToken = $this->resolveBtcTokenForApiSystem($apiSystem);
 
         return ExchangeSymbol::query()
             ->where('api_system_id', $apiSystem->id)
             ->where('token', $btcToken)
+            ->when($operationalOnly, static fn ($query) => $query->needsOperationalMonitoring())
             ->get();
     }
 
@@ -519,12 +529,14 @@ final class FetchKlinesCommand extends BaseCommand
      * @param  array<int, int>  $btcSymbolIds
      * @param  array<int, int>  $exchangeSymbolIds  non-BTC symbols to fan out
      * @param  array<int, string>  $timeframes
+     * @param  array<int, int>  $protectedExchangeSymbolIds
      */
     private function createBtcAndPerSymbolBlock(
         array $btcSymbolIds,
         array $exchangeSymbolIds,
         array $timeframes,
         int $limit,
+        array $protectedExchangeSymbolIds = [],
     ): void {
         if (empty($btcSymbolIds) || empty($exchangeSymbolIds)) {
             return;
@@ -545,6 +557,7 @@ final class FetchKlinesCommand extends BaseCommand
                 'exchangeSymbolIds' => $exchangeSymbolIds,
                 'timeframes' => $timeframes,
                 'limit' => $limit,
+                'protectedExchangeSymbolIds' => $protectedExchangeSymbolIds,
             ],
         ]);
     }

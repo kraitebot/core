@@ -11,11 +11,9 @@ use StepDispatcher\Support\BaseCommand;
 /**
  * DisableVolatileTokensCommand
  *
- * Allow-list sweep. Every hour, this command flips
- * is_manually_enabled=false on any exchange_symbols row whose token is
- * NOT on the curated ALLOWED_TOKENS list below — across every exchange,
- * not just Binance. If we haven't explicitly vouched for a token, it
- * doesn't trade.
+ * Allow-list sweep. Every hour, this command applies an automatic selection
+ * block to exchange_symbols rows whose token is not in ALLOWED_TOKENS. The
+ * sysadmin-owned manual flag is never changed.
  *
  * Why the allow-list model (rather than the old deny-list of memes /
  * speculative / structural-brittle buckets):
@@ -32,11 +30,7 @@ use StepDispatcher\Support\BaseCommand;
  *     keeps re-ingesting new listings; any row for a non-allow-listed
  *     token will be caught within the hour.
  *
- * The command is strictly additive: it only ever flips TRUE → FALSE on
- * non-allow-listed tokens. It never re-enables anything. Bringing a
- * token back into trade-eligibility requires adding it to the list
- * below AND an operator flipping `is_manually_enabled` back to true
- * (the hourly sweep won't do that on its own).
+ * The command is strictly additive: it never clears automatic blocks.
  */
 final class DisableVolatileTokensCommand extends BaseCommand
 {
@@ -77,11 +71,11 @@ final class DisableVolatileTokensCommand extends BaseCommand
         $dryRun = (bool) $this->option('dry-run');
 
         $matches = ExchangeSymbol::whereNotIn('token', $allowList)
-            ->where('is_manually_enabled', true)
+            ->whereNull('system_disabled_at')
             ->get();
 
         if ($matches->isEmpty()) {
-            $this->verboseInfo('Every enabled exchange_symbol row is already on the allow-list. Nothing to do.');
+            $this->verboseInfo('Every exchange_symbol row is allow-listed or already system-blocked. Nothing to do.');
 
             return self::SUCCESS;
         }
@@ -98,10 +92,10 @@ final class DisableVolatileTokensCommand extends BaseCommand
         }
 
         foreach ($matches as $exchangeSymbol) {
-            $exchangeSymbol->updateSaving(['is_manually_enabled' => false]);
+            $exchangeSymbol->applySystemBlock(ExchangeSymbol::SYSTEM_BLOCK_NOT_ALLOW_LISTED);
         }
 
-        $this->verboseInfo("Disabled {$rowCount} exchange_symbol row(s) across {$tokenCount} token(s) (non-allow-listed).");
+        $this->verboseInfo("System-blocked {$rowCount} exchange_symbol row(s) across {$tokenCount} token(s) (non-allow-listed).");
         $this->logTokenGroups($groupedByToken);
 
         return self::SUCCESS;

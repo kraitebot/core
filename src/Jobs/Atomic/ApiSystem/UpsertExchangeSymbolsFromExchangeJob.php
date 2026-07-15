@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\ApiSystem;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
@@ -11,6 +12,7 @@ use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Symbol;
+use Kraite\Core\Support\Proxies\TradingMapperProxy;
 
 /**
  * UpsertExchangeSymbolsFromExchangeJob
@@ -52,11 +54,6 @@ final class UpsertExchangeSymbolsFromExchangeJob extends BaseApiableJob
      */
     public function computeApiable(): array
     {
-        // Fetch all symbols from the exchange
-        // Mappers already filter out:
-        // - Symbols with underscores (test/synthetic symbols)
-        // - Non-perpetual contracts (only LinearPerpetual for Bybit, PERPETUAL for Binance)
-        // - Non-trading status symbols
         $apiResponse = $this->apiSystem->apiQueryMarketData();
 
         $results = $apiResponse->result;
@@ -68,30 +65,29 @@ final class UpsertExchangeSymbolsFromExchangeJob extends BaseApiableJob
             });
         }
 
+        return $this->synchronizeExchangeSymbols(array_values($results));
+    }
+
+    /**
+     * Reconcile canonical exchange catalogue rows with local lifecycle state.
+     *
+     * @param  array<int, array<string, mixed>>  $results
+     * @return array<string, mixed>
+     */
+    public function synchronizeExchangeSymbols(array $results): array
+    {
         $totalFromApi = count($results);
 
-        // Pre-load all symbols indexed by token for efficient lookup
         $symbolsByToken = Symbol::pluck('id', 'token');
+        $tradingMapper = new TradingMapperProxy($this->apiSystem->canonical);
 
         $upsertedCount = 0;
         $linkedCount = 0;
         $skippedCount = 0;
-        $markedForDelistingCount = 0;
 
-        // No outer transaction by design. Wrapping the ~568-symbol upsert
-        // loop in one DB::transaction() held row-level locks on every
-        // touched exchange_symbol row for the entire loop duration —
-        // observed in production on 2026-04-25 as 12-14s slow queries on
-        // the Binance mark-price WebSocket daemon's 1Hz CASE/WHEN UPDATE,
-        // which had to wait every hour at :15 for the cron's transaction
-        // to commit. Each updateOrCreate now runs as its own implicit
-        // per-statement transaction; row locks are held only for the
-        // microseconds of a single SELECT+UPDATE. The websocket's writes
-        // interleave between rows instead of blocking on the whole batch.
-        //
-        // Atomicity is not load-bearing here: a partial completion (worker
-        // dies mid-loop) is recovered by the next hourly run, which is
-        // idempotent on every row via updateOrCreate.
+        // No outer transaction: the 1Hz mark-price writer must be able to
+        // interleave between catalogue rows. A partial run is recovered by
+        // the next idempotent hourly reconciliation.
         foreach ($results as $symbolData) {
             $token = $symbolData['baseAsset'] ?? null;
             $quote = $symbolData['quoteAsset'] ?? null;
@@ -103,8 +99,6 @@ final class UpsertExchangeSymbolsFromExchangeJob extends BaseApiableJob
                 continue;
             }
 
-            // Upsert exchange symbol with all available metadata
-            // Ensure precision values are non-negative (some exchanges return negative values)
             $pricePrecision = $symbolData['pricePrecision'] ?? null;
             $quantityPrecision = $symbolData['quantityPrecision'] ?? null;
 
@@ -115,36 +109,63 @@ final class UpsertExchangeSymbolsFromExchangeJob extends BaseApiableJob
                 $quantityPrecision = 0;
             }
 
-            // Check if exchange symbol already exists
             $existingSymbol = ExchangeSymbol::where('token', $token)
                 ->where('api_system_id', $this->apiSystem->id)
                 ->where('quote', $quote)
                 ->first();
 
-            // Try to find matching symbol_id by token (for new records or unlinked ones)
-            $symbolId = $symbolsByToken->get($token);
+            $isTrading = (bool) ($symbolData['isTrading'] ?? true);
+            $isEligible = (bool) ($symbolData['isEligible'] ?? true);
 
-            // Build update data - always update metadata
+            // Ineligible rows are catalogue evidence only. Inactive eligible
+            // rows update known pairs but are not created from scratch.
+            if (! $isEligible || ($existingSymbol === null && ! $isTrading)) {
+                $skippedCount++;
+
+                continue;
+            }
+
+            $symbolId = $symbolsByToken->get($token);
+            $deliveryTimestampMs = is_numeric($symbolData['deliveryDate'] ?? null)
+                ? (int) $symbolData['deliveryDate']
+                : null;
+            $normalizedDeliveryTimestampMs = $tradingMapper->normalizeDeliveryTimestampMs($deliveryTimestampMs);
+            $deliveryAt = $normalizedDeliveryTimestampMs !== null
+                ? Carbon::createFromTimestampMs($normalizedDeliveryTimestampMs, config('app.timezone'))
+                : null;
+
+            if ((bool) ($symbolData['isDelisted'] ?? false)
+                && ($deliveryAt === null || $deliveryAt->isFuture())) {
+                $deliveryAt = now();
+            }
+
+            $isMarkedForDelisting = ! $isTrading || $deliveryAt !== null;
+
             $updateData = [
                 'asset' => $asset,
-                'price_precision' => $pricePrecision,
-                'quantity_precision' => $quantityPrecision,
-                'tick_size' => $symbolData['tickSize'] ?? null,
-                'min_notional' => $symbolData['minNotional'] ?? null,
-                'min_price' => $symbolData['minPrice'] ?? null,
-                'max_price' => $symbolData['maxPrice'] ?? null,
-                'delivery_ts_ms' => $symbolData['deliveryDate'] ?? null,
+                'delivery_ts_ms' => $deliveryTimestampMs,
+                'delivery_at' => $deliveryAt,
+                'is_marked_for_delisting' => $isMarkedForDelisting,
                 'symbol_information' => $symbolData,
-
-                // Exchange-specific min order size fields (KuCoin)
-                'kucoin_lot_size' => $symbolData['kucoinLotSize'] ?? null,
-                'kucoin_multiplier' => $symbolData['kucoinMultiplier'] ?? null,
             ];
 
-            // Only set symbol_id if:
-            // 1. This is a new record (existingSymbol is null), OR
-            // 2. Existing record has no symbol_id and we found one
-            // Never overwrite an existing symbol_id (it may have been set via CMC API)
+            $metadata = [
+                'pricePrecision' => ['price_precision', $pricePrecision],
+                'quantityPrecision' => ['quantity_precision', $quantityPrecision],
+                'tickSize' => ['tick_size', $symbolData['tickSize'] ?? null],
+                'minNotional' => ['min_notional', $symbolData['minNotional'] ?? null],
+                'minPrice' => ['min_price', $symbolData['minPrice'] ?? null],
+                'maxPrice' => ['max_price', $symbolData['maxPrice'] ?? null],
+                'kucoinLotSize' => ['kucoin_lot_size', $symbolData['kucoinLotSize'] ?? null],
+                'kucoinMultiplier' => ['kucoin_multiplier', $symbolData['kucoinMultiplier'] ?? null],
+            ];
+
+            foreach ($metadata as $source => [$column, $value]) {
+                if (array_key_exists($source, $symbolData)) {
+                    $updateData[$column] = $value;
+                }
+            }
+
             if (! $existingSymbol || ($existingSymbol->symbol_id === null && $symbolId !== null)) {
                 $updateData['symbol_id'] = $symbolId;
                 if ($symbolId) {
@@ -167,12 +188,6 @@ final class UpsertExchangeSymbolsFromExchangeJob extends BaseApiableJob
             $upsertedCount++;
         }
 
-        // Any symbol that previously lived under this api_system but is no
-        // longer returned by the exchange is flagged for delisting. This
-        // catches the case where a contract is simply removed from the
-        // exchange listing without any advance-notice delivery date (the
-        // announced case is handled by ExchangeSymbolObserver + each
-        // TradingMapper::isNowDelisted()).
         $markedForDelistingCount = $this->flagMissingSymbolsForDelisting($results);
 
         return [
@@ -187,21 +202,21 @@ final class UpsertExchangeSymbolsFromExchangeJob extends BaseApiableJob
 
     /**
      * Flag every ExchangeSymbol belonging to this api_system that is absent
-     * from the latest exchange response so it stops being scheduled for
-     * klines, indicators, and position management.
+     * from the latest exchange response and exclude it from new-trading work.
+     * Operational scopes still retain rows carrying open positions.
      *
      * An empty response is treated as an API anomaly (partial outage, etc.)
      * rather than a mass delisting event: we do not flag anything in that
      * case — a later run with real data will do the right thing.
      *
-     * Rows that were already flagged are left untouched so observers do
-     * not fire repeatedly for the same delisting.
+     * Full catalogues (Binance and Bitget) make absence terminal. Active-only
+     * catalogues (Bybit and KuCoin) only prove temporary unavailability; a
+     * later symbol-specific terminal API error supplies the terminal date.
+     *
+     * The mapped rows carry at minimum `baseAsset` and `quoteAsset`.
      *
      * @param  array<int, array<string, mixed>>  $apiResult
-     *   The mapped market-data rows coming out of
-     *   `ApiDataMapperProxy::resolveQueryMarketDataResponse()`. Each row
-     *   carries at minimum `baseAsset` and `quoteAsset`.
-     * @return int Number of rows newly flagged as delisted.
+     * @return int Number of missing rows whose automatic lifecycle state changed.
      */
     public function flagMissingSymbolsForDelisting(array $apiResult): int
     {
@@ -216,32 +231,43 @@ final class UpsertExchangeSymbolsFromExchangeJob extends BaseApiableJob
             })
             ->unique()
             ->all();
+        $missingIsTerminal = (new TradingMapperProxy($this->apiSystem->canonical))
+            ->missingFromCatalogueIsTerminal();
 
         // No pessimistic lock here on purpose — the Binance mark-price
         // WebSocket daemon writes to every exchange_symbol row at 1 Hz
         // (cross-exchange price replication), and a FOR UPDATE table-
         // scan lock on the ~590-row exchange slice contended with those
         // writes for 14+ seconds in production on 2026-04-25. The
-        // orphan-marking is idempotent (sets `is_marked_for_delisting=
-        // true` on rows not in the live payload), and the cron runs
-        // hourly with withoutOverlapping() so no concurrent run of the
-        // same job races us on the same exchange. The transaction
-        // wrapper still gives us atomicity across the per-row updates.
-        return DB::transaction(function () use ($liveKeys): int {
+        // orphan-marking is idempotent, and the cron runs hourly with
+        // withoutOverlapping() so no concurrent run races the same exchange.
+        return DB::transaction(function () use ($liveKeys, $missingIsTerminal): int {
             $orphans = ExchangeSymbol::query()
                 ->where('api_system_id', $this->apiSystem->id)
-                ->where('is_marked_for_delisting', false)
                 ->get()
-                ->filter(static function (ExchangeSymbol $symbol) use ($liveKeys): bool {
-                    return ! in_array(
+                ->filter(static function (ExchangeSymbol $symbol) use ($liveKeys, $missingIsTerminal): bool {
+                    $isMissing = ! in_array(
                         needle: $symbol->token.'|'.$symbol->quote,
                         haystack: $liveKeys,
                         strict: true
                     );
+
+                    if (! $isMissing) {
+                        return false;
+                    }
+
+                    return ! $symbol->is_marked_for_delisting
+                        || ($missingIsTerminal && ! $symbol->isDelisted());
                 });
 
             foreach ($orphans as $orphan) {
-                $orphan->update(['is_marked_for_delisting' => true]);
+                $updates = ['is_marked_for_delisting' => true];
+
+                if ($missingIsTerminal) {
+                    $updates['delivery_at'] = now();
+                }
+
+                $orphan->update($updates);
             }
 
             return $orphans->count();

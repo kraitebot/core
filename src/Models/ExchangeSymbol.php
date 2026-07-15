@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Models;
 
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Illuminate\Support\Carbon;
 use Kraite\Core\Abstracts\BaseModel;
 use Kraite\Core\Concerns\ExchangeSymbol\HasAccessors;
 use Kraite\Core\Concerns\ExchangeSymbol\HasScopes;
@@ -27,6 +29,8 @@ use Kraite\Core\Database\Factories\ExchangeSymbolFactory;
  * @property array{cmc_api_called?: bool, taapi_verified?: bool, has_taapi_data?: bool} $api_statuses
  * @property int $api_system_id
  * @property bool|null $is_manually_enabled
+ * @property Carbon|null $system_disabled_at
+ * @property string|null $system_disabled_reason
  * @property bool $has_no_indicator_data
  * @property bool $has_price_trend_misalignment
  * @property bool $has_early_direction_change
@@ -48,13 +52,13 @@ use Kraite\Core\Database\Factories\ExchangeSymbolFactory;
  * @property float|null $disable_on_price_spike_percentage
  * @property int|null $price_spike_cooldown_hours
  * @property int|null $delivery_ts_ms
- * @property \Illuminate\Support\Carbon|null $delivery_at
- * @property \Illuminate\Support\Carbon|null $tradeable_at
+ * @property Carbon|null $delivery_at
+ * @property Carbon|null $tradeable_at
  * @property array|null $symbol_information
  * @property array|null $leverage_brackets
  * @property mixed $indicators_values
  * @property string|null $indicators_timeframe
- * @property \Illuminate\Support\Carbon|null $indicators_synced_at
+ * @property Carbon|null $indicators_synced_at
  * @property array<string, float>|null $btc_correlation_pearson
  * @property array<string, float>|null $btc_correlation_spearman
  * @property array<string, float>|null $btc_correlation_rolling
@@ -63,8 +67,8 @@ use Kraite\Core\Database\Factories\ExchangeSymbolFactory;
  * @property array<string, float>|null $btc_elasticity_short
  * @property bool|null $overlaps_with_binance
  * @property bool $is_marked_for_delisting
- * @property \Illuminate\Support\Carbon $created_at
- * @property \Illuminate\Support\Carbon $updated_at
+ * @property Carbon $created_at
+ * @property Carbon $updated_at
  * @property-read Symbol|null $symbol
  * @property-read ApiSystem $apiSystem
  * @property-read string|null $parsed_trading_pair
@@ -73,6 +77,10 @@ use Kraite\Core\Database\Factories\ExchangeSymbolFactory;
  */
 final class ExchangeSymbol extends BaseModel
 {
+    public const SYSTEM_BLOCK_OPENING_FAILED = 'position_opening_failed';
+
+    public const SYSTEM_BLOCK_NOT_ALLOW_LISTED = 'token_not_allow_listed';
+
     use HasAccessors;
     use HasFactory;
     use HasScopes;
@@ -141,6 +149,7 @@ final class ExchangeSymbol extends BaseModel
 
         'indicators_synced_at' => 'datetime',
         'delivery_at' => 'datetime',
+        'system_disabled_at' => 'datetime',
         'tradeable_at' => 'datetime',
 
         'delivery_ts_ms' => 'integer',
@@ -220,7 +229,7 @@ final class ExchangeSymbol extends BaseModel
      * depending on the cast configuration; the broader
      * `Carbon\CarbonInterface` accommodates both.
      */
-    public function getMarkPriceSyncedAtAttribute($value): ?\Carbon\CarbonInterface
+    public function getMarkPriceSyncedAtAttribute($value): ?CarbonInterface
     {
         $sidecar = $this->priceRow;
 
@@ -232,9 +241,9 @@ final class ExchangeSymbol extends BaseModel
             return null;
         }
 
-        return $value instanceof \Carbon\CarbonInterface
+        return $value instanceof CarbonInterface
             ? $value
-            : \Illuminate\Support\Carbon::parse($value);
+            : Carbon::parse($value);
     }
 
     protected static function newFactory(): ExchangeSymbolFactory

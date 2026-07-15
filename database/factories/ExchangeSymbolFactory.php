@@ -9,7 +9,7 @@ use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
 
 /**
- * @extends \Illuminate\Database\Eloquent\Factories\Factory<\Kraite\Core\Models\ExchangeSymbol>
+ * @extends Factory<ExchangeSymbol>
  */
 final class ExchangeSymbolFactory extends Factory
 {
@@ -26,6 +26,9 @@ final class ExchangeSymbolFactory extends Factory
             'symbol_id' => null,
             'api_system_id' => ApiSystem::factory(),
             'is_manually_enabled' => true,
+            'system_disabled_at' => null,
+            'system_disabled_reason' => null,
+            'is_price_aligned' => true,
             // Default factory state mirrors the implicit "fully eligible" assumption
             // most test fixtures use. The DB column default is false (added 2026-04-27)
             // so production rows start unapproved until the operator promotes them;

@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.72.0 - 2026-07-15
+
+### Exchange listing lifecycle
+
+- [IMPROVED] **Delisting warnings and terminal exchange removal now carry separate truth.** A warning marker immediately blocks new openings, while a reached delivery timestamp proves terminal removal. Binance and Bitget full-catalogue absence becomes terminal; Bybit and KuCoin active-only absence remains warning-only until an explicit terminal exchange response.
+- [IMPROVED] **Returning active symbols recover automatic listing state.** Catalogue refresh clears the warning and terminal timestamp and restores Binance same-asset overlap without changing manual or unrelated safety gates.
+- [IMPROVED] **Existing exposure remains operational after removal.** Price and kline monitoring retain terminal symbols while an open position exists; idle terminal rows leave operational workloads.
+
+### Trading gates
+
+- [IMPROVED] **Manual enablement is exclusively sysadmin-owned.** Opening failures and hourly allow-list enforcement use a separate reasoned system block; price divergence uses the independent alignment gate. Automated flows no longer rewrite `is_manually_enabled`.
+- [FIXED] **Atomic price comparison rechecks warning-only Binance references at execution time,** closing the queue race between parent selection and the live comparison.
+- [FIXED] **Model and query tradeability agree on price alignment,** so operator-facing state cannot report a misaligned symbol as tradeable.
+- [FIXED] **Kline fan-out jobs queued before this release remain deserializable** after the new protected-reference payload field is deployed.
+
+### Tests
+
+- [ADDED] Heavy TDD coverage for exchange catalogue semantics, relisting, system/manual gate separation, active-exposure monitoring, execution-time price-reference validation, and legacy queue payload compatibility.
+
 ## 1.71.0 - 2026-07-15
 
 ### Position safety

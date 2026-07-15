@@ -6,6 +6,7 @@ namespace Kraite\Core\Jobs\Models\ExchangeSymbol;
 
 use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseQueueableJob;
+use Kraite\Core\Models\ExchangeSymbol;
 use StepDispatcher\Models\Step;
 
 /**
@@ -22,6 +23,10 @@ use StepDispatcher\Models\Step;
  * satisfied upstream: this job only dispatches after the shared block's index-1
  * BTC klines are concluded, so the DB candles table is already populated by the
  * time any correlation job reads from it.
+ *
+ * The symbol set is revalidated at execution time because this orchestrator
+ * can wait behind the shared BTC block. References deliberately selected for
+ * open positions on another exchange are protected from that second filter.
  */
 final class DispatchPerSymbolKlineBlocksJob extends BaseQueueableJob
 {
@@ -31,25 +36,48 @@ final class DispatchPerSymbolKlineBlocksJob extends BaseQueueableJob
     /** @var array<int, string> */
     public array $timeframes;
 
+    /** @var array<int, int> */
+    public array $protectedExchangeSymbolIds = [];
+
     public int $limit;
 
     /**
      * @param  array<int, int>  $exchangeSymbolIds  Symbols to spin up blocks for (excludes BTC baselines)
      * @param  array<int, string>  $timeframes  Timeframes to fetch per symbol
      * @param  int  $limit  Kline count per timeframe
+     * @param  array<int, int>  $protectedExchangeSymbolIds  Reference symbols selected for active positions on another exchange
      */
-    public function __construct(array $exchangeSymbolIds, array $timeframes, int $limit)
-    {
+    public function __construct(
+        array $exchangeSymbolIds,
+        array $timeframes,
+        int $limit,
+        array $protectedExchangeSymbolIds = [],
+    ) {
         $this->exchangeSymbolIds = $exchangeSymbolIds;
         $this->timeframes = $timeframes;
         $this->limit = $limit;
+        $this->protectedExchangeSymbolIds = $protectedExchangeSymbolIds;
     }
 
+    /**
+     * @return array{symbols_dispatched: int, timeframes: array<int, string>, limit: int, message: string}
+     */
     public function compute(): array
     {
         $blocksCreated = 0;
+        $operationalSymbolIds = ExchangeSymbol::query()
+            ->whereKey($this->exchangeSymbolIds)
+            ->needsOperationalMonitoring()
+            ->get(['id'])
+            ->mapWithKeys(static fn (ExchangeSymbol $symbol): array => [$symbol->id => true]);
+        $protectedSymbolIds = collect($this->protectedExchangeSymbolIds)
+            ->mapWithKeys(static fn (int $id): array => [$id => true]);
 
         foreach ($this->exchangeSymbolIds as $exchangeSymbolId) {
+            if (! $operationalSymbolIds->has($exchangeSymbolId) && ! $protectedSymbolIds->has($exchangeSymbolId)) {
+                continue;
+            }
+
             $blockUuid = Str::uuid()->toString();
 
             foreach ($this->timeframes as $timeframe) {

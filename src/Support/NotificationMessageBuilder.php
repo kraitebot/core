@@ -484,7 +484,7 @@ final class NotificationMessageBuilder
                         "Live price: {$liveStr}\n".
                         "Binance reference: {$binanceStr}\n".
                         "Ratio (live / Binance): {$ratioStr}\n\n".
-                        'It is now is_price_aligned=false and is_manually_enabled=false, so it is excluded from trading. Review the symbol mapping and both venue contracts before re-enabling it.',
+                        'It is now is_price_aligned=false, so it is excluded from trading without changing the sysadmin-owned manual flag. Review the symbol mapping and both venue contracts before clearing the alignment issue.',
                     'pushoverMessage' => "Price mismatch {$symbol} ({$exchangeName}) — ratio {$ratioStr}, symbol disabled",
                     'actionUrl' => null,
                     'actionLabel' => null,
@@ -846,7 +846,7 @@ final class NotificationMessageBuilder
                     "• Reason: {$reason}",
                 ];
                 if ($tokenBlocked) {
-                    $emailLines[] = "• Token {$token} auto-disabled (is_manually_enabled=false) so the scheduler won't retry it.";
+                    $emailLines[] = "• Token {$token} system-blocked so the scheduler won't retry it; the sysadmin-owned manual flag was not changed.";
                 }
                 $emailLines[] = '';
                 $emailLines[] = 'Inspect the position on the exchange UI, reconcile if needed, and re-enable the token manually once the root cause is addressed.';

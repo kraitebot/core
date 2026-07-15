@@ -9,50 +9,36 @@ use Kraite\Core\Models\Kraite;
 
 trait HasStatuses
 {
-    /**
-     * True when the symbol is no longer being maintained by its
-     * exchange. Two signals collapse into this single read:
-     *
-     *  - `is_marked_for_delisting` (set by sync jobs across all four
-     *    exchange clients when the symbol disappears from the
-     *    exchange's authoritative pair list, e.g.
-     *    `UpsertExchangeSymbolsFromExchangeJob`'s orphan sweep).
-     *
-     *  - `delivery_at` in the past (futures delivery contracts that
-     *    have already settled — Binance USDS-M flags these via the
-     *    `deliveryDate` field on the symbol metadata).
-     */
-    public function isDelisted(): bool
+    public function applySystemBlock(string $reason): bool
     {
-        if ($this->is_marked_for_delisting) {
-            return true;
+        if ($this->system_disabled_at !== null) {
+            return false;
         }
 
-        if ($this->delivery_at !== null && $this->delivery_at->isPast()) {
-            return true;
-        }
-
-        return false;
+        return $this->updateSaving([
+            'system_disabled_at' => now(),
+            'system_disabled_reason' => $reason,
+        ]);
     }
 
     /**
-     * Best-effort timestamp for when the symbol stopped trading. Null
-     * if the symbol is still active. The two signals split as:
-     *
-     *  - When `delivery_at` is set and past: that's the canonical
-     *    delisting moment (exchange-published).
-     *  - When `is_marked_for_delisting` is true without a delivery
-     *    date: we fall back to `updated_at` (the moment our orphan
-     *    sweep flipped the flag — best proxy we have).
+     * True only after the exchange contract has reached its terminal date.
+     * `is_marked_for_delisting` is an earlier selection gate and may also
+     * represent temporary absence from an active-only catalogue.
+     */
+    public function isDelisted(): bool
+    {
+        return $this->delivery_at !== null && $this->delivery_at->lessThanOrEqualTo(now());
+    }
+
+    /**
+     * Timestamp when the contract became terminal. A warning-only marker has
+     * no terminal date and therefore returns null.
      */
     public function delistedAt(): ?CarbonInterface
     {
-        if ($this->delivery_at !== null && $this->delivery_at->isPast()) {
+        if ($this->delivery_at !== null && $this->delivery_at->lessThanOrEqualTo(now())) {
             return $this->delivery_at;
-        }
-
-        if ($this->is_marked_for_delisting) {
-            return $this->updated_at;
         }
 
         return null;
@@ -81,6 +67,16 @@ trait HasStatuses
 
         // Must not be marked for delisting
         if ($this->is_marked_for_delisting) {
+            return false;
+        }
+
+        // Automatic safety gates must never reuse the sysadmin-owned flag.
+        if ($this->system_disabled_at !== null) {
+            return false;
+        }
+
+        // Must share the same contract unit as the Binance reference
+        if ($this->is_price_aligned !== true) {
             return false;
         }
 

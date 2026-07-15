@@ -67,21 +67,15 @@ trait HasScopes
     }
 
     /**
-     * Excludes delisted symbols from a query. Mirrors `isDelisted()`
-     * on the model: filters out rows where `is_marked_for_delisting`
-     * is true OR `delivery_at` is set and in the past. Use this on
-     * any query that compares "live" exchange data against our DB
-     * (price freshness checks, position-opening guards, etc.) so
-     * delisted symbols don't get treated as outages.
+     * Excludes terminal symbols from a query. Warning-only rows remain
+     * operational until a past `delivery_at` confirms removal.
      */
     public function scopeNotDelisted(Builder $query): Builder
     {
-        return $query
-            ->where('is_marked_for_delisting', false)
-            ->where(static function ($q) {
-                $q->whereNull('delivery_at')
-                    ->orWhere('delivery_at', '>', now());
-            });
+        return $query->where(static function ($query): void {
+            $query->whereNull('delivery_at')
+                ->orWhere('delivery_at', '>', now());
+        });
     }
 
     /**
@@ -110,6 +104,7 @@ trait HasScopes
         $query->where("{$table}.api_statuses->has_taapi_data", true)
             ->where("{$table}.has_no_indicator_data", false)
             ->where("{$table}.is_marked_for_delisting", false)
+            ->whereNull("{$table}.system_disabled_at")
             // Price must approximately match the Binance same-asset sibling — a
             // unit-divergent contract (KuCoin FLOKI vs Binance 1000FLOKI) carries
             // a replicated mark_price wrong by the contract ratio. Set by the
@@ -144,6 +139,7 @@ trait HasScopes
         $query->where("{$table}.api_statuses->has_taapi_data", true)
             ->where("{$table}.has_no_indicator_data", false)
             ->where("{$table}.is_marked_for_delisting", false)
+            ->whereNull("{$table}.system_disabled_at")
             // Price must approximately match the Binance same-asset sibling — a
             // unit-divergent contract (KuCoin FLOKI vs Binance 1000FLOKI) carries
             // a replicated mark_price wrong by the contract ratio. Set by the

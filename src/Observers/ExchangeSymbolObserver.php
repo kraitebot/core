@@ -93,7 +93,12 @@ final class ExchangeSymbolObserver
 
             // Rule 3: If Binance symbol is being delisted, mark other exchanges' overlaps as false
             if ($this->isBeingDelisted($model, $apiSystem->canonical)) {
-                $this->markOtherExchangesAsNotOverlapping($model->token);
+                $this->setOtherExchangesOverlap($model, false);
+            } elseif ((bool) $model->getRawOriginal('is_marked_for_delisting')
+                && ! $model->is_marked_for_delisting
+                && ! $model->isDelisted()) {
+                // A pair that returns restores only automatic overlap state.
+                $this->setOtherExchangesOverlap($model, true);
             }
         } else {
             // Rule 2: Non-Binance - overlaps when Binance lists the SAME ASSET.
@@ -220,10 +225,9 @@ final class ExchangeSymbolObserver
     }
 
     /**
-     * Mark other exchanges' symbols as not overlapping when Binance delistings.
-     * Uses withoutEvents to prevent circular observer calls.
+     * Propagate Binance availability to same-asset rows without observer loops.
      */
-    public function markOtherExchangesAsNotOverlapping(string $token): void
+    public function setOtherExchangesOverlap(ExchangeSymbol $model, bool $overlaps): void
     {
         $binanceSystemId = $this->getBinanceSystemId();
 
@@ -231,10 +235,19 @@ final class ExchangeSymbolObserver
             return;
         }
 
-        ExchangeSymbol::withoutEvents(function () use ($token, $binanceSystemId): void {
-            ExchangeSymbol::where('token', $token)
+        ExchangeSymbol::withoutEvents(function () use ($model, $binanceSystemId, $overlaps): void {
+            ExchangeSymbol::query()
                 ->where('api_system_id', '!=', $binanceSystemId)
-                ->update(['overlaps_with_binance' => false]);
+                ->where(function ($query) use ($model): void {
+                    if ($model->symbol_id !== null) {
+                        $query->where('symbol_id', $model->symbol_id);
+
+                        return;
+                    }
+
+                    $query->where('token', $model->token);
+                })
+                ->update(['overlaps_with_binance' => $overlaps]);
         });
     }
 
@@ -244,9 +257,13 @@ final class ExchangeSymbolObserver
      */
     public function isBeingDelisted(ExchangeSymbol $model, string $canonical): bool
     {
-        // Already marked as delisted - no need to cascade again
-        if ($model->is_marked_for_delisting) {
+        // Already marked before this save - no need to cascade again.
+        if ((bool) $model->getRawOriginal('is_marked_for_delisting')) {
             return false;
+        }
+
+        if ($model->is_marked_for_delisting) {
+            return true;
         }
 
         $proxy = new TradingMapperProxy($canonical);

@@ -939,7 +939,7 @@ final class KraiteSeeder extends Seeder
             [
                 'canonical' => 'position_opening_failed',
                 'title' => 'Position Opening Failed',
-                'description' => 'Emitted when a create-position workflow fails and the position transitions to status=failed. Also auto-disables the symbol (is_manually_enabled=false) so the scheduler stops picking it.',
+                'description' => 'Emitted when a create-position workflow fails and the position transitions to status=failed. Also applies a separate automatic system block so the scheduler stops picking it without changing the sysadmin-owned manual flag.',
                 'detailed_description' => 'Any exception that escapes the opening step chain (market place, limit ladder, TP/SL placement) cascades into CancelPositionJob and ultimately sets the position to failed. This ping flags the event so the operator can investigate the root cause, manually reconcile any partial exchange state, and re-enable the token after the issue is understood.',
                 'usage_reference' => 'Concerns/Position/HasStatuses::updateToFailed',
                 'default_severity' => 'high',

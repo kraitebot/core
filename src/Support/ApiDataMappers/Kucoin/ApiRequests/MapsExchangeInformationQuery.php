@@ -95,27 +95,18 @@ trait MapsExchangeInformationQuery
         $stablecoins = ['USDC', 'USDT', 'USDE', 'DAI', 'TUSD', 'BUSD', 'FRAX', 'USDP', 'GUSD', 'PAX', 'LUSD', 'SUSD', 'FDUSD', 'PYUSD', 'RLUSD', 'CUSD', 'USDD', 'USDJ', 'USTC', 'EURC', 'EURT'];
 
         $filtered = collect($contracts)
-            // Only include Open/active contracts
+            // KuCoin perpetual contracts use the M suffix. Keeping lifecycle
+            // rows with expireDate lets the sync record scheduled removals.
             ->filter(static function ($contract) {
-                return ($contract['status'] ?? '') === 'Open';
-            })
-            // Only include perpetual contracts (no expireDate)
-            ->filter(static function ($contract) {
-                return ($contract['expireDate'] ?? null) === null;
+                return str_ends_with((string) ($contract['symbol'] ?? ''), 'M');
             })
             // Only include USDT-margined contracts (not inverse)
             ->filter(static function ($contract) {
                 return ($contract['isInverse'] ?? true) === false;
-            })
-            // Exclude stablecoins - they don't need price tracking
-            ->filter(static function ($contract) use ($stablecoins) {
-                $baseCurrency = mb_strtoupper($contract['baseCurrency'] ?? '');
-
-                return ! in_array($baseCurrency, $stablecoins, strict: true);
             });
 
         return $filtered
-            ->map(function ($contract) {
+            ->map(function ($contract) use ($stablecoins) {
                 $symbol = $contract['symbol'] ?? '';
 
                 // Calculate precision from tickSize
@@ -145,6 +136,10 @@ trait MapsExchangeInformationQuery
 
                     // Status and contract information
                     'status' => ($contract['status'] ?? '') === 'Open' ? 'Trading' : 'Break',
+                    'exchangeStatus' => $contract['status'] ?? null,
+                    'isTrading' => ($contract['status'] ?? '') === 'Open',
+                    'isEligible' => ! in_array(mb_strtoupper((string) ($contract['baseCurrency'] ?? '')), $stablecoins, true),
+                    'isDelisted' => ($contract['status'] ?? '') === 'Closed',
                     'contractType' => $contract['type'] ?? null,
                     // expireDate null means perpetual, otherwise it's the delisting date
                     'deliveryDate' => $contract['expireDate'] ?? null,

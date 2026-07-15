@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Concerns\Position;
 
+use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Support\NotificationService;
 
 trait HasStatuses
@@ -100,7 +101,7 @@ trait HasStatuses
 
         // Side-effects fire only on the *transition* into failed. Re-entries
         // via retried sync paths must not double-ping the operator or
-        // repeatedly flip the symbol's manual-enable flag.
+        // repeatedly apply the symbol's automatic safety gate.
         if (! $isTransitionIntoFailed) {
             return;
         }
@@ -110,24 +111,18 @@ trait HasStatuses
     }
 
     /**
-     * Flip `is_manually_enabled=false` on the exchange symbol so the opening
-     * scheduler stops picking the same broken token. Returns whether the
-     * flip actually happened — the notification uses that flag to tell the
-     * operator whether a new block was applied or the symbol was already
-     * disabled from a prior failure. Paired with the notification dispatch
-     * so the "muted" and "told about the mute" sides always stay in sync.
+     * Apply an automatic selection block so the scheduler stops picking the
+     * same broken token. The sysadmin-owned manual flag remains untouched.
      */
     private function blockSymbolAfterOpeningFailure(): bool
     {
         $exchangeSymbol = $this->exchangeSymbol;
 
-        if ($exchangeSymbol === null || ! $exchangeSymbol->is_manually_enabled) {
+        if ($exchangeSymbol === null) {
             return false;
         }
 
-        $exchangeSymbol->updateSaving(['is_manually_enabled' => false]);
-
-        return true;
+        return $exchangeSymbol->applySystemBlock(ExchangeSymbol::SYSTEM_BLOCK_OPENING_FAILED);
     }
 
     private function dispatchOpeningFailedNotification(?string $message, bool $tokenBlocked): void

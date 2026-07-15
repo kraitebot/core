@@ -26,33 +26,13 @@ trait MapsExchangeInformationQuery
         $stablecoins = ['USDC', 'USDT', 'USDE', 'DAI', 'TUSD', 'BUSD', 'FRAX', 'USDP', 'GUSD', 'PAX', 'LUSD', 'SUSD', 'FDUSD', 'PYUSD', 'RLUSD', 'CUSD', 'USDD', 'USDJ', 'USTC', 'EURC', 'EURT'];
 
         return collect($data['symbols'] ?? [])
-            // Remove symbols with underscores in the name.
-            ->filter(static function ($symbolData) {
-                return mb_strpos($symbolData['symbol'], '_') === false;
-            })
             // Only include perpetual contracts (exclude quarterly and dated futures)
             ->filter(static function ($symbolData) {
                 return ($symbolData['contractType'] ?? null) === 'PERPETUAL';
             })
-            // Only include actively trading symbols (exclude PENDING_TRADING, BREAK, SETTLING, etc.)
-            ->filter(static function ($symbolData) {
-                return ($symbolData['status'] ?? null) === 'TRADING';
-            })
-            // Only include ASCII tokens (exclude Chinese/special character tokens)
-            ->filter(static function ($symbolData) {
-                $baseAsset = $symbolData['baseAsset'] ?? '';
-
-                // Only allow alphanumeric ASCII characters in token names
-                return preg_match('/^[A-Za-z0-9]+$/', $baseAsset) === 1;
-            })
-            // Exclude stablecoins - they don't need price tracking
-            ->filter(static function ($symbolData) use ($stablecoins) {
-                $baseAsset = mb_strtoupper($symbolData['baseAsset'] ?? '');
-
-                return ! in_array($baseAsset, $stablecoins, strict: true);
-            })
-            ->map(static function ($symbolData) {
+            ->map(static function ($symbolData) use ($stablecoins) {
                 $filters = collect($symbolData['filters'] ?? []);
+                $baseAsset = (string) ($symbolData['baseAsset'] ?? '');
 
                 $priceFilter = $filters->firstWhere('filterType', 'PRICE_FILTER');
                 $minNotionalFilter = $filters->firstWhere('filterType', 'MIN_NOTIONAL');
@@ -74,6 +54,14 @@ trait MapsExchangeInformationQuery
 
                     // New fields needed for delisting/tradeability logic and metadata
                     'status' => $symbolData['status'] ?? null,     // e.g. TRADING, BREAK, SETTLING, DELIVERING, PENDING_TRADING
+                    'exchangeStatus' => $symbolData['status'] ?? null,
+                    'isTrading' => ($symbolData['status'] ?? null) === 'TRADING',
+                    'isEligible' => mb_strpos((string) ($symbolData['symbol'] ?? ''), '_') === false
+                        && preg_match('/^[A-Za-z0-9]+$/', $baseAsset) === 1
+                        && ! in_array(mb_strtoupper($baseAsset), $stablecoins, true),
+                    // Binance's full catalogue retains inactive rows. Absence or
+                    // delivery_at, not a transient status, confirms terminal removal.
+                    'isDelisted' => false,
                     'contractType' => $symbolData['contractType'] ?? null,     // e.g. PERPETUAL, CURRENT_QUARTER, NEXT_QUARTER
                     // deliveryDate in ms epoch; perpetuals have default 4133404800000 (Dec 25, 2100)
                     'deliveryDate' => isset($symbolData['deliveryDate']) ? (int) $symbolData['deliveryDate'] : null,

@@ -38,46 +38,26 @@ trait MapsExchangeInformationQuery
         $stablecoins = ['USDC', 'USDT', 'USDE', 'DAI', 'TUSD', 'BUSD', 'FRAX', 'USDP', 'GUSD', 'PAX', 'LUSD', 'SUSD', 'FDUSD', 'PYUSD', 'RLUSD', 'CUSD', 'USDD', 'USDJ', 'USTC', 'EURC', 'EURT'];
 
         return collect($symbols)
-            // Remove symbols with underscores in the name (same logic as Binance)
-            ->filter(static function ($symbolData) {
-                return mb_strpos($symbolData['symbol'], '_') === false;
-            })
             // Only include perpetual contracts (exclude dated futures like BTCUSDT-31OCT25)
             ->filter(static function ($symbolData) {
                 return ($symbolData['contractType'] ?? null) === 'LinearPerpetual';
             })
-            // Only include actively trading symbols (Bybit uses "Trading" status)
-            ->filter(static function ($symbolData) {
-                return ($symbolData['status'] ?? null) === 'Trading';
-            })
-            // Exclude trading pairs (e.g., ETHBTC) - tokens that contain another crypto ticker
-            ->filter(static function ($symbolData) use ($majorCryptos) {
-                $baseCoin = $symbolData['baseCoin'] ?? '';
-
-                // Check if baseCoin contains any major crypto ticker (indicating it's a trading pair)
-                foreach ($majorCryptos as $crypto) {
-                    // Skip if the baseCoin IS the crypto itself
-                    if ($baseCoin === $crypto) {
-                        continue;
-                    }
-                    // If baseCoin contains another crypto ticker, it's likely a trading pair
-                    if (mb_strpos($baseCoin, $crypto) !== false && mb_strlen($baseCoin) > mb_strlen($crypto)) {
-                        return false;
-                    }
-                }
-
-                return true;
-            })
-            // Exclude stablecoins - they don't need price tracking
-            ->filter(static function ($symbolData) use ($stablecoins) {
-                $baseCoin = mb_strtoupper($symbolData['baseCoin'] ?? '');
-
-                return ! in_array($baseCoin, $stablecoins, strict: true);
-            })
-            ->map(static function ($symbolData) {
+            ->map(static function ($symbolData) use ($majorCryptos, $stablecoins) {
                 // Extract price filter
                 $priceFilter = $symbolData['priceFilter'] ?? [];
                 $lotSizeFilter = $symbolData['lotSizeFilter'] ?? [];
+                $baseCoin = (string) ($symbolData['baseCoin'] ?? '');
+                $isTradingPair = false;
+
+                foreach ($majorCryptos as $crypto) {
+                    if ($baseCoin !== $crypto
+                        && mb_strlen($baseCoin) > mb_strlen($crypto)
+                        && mb_strpos($baseCoin, $crypto) !== false) {
+                        $isTradingPair = true;
+
+                        break;
+                    }
+                }
 
                 // Calculate price precision from priceScale
                 $pricePrecision = (int) ($symbolData['priceScale'] ?? 2);
@@ -104,6 +84,12 @@ trait MapsExchangeInformationQuery
 
                     // Status and contract information
                     'status' => $symbolData['status'] ?? null,
+                    'exchangeStatus' => $symbolData['status'] ?? null,
+                    'isTrading' => ($symbolData['status'] ?? null) === 'Trading',
+                    'isEligible' => mb_strpos((string) ($symbolData['symbol'] ?? ''), '_') === false
+                        && ! $isTradingPair
+                        && ! in_array(mb_strtoupper($baseCoin), $stablecoins, true),
+                    'isDelisted' => ($symbolData['status'] ?? null) === 'Closed',
                     'contractType' => $symbolData['contractType'] ?? null,
                     // Bybit perpetuals have deliveryTime = "0" (string), which means no delivery
                     // Only return a value when it's a real timestamp (> 0)

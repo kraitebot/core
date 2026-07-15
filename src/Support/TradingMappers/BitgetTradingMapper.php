@@ -13,6 +13,16 @@ use Kraite\Core\Models\ExchangeSymbol;
  */
 final class BitgetTradingMapper
 {
+    public function normalizeDeliveryTimestampMs(?int $timestamp): ?int
+    {
+        return $timestamp !== null && $timestamp > 0 ? $timestamp : null;
+    }
+
+    public function missingFromCatalogueIsTerminal(): bool
+    {
+        return true;
+    }
+
     /**
      * Determine if an exchange symbol is now being delisted.
      *

@@ -71,24 +71,18 @@ trait MapsExchangeInformationQuery
         $stablecoins = ['USDC', 'USDT', 'USDE', 'DAI', 'TUSD', 'BUSD', 'FRAX', 'USDP', 'GUSD', 'PAX', 'LUSD', 'SUSD', 'FDUSD', 'PYUSD', 'RLUSD', 'CUSD', 'USDD', 'USDJ', 'USTC', 'EURC', 'EURT'];
 
         $filtered = collect($contracts)
-            // Only include normal/tradeable contracts
-            ->filter(static function ($contract) {
-                return ($contract['symbolStatus'] ?? '') === 'normal';
-            })
             // Only include perpetual contracts
             ->filter(static function ($contract) {
                 return ($contract['symbolType'] ?? '') === 'perpetual';
-            })
-            // Exclude stablecoins - they don't need price tracking
-            ->filter(static function ($contract) use ($stablecoins) {
-                $baseCoin = mb_strtoupper($contract['baseCoin'] ?? '');
-
-                return ! in_array($baseCoin, $stablecoins, strict: true);
             });
 
         return $filtered
-            ->map(static function ($contract) {
+            ->map(static function ($contract) use ($stablecoins) {
                 $symbol = $contract['symbol'] ?? '';
+                $status = mb_strtolower((string) ($contract['symbolStatus'] ?? ''));
+                $offTime = (int) ($contract['offTime'] ?? 0);
+                $deliveryTime = (int) ($contract['deliveryTime'] ?? 0);
+                $launchTime = (int) ($contract['launchTime'] ?? 0);
 
                 // BitGet provides pricePlace and volumePlace directly
                 $pricePrecision = (int) ($contract['pricePlace'] ?? 2);
@@ -112,11 +106,18 @@ trait MapsExchangeInformationQuery
                     'minNotional' => isset($contract['minTradeUSDT']) ? (string) $contract['minTradeUSDT'] : null,
 
                     // Status and contract information
-                    'status' => ($contract['symbolStatus'] ?? '') === 'normal' ? 'Trading' : 'Break',
+                    'status' => $status === 'normal' ? 'Trading' : 'Break',
+                    'exchangeStatus' => $contract['symbolStatus'] ?? null,
+                    'isTrading' => $status === 'normal',
+                    'isEligible' => ! in_array(mb_strtoupper((string) ($contract['baseCoin'] ?? '')), $stablecoins, true),
+                    'isDelisted' => $status === 'off',
                     'contractType' => $contract['symbolType'] ?? 'perpetual',
-                    // deliveryTime empty means perpetual, otherwise it's the delisting date
-                    'deliveryDate' => ! empty($contract['deliveryTime']) ? (int) $contract['deliveryTime'] : null,
-                    'onboardDate' => null,
+                    // offTime is Bitget's removal timestamp; deliveryTime is a
+                    // fallback for delivery contracts.
+                    'deliveryDate' => $offTime > 0
+                        ? $offTime
+                        : ($deliveryTime > 0 ? $deliveryTime : null),
+                    'onboardDate' => $launchTime > 0 ? $launchTime : null,
                     'baseAsset' => $contract['baseCoin'] ?? '',
                     'quoteAsset' => $contract['quoteCoin'] ?? '',
                     'marginAsset' => $contract['quoteCoin'] ?? '',

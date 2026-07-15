@@ -26,7 +26,7 @@ final class ExchangeSymbolPriceMisalignedNotificationSeeder extends Seeder
             [
                 'canonical' => 'exchange_symbol_price_misaligned',
                 'title' => 'Exchange Symbol Price Misaligned',
-                'description' => "A non-Binance exchange symbol's live price does not match its Binance same-asset sibling — it lists a different contract unit (e.g. a plain token vs Binance's 1000x contract). The replicated mark_price is wrong by the contract ratio, so the symbol is flagged is_price_aligned=false and switched off (is_manually_enabled=false) to keep it out of trading.",
+                'description' => "A non-Binance exchange symbol's live price does not match its Binance same-asset sibling — it lists a different contract unit (e.g. a plain token vs Binance's 1000x contract). The replicated mark_price is wrong by the contract ratio, so is_price_aligned=false keeps it out of trading without changing the sysadmin-owned manual flag.",
                 'default_severity' => 'high',
                 'cache_duration' => 86400,
                 'cache_key' => ['exchange_symbol_id'],
