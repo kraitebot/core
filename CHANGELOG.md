@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.71.0 - 2026-07-15
+
+### Position safety
+
+- [IMPROVED] **Exchange position truth is validated before any missing-position action.** Binance, Bitget, Bybit, and KuCoin responses must have a successful vendor envelope, valid normalized rows, and matching raw/open row counts. HTTP-success vendor errors preserve the last trusted snapshot instead of masquerading as an empty account.
+- [IMPROVED] **REST flat detection now requires two exact reads 20 seconds apart.** Replacement, WAP, partial-fill quantity sync, drift follow-up, and disaster recovery match symbol plus logical direction across hedge and one-way accounts. Only confirmed absence can cancel Kraite-owned opening LIMITs; reappearance, malformed data, and opposite-side rows preserve every order.
+- [IMPROVED] **Manual-close protection remains immediate and exchange-neutral.** The User Data Stream zero-quantity event reuses the shared high-priority opening-order cancellation contract while the normal replacement workflow retains final lifecycle ownership.
+
+### Recovery
+
+- [FIXED] **Recovery cannot delete ownership before exchange cleanup succeeds.** Normal recovery confirms absence twice and synchronously cancels opening LIMITs before its terminal write. `--override` cancels those orders before deleting local positions, orders, and steps. Cancellation failure preserves ownership and reference state; dry-run performs no exchange cancellation.
+- [FIXED] **Drift API failures no longer become false DB-only positions.** Invalid position responses produce an API-error report with no position classification; the drift command remains alert-only and schedules an independent confirmation only for a valid DB-only result.
+
+### Tests
+
+- [ADDED] TDD coverage for all four exchange envelopes, exact hedge/one-way matching, trusted-snapshot preservation, replacement confirmation, WAP, partial-fill sync, drift, recovery/override failure safety, and User Data Stream deduplication.
+
 ## 1.70.2 - 2026-07-15
 
 ### Bug fixes

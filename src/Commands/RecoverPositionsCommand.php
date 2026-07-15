@@ -14,6 +14,7 @@ use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\Recovery\AccountRecoveryRunner;
+use Kraite\Core\Support\Recovery\RecoveryOpeningOrderCanceller;
 use Kraite\Core\Support\Recovery\RecoveryReport;
 use StepDispatcher\Models\Step;
 use StepDispatcher\States\Cancelled;
@@ -220,6 +221,13 @@ final class RecoverPositionsCommand extends BaseCommand
 
         $orderIds = Order::whereIn('position_id', $positionIds)->pluck('id')->all();
         $orderCount = count($orderIds);
+
+        if (! $dryRun) {
+            Position::query()
+                ->whereIn('id', $positionIds)
+                ->with(['account.apiSystem', 'orders'])
+                ->each(fn (Position $position) => RecoveryOpeningOrderCanceller::cancel($position, $report));
+        }
 
         // Cancel in-flight (non-terminal) steps that reference these
         // position/order IDs in their JSON arguments. Without this,

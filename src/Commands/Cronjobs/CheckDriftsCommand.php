@@ -20,6 +20,7 @@ use Kraite\Core\Support\Drift\OrderDriftReport;
 use Kraite\Core\Support\Drift\PositionDriftReport;
 use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\NotificationService;
+use Kraite\Core\Support\PositionSafety;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Support\BaseCommand;
 use StepDispatcher\Support\Steps;
@@ -39,9 +40,10 @@ use Throwable;
  *   - Iterates positions in `active` status that have been QUIET for the
  *     last 10 minutes (no order with updated_at within the window).
  *   - Per account, batches a single drift-check call.
- *   - For every position that comes back as drift / db_only, dispatches
- *     PrepareSyncOrdersJob and sends one `position_drift_detected`
- *     pushover.
+ *   - For every position that comes back as drift / db_only, sends one
+ *     `position_drift_detected` pushover. A db_only signal also schedules
+ *     a separate delayed flat confirmation that may cancel only the
+ *     position's Kraite-owned opening LIMITs.
  *   - exchange_only pairs (exchange has positions we don't track) and
  *     transient/synced pairs are intentionally skipped.
  *
@@ -280,6 +282,14 @@ final class CheckDriftsCommand extends BaseCommand
                 // longer auto-dispatches the heal — it just surfaces
                 // the drift to the operator. The reactive sync-orders
                 // cron + WS push path still handle the live healing.
+                if ($pair->status === PositionDriftReport::STATUS_DB_ONLY) {
+                    $quietPosition = $positions->firstWhere('id', $pair->positionId);
+
+                    if ($quietPosition instanceof Position) {
+                        PositionSafety::scheduleFlatConfirmation($quietPosition, 'drift');
+                    }
+                }
+
                 $this->notifyDrift($account, $pair);
             }
 

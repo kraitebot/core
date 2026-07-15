@@ -6,13 +6,17 @@ namespace Kraite\Core\Jobs\Atomic\Position;
 
 use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseQueueableJob;
+use Kraite\Core\Enums\PositionPresence;
 use Kraite\Core\Jobs\Lifecycles\Position\ClosePositionJob;
+use Kraite\Core\Jobs\Lifecycles\Position\PreparePositionReplacementJob;
 use Kraite\Core\Jobs\Lifecycles\Position\SmartReplaceOrdersJob;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\Position;
-use Kraite\Core\Support\Math;
+use Kraite\Core\Support\PositionSafety;
+use Kraite\Core\Support\PositionSnapshot;
 use Kraite\Core\Support\Proxies\JobProxy;
 use StepDispatcher\Models\Step;
+use UnexpectedValueException;
 
 /**
  * VerifyPositionExistsOnExchangeJob (Atomic)
@@ -32,8 +36,12 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
 
     public ?string $message;
 
-    public function __construct(int $positionId, string $triggerStatus, ?string $message = null)
-    {
+    public function __construct(
+        int $positionId,
+        string $triggerStatus,
+        ?string $message = null,
+        public bool $confirmationAttempt = false,
+    ) {
         $this->position = Position::findOrFail($positionId);
         $this->triggerStatus = $triggerStatus;
         $this->message = $message;
@@ -48,39 +56,40 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
     {
         $position = $this->position;
         $tradingPair = mb_strtoupper(mb_trim($position->parsed_trading_pair));
-        $positionExistsOnExchange = false;
 
-        // Read the account-positions snapshot
         $openPositions = ApiSnapshot::getFrom($position->account, 'account-positions');
 
-        if (is_array($openPositions)) {
-            foreach ($openPositions as $key => $positionData) {
-                $symbol = $positionData['symbol'] ?? $key;
-                $symbol = mb_strtoupper(mb_trim($symbol));
-
-                if ($symbol !== $tradingPair) {
-                    continue;
-                }
-
-                // Get position amount (different exchanges use different field names)
-                $positionAmt = (string) ($positionData['positionAmt']
-                    ?? $positionData['size']
-                    ?? $positionData['qty']
-                    ?? $positionData['available']
-                    ?? '0');
-
-                $absAmount = Math::lt($positionAmt, '0')
-                    ? Math::mul($positionAmt, '-1')
-                    : $positionAmt;
-
-                if (Math::gt($absAmount, '0')) {
-                    $positionExistsOnExchange = true;
-                    break;
-                }
-            }
+        if (! is_array($openPositions)) {
+            throw new UnexpectedValueException(
+                "Trusted account-positions snapshot is missing for position #{$position->id}.",
+            );
         }
 
+        $presence = PositionSnapshot::fromValidatedResult($openPositions)->presenceOf($position);
+
+        if ($presence === PositionPresence::Unknown) {
+            throw new UnexpectedValueException(
+                "Trusted account-positions snapshot is malformed for position #{$position->id}.",
+            );
+        }
+
+        $positionExistsOnExchange = $presence === PositionPresence::Open;
         $resolver = JobProxy::with($position->account);
+
+        if (! $positionExistsOnExchange && ! $this->confirmationAttempt) {
+            $dispatched = $this->scheduleConfirmation($position, $resolver);
+
+            return [
+                'position_id' => $position->id,
+                'symbol' => $tradingPair,
+                'position_exists_on_exchange' => false,
+                'confirmation_attempt' => false,
+                'dispatched' => $dispatched,
+            ];
+        }
+
+        $openingCancellationDispatched = ! $positionExistsOnExchange
+            && PositionSafety::dispatchOpeningOrderCancellation($position, 'replacement-confirmed-flat');
 
         // Lock + dedupe pattern matching OrderObserver dispatch sites.
         // VerifyPositionExistsOnExchangeJob is a competing lifecycle
@@ -145,7 +154,47 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
             'position_id' => $position->id,
             'symbol' => $tradingPair,
             'position_exists_on_exchange' => $positionExistsOnExchange,
+            'confirmation_attempt' => $this->confirmationAttempt,
+            'opening_orders_cancel_dispatched' => $openingCancellationDispatched,
             'dispatched' => $dispatched,
         ];
+    }
+
+    private function scheduleConfirmation(Position $position, JobProxy $resolver): string
+    {
+        return DB::transaction(function () use ($position, $resolver): string {
+            $locked = Position::query()->whereKey($position->id)->lockForUpdate()->firstOrFail();
+            $confirmationClass = $resolver->resolve(PreparePositionReplacementJob::class);
+
+            $alreadyScheduled = Step::query()
+                ->forRelatable($locked)
+                ->forClasses($confirmationClass)
+                ->inProgress()
+                ->whereJsonContains('arguments->confirmationAttempt', true)
+                ->exists();
+
+            if ($alreadyScheduled) {
+                return 'PreparePositionReplacementJob confirmation (already pending)';
+            }
+
+            Step::create([
+                'class' => $confirmationClass,
+                'queue' => 'positions',
+                'priority' => 'high',
+                'relatable_type' => $locked->getMorphClass(),
+                'relatable_id' => $locked->getKey(),
+                'arguments' => [
+                    'positionId' => $locked->id,
+                    'triggerStatus' => $this->triggerStatus,
+                    'message' => $this->message,
+                    'confirmationAttempt' => true,
+                ],
+                'dispatch_after' => now()->addSeconds(
+                    (int) config('kraite.position_safety.flat_confirmation_delay_seconds', 20),
+                ),
+            ]);
+
+            return 'PreparePositionReplacementJob confirmation';
+        });
     }
 }

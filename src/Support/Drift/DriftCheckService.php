@@ -7,7 +7,9 @@ namespace Kraite\Core\Support\Drift;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
+use Kraite\Core\Support\PositionSnapshot;
 use Throwable;
+use UnexpectedValueException;
 
 /**
  * DriftCheckService
@@ -119,7 +121,17 @@ final class DriftCheckService implements DriftChecker
         $apiError = null;
 
         try {
-            $positionsResult = $account->apiQueryPositions()->result ?? [];
+            $positionsResponse = $account->apiQueryPositions();
+
+            if (! PositionSnapshot::fromApiResponse($account, $positionsResponse)->isValid()) {
+                throw new UnexpectedValueException(sprintf(
+                    'Invalid %s positions response during drift audit for account %d.',
+                    $account->apiSystem->canonical,
+                    $account->id,
+                ));
+            }
+
+            $positionsResult = $positionsResponse->result;
             $exchangePositions = collect($positionsResult)
                 ->filter(fn ($pos) => ! Math::equal((string) ($pos['positionAmt'] ?? $pos['size'] ?? $pos['contracts'] ?? $pos['total'] ?? '0'), '0'))
                 ->values()
@@ -128,6 +140,15 @@ final class DriftCheckService implements DriftChecker
             $exchangeOrders = $account->apiQueryOpenOrders()->result ?? [];
         } catch (Throwable $e) {
             $apiError = $e->getMessage();
+        }
+
+        if ($apiError !== null) {
+            return new AccountDriftReport(
+                account: $account,
+                positions: [],
+                orphanOrders: [],
+                apiError: $apiError,
+            );
         }
 
         if (method_exists($account, 'apiQuerySymbolConfig')) {

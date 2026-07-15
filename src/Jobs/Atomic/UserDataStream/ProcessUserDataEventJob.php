@@ -8,13 +8,13 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Kraite\Core\Abstracts\BaseQueueableJob;
-use Kraite\Core\Jobs\Atomic\Position\CancelPositionOpenOrdersJob;
 use Kraite\Core\Jobs\Lifecycles\Position\PreparePositionReplacementJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiDataStream;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
+use Kraite\Core\Support\PositionSafety;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 use Kraite\Core\Support\Proxies\JobProxy;
 use Kraite\Core\Support\ValueObjects\UserDataStreamEvent;
@@ -167,55 +167,20 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
      */
     private function dispatchOpeningOrderCancellation(Position $position, array $positionUpdate): bool
     {
-        return DB::transaction(function () use ($position, $positionUpdate): bool {
-            $locked = Position::query()->whereKey($position->id)->lockForUpdate()->firstOrFail();
+        $dispatched = PositionSafety::dispatchOpeningOrderCancellation($position, 'user-data-stream');
 
-            $hasLiveOpeningOrders = $locked->orders()
-                ->where('type', 'LIMIT')
-                ->where('is_algo', false)
-                ->whereIn('status', ['NEW', 'PARTIALLY_FILLED'])
-                ->whereNotNull('exchange_order_id')
-                ->exists();
+        if (! $dispatched) {
+            return false;
+        }
 
-            if (! $hasLiveOpeningOrders) {
-                return false;
-            }
+        Log::channel('user-data')->info('[USER-DATA] flat position detected; cancelling opening orders', [
+            'account_id' => $this->accountId,
+            'position_id' => $position->id,
+            'symbol' => $positionUpdate['symbol'],
+            'position_side' => $positionUpdate['position_side'],
+        ]);
 
-            $resolvedClass = JobProxy::with($locked->account)
-                ->resolve(CancelPositionOpenOrdersJob::class);
-
-            $alreadyDispatched = Step::query()
-                ->forRelatable($locked)
-                ->forClasses($resolvedClass)
-                ->inProgress()
-                ->whereJsonContains('arguments->openingOrdersOnly', true)
-                ->exists();
-
-            if ($alreadyDispatched) {
-                return false;
-            }
-
-            Log::channel('user-data')->info('[USER-DATA] flat position detected; cancelling opening orders', [
-                'account_id' => $this->accountId,
-                'position_id' => $locked->id,
-                'symbol' => $positionUpdate['symbol'],
-                'position_side' => $positionUpdate['position_side'],
-            ]);
-
-            Step::create([
-                'class' => $resolvedClass,
-                'queue' => 'positions',
-                'priority' => 'high',
-                'relatable_type' => $locked->getMorphClass(),
-                'relatable_id' => $locked->getKey(),
-                'arguments' => [
-                    'positionId' => $locked->id,
-                    'openingOrdersOnly' => true,
-                ],
-            ]);
-
-            return true;
-        });
+        return true;
     }
 
     /**

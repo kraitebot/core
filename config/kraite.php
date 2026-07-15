@@ -423,6 +423,13 @@ return [
         'narrator_timeout' => (int) env('KRAITE_GUARD_NARRATOR_TIMEOUT', 120),
     ],
 
+    'position_safety' => [
+        // REST position snapshots can trail User Data Stream state for several
+        // seconds. Absence becomes actionable only after a second fresh read
+        // outside that observed lag window.
+        'flat_confirmation_delay_seconds' => (int) env('KRAITE_FLAT_CONFIRMATION_DELAY_SECONDS', 20),
+    ],
+
     'token_discovery' => [
         'sr_safe_zone' => (float) env('TOKEN_DISCOVERY_SR_SAFE_ZONE', 0.20),
         'correlation_type' => env('TOKEN_DISCOVERY_CORRELATION_TYPE', 'rolling'),

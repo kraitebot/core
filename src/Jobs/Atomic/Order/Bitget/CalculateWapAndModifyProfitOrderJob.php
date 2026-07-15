@@ -6,7 +6,6 @@ namespace Kraite\Core\Jobs\Atomic\Order\Bitget;
 
 use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Jobs\Atomic\Order\CalculateWapAndModifyProfitOrderJob as BaseCalculateWapAndModifyProfitOrderJob;
-use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
@@ -51,21 +50,8 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseCalculateWapAndModif
         $scale = 8;
         $account = $this->position->account;
 
-        $positions = ApiSnapshot::getFrom($account, 'account-positions');
-
         $positionKey = $this->buildPositionKey();
-
-        $positionFromExchange = null;
-        if (is_array($positions)) {
-            if (array_key_exists($positionKey, $positions)) {
-                $positionFromExchange = $positions[$positionKey];
-            } else {
-                $symbolKey = $this->position->parsed_trading_pair;
-                if (array_key_exists($symbolKey, $positions)) {
-                    $positionFromExchange = $positions[$symbolKey];
-                }
-            }
-        }
+        $positionFromExchange = $this->resolvePositionFromSnapshot();
 
         if ($positionFromExchange === null) {
             throw new NonNotifiableException(

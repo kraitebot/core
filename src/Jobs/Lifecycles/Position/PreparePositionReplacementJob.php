@@ -33,8 +33,12 @@ final class PreparePositionReplacementJob extends BaseApiableJob
 
     public ?string $message;
 
-    public function __construct(int $positionId, string $triggerStatus, ?string $message = null)
-    {
+    public function __construct(
+        int $positionId,
+        string $triggerStatus,
+        ?string $message = null,
+        public bool $confirmationAttempt = false,
+    ) {
         $this->position = Position::findOrFail($positionId);
         $this->triggerStatus = $triggerStatus;
         $this->message = $message;
@@ -92,6 +96,7 @@ final class PreparePositionReplacementJob extends BaseApiableJob
                     'positionId' => $this->position->id,
                     'triggerStatus' => $this->triggerStatus,
                     'message' => $this->message,
+                    'confirmationAttempt' => $this->confirmationAttempt,
                 ],
                 'block_uuid' => $blockUuid,
                 'index' => $nextIndex,
@@ -102,6 +107,7 @@ final class PreparePositionReplacementJob extends BaseApiableJob
         return [
             'position_id' => $this->position->id,
             'trigger_status' => $this->triggerStatus,
+            'confirmation_attempt' => $this->confirmationAttempt,
             'message' => 'Position replacement workflow initiated',
         ];
     }

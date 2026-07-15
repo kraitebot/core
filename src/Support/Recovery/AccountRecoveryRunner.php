@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Support\Recovery;
 
+use Illuminate\Support\Sleep;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
+use Kraite\Core\Support\PositionSnapshot;
 use StepDispatcher\Models\Step;
 use StepDispatcher\States\NotRunnable;
 use StepDispatcher\Support\Steps;
@@ -27,13 +29,14 @@ use Throwable;
  *   Phase 3 — order-status mirror: apiSync non-terminal orders
  *   Phase 4 — stuck-state reset: opening/syncing/cancelling → active/closed
  *
- * Every exchange API call inside Phase 1 routes through the per-IP
- * throttle gate (see `RecoveryApiThrottle` inside the recoverers). Phases
- * 2-4 issue at most one account-wide positions query, batched when the
- * caller injects it.
+ * Every exchange API call routes through the per-IP throttle gate. Phases
+ * 2-4 use one account-wide positions query when everything is present, or
+ * one delayed confirmation query when a local position appears flat.
  */
 final class AccountRecoveryRunner
 {
+    private bool $lastPositionSnapshotValid = false;
+
     /**
      * @param  array<int, array<string, mixed>>|null  $batchedOpenOrders  account-wide open orders pre-fetched by the fleet job
      * @param  array<int, array<string, mixed>>|null  $batchedAlgoOrders  account-wide algo orders pre-fetched by the fleet job
@@ -73,10 +76,12 @@ final class AccountRecoveryRunner
 
         // Phases 2-4 share one account-wide exchange snapshot.
         $exchangeKeys = $this->fetchExchangePositionKeys();
+        $snapshotValid = $this->lastPositionSnapshotValid;
+        $confirmationKeys = $this->confirmMissingPositions($exchangeKeys, $snapshotValid);
 
-        $this->markClosedDuringGap($exchangeKeys);
+        $this->markClosedDuringGap($exchangeKeys, $confirmationKeys);
         $this->mirrorOrderStatuses();
-        $this->resetStuckStates($exchangeKeys);
+        $this->resetStuckStates($exchangeKeys, $confirmationKeys);
     }
 
     /**
@@ -141,19 +146,34 @@ final class AccountRecoveryRunner
 
     /**
      * "SYMBOL:DIRECTION" keys from the exchange's current open-positions
-     * snapshot. Empty array on API failure — callers refuse to mass-close
-     * on an empty snapshot when local opens exist (transient-failure guard).
+     * snapshot. The validity flag distinguishes a legitimate empty result
+     * from an API/vendor failure before any close decision is made.
      *
      * @return array<int, string>
      */
     private function fetchExchangePositionKeys(): array
     {
+        $this->lastPositionSnapshotValid = false;
+
         try {
             $response = RecoveryApiThrottle::call($this->account, fn () => $this->account->apiQueryPositions());
+
+            if (! PositionSnapshot::fromApiResponse($this->account, $response)->isValid()) {
+                $this->report->warning(sprintf(
+                    'Account #%d: invalid %s positions response during recovery close-detection',
+                    $this->account->id,
+                    $this->account->apiSystem->canonical,
+                ));
+
+                return [];
+            }
+
             $positions = collect($response->result ?? []);
         } catch (Throwable) {
             return [];
         }
+
+        $this->lastPositionSnapshotValid = true;
 
         $keys = [];
         foreach ($positions as $key => $row) {
@@ -181,13 +201,48 @@ final class AccountRecoveryRunner
     }
 
     /**
+     * A position may be absent from a fresh REST snapshot for several seconds
+     * after an exchange event. Only a second valid snapshot outside that lag
+     * window can authorize terminal recovery writes.
+     *
+     * @param  array<int, string>  $exchangeKeys
+     * @return array<int, string>|null
+     */
+    private function confirmMissingPositions(array $exchangeKeys, bool $snapshotValid): ?array
+    {
+        if (! $snapshotValid) {
+            return null;
+        }
+
+        $localOpenQuery = Position::query()
+            ->where('account_id', $this->account->id)
+            ->whereIn('status', (new Position)->openedStatuses());
+
+        if ($this->tokenFilter !== null) {
+            $localOpenQuery->where('parsed_trading_pair', mb_strtoupper($this->tokenFilter));
+        }
+
+        $hasMissingPosition = $localOpenQuery->get()->contains(function (Position $position) use ($exchangeKeys): bool {
+            return ! in_array("{$position->parsed_trading_pair}:{$position->direction}", $exchangeKeys, true);
+        });
+
+        if (! $hasMissingPosition) {
+            return $exchangeKeys;
+        }
+
+        Sleep::for((int) config('kraite.position_safety.flat_confirmation_delay_seconds', 20))->seconds();
+        $confirmationKeys = $this->fetchExchangePositionKeys();
+
+        return $this->lastPositionSnapshotValid ? $confirmationKeys : null;
+    }
+
+    /**
      * Phase 2. Local opened-status positions whose (symbol, direction) key
-     * isn't on the exchange closed during the gap → mark closed. Refuses to
-     * act on an empty exchange snapshot when local opens exist.
+     * isn't on two valid exchange snapshots is cancelled and marked closed.
      *
      * @param  array<int, string>  $exchangeKeys
      */
-    private function markClosedDuringGap(array $exchangeKeys): void
+    private function markClosedDuringGap(array $exchangeKeys, ?array $confirmationKeys = null): void
     {
         $localOpenQuery = Position::query()
             ->where('account_id', $this->account->id)
@@ -203,8 +258,8 @@ final class AccountRecoveryRunner
             return;
         }
 
-        if ($exchangeKeys === []) {
-            $this->report->line("  → Account #{$this->account->id}: exchange snapshot empty + {$localOpen->count()} local open position(s) — skipping close-detection (treat as transient API failure)");
+        if ($confirmationKeys === null) {
+            $this->report->line("  → Account #{$this->account->id}: positions snapshot was not confirmed — skipping close-detection");
 
             return;
         }
@@ -213,6 +268,18 @@ final class AccountRecoveryRunner
             $key = "{$position->parsed_trading_pair}:{$position->direction}";
 
             if (in_array($key, $exchangeKeys, true)) {
+                continue;
+            }
+
+            if (in_array($key, $confirmationKeys, true)) {
+                continue;
+            }
+
+            try {
+                RecoveryOpeningOrderCanceller::cancel($position, $this->report);
+            } catch (Throwable) {
+                $this->report->line("  ✗ Position #{$position->id} ({$position->parsed_trading_pair} {$position->direction}) preserved — opening-order cancellation failed");
+
                 continue;
             }
 
@@ -259,12 +326,12 @@ final class AccountRecoveryRunner
     /**
      * Phase 4. Positions stuck in opening/syncing/cancelling with no
      * in-flight workflow get reset from exchange truth: on the exchange →
-     * active; not on it → closed. Refuses to ghost-close on an empty
-     * snapshot; defers positions a live workflow still owns.
+     * active; confirmed absent → closed. Defers positions a live workflow
+     * still owns and preserves them when confirmation is unavailable.
      *
      * @param  array<int, string>  $exchangeKeys
      */
-    private function resetStuckStates(array $exchangeKeys): void
+    private function resetStuckStates(array $exchangeKeys, ?array $confirmationKeys = null): void
     {
         $stuckStatuses = ['opening', 'syncing', 'cancelling'];
 
@@ -282,15 +349,6 @@ final class AccountRecoveryRunner
             return;
         }
 
-        if ($exchangeKeys === []) {
-            $this->report->warning(
-                "Account #{$this->account->id}: empty exchange snapshot but {$stuck->count()} stuck position(s) — refusing to ghost-close (likely API failure)"
-            );
-            $this->report->line("  ⚠ Account #{$this->account->id}: skipped Phase 4 — empty exchange snapshot, {$stuck->count()} stuck position(s) preserved");
-
-            return;
-        }
-
         foreach ($stuck as $position) {
             if ($this->hasInflightStepFor($position->id)) {
                 $this->report->line("  ⚠ Position #{$position->id} ({$position->parsed_trading_pair} {$position->direction}): kept in {$position->status} (in-flight workflow still owns it)");
@@ -303,6 +361,20 @@ final class AccountRecoveryRunner
             if (in_array($key, $exchangeKeys, true)) {
                 $position->updateSaving(['status' => 'active']);
                 $this->report->line("  ✓ Position #{$position->id} ({$position->parsed_trading_pair} {$position->direction}): {$position->getOriginal('status')} → active (exchange has it)");
+
+                continue;
+            }
+
+            if ($confirmationKeys === null || in_array($key, $confirmationKeys, true)) {
+                $this->report->line("  ⚠ Position #{$position->id} ({$position->parsed_trading_pair} {$position->direction}): preserved — flat snapshot not confirmed");
+
+                continue;
+            }
+
+            try {
+                RecoveryOpeningOrderCanceller::cancel($position, $this->report);
+            } catch (Throwable) {
+                $this->report->line("  ✗ Position #{$position->id} ({$position->parsed_trading_pair} {$position->direction}) preserved — opening-order cancellation failed");
 
                 continue;
             }

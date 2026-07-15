@@ -7,8 +7,12 @@ namespace Kraite\Core\Jobs\Atomic\Position;
 use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
+use Kraite\Core\Enums\PositionPresence;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
+use Kraite\Core\Support\PositionSafety;
+use Kraite\Core\Support\PositionSnapshot;
+use UnexpectedValueException;
 
 /**
  * SyncPositionQuantityFromExchangeJob (Atomic)
@@ -137,33 +141,32 @@ final class SyncPositionQuantityFromExchangeJob extends BaseApiableJob
      */
     private function resolveExchangePosition(): ?array
     {
-        $response = $this->position->account->apiQueryPositions();
-        $positions = $response->result ?? [];
+        $apiResponse = $this->position->account->apiQueryPositions();
+        $snapshot = PositionSnapshot::fromApiResponse($this->position->account, $apiResponse);
 
-        if (! is_array($positions) || $positions === []) {
+        if (! $snapshot->isValid()) {
+            throw new UnexpectedValueException(sprintf(
+                'Invalid positions response while syncing partial fill for position #%d.',
+                $this->position->id,
+            ));
+        }
+
+        $presence = $snapshot->presenceOf($this->position);
+
+        if ($presence === PositionPresence::Unknown) {
+            throw new UnexpectedValueException(sprintf(
+                'Malformed normalized positions response while syncing partial fill for position #%d.',
+                $this->position->id,
+            ));
+        }
+
+        if ($presence === PositionPresence::Flat) {
+            PositionSafety::scheduleFlatConfirmation($this->position, 'partial-fill');
+
             return null;
         }
 
-        $tradingPair = mb_strtoupper(mb_trim((string) $this->position->parsed_trading_pair));
-        $direction = mb_strtoupper((string) $this->position->direction);
-
-        foreach ($positions as $key => $row) {
-            if (! is_array($row)) {
-                continue;
-            }
-
-            $rowSymbol = mb_strtoupper(mb_trim((string) ($row['symbol'] ?? $key)));
-            if ($rowSymbol !== $tradingPair) {
-                continue;
-            }
-
-            $rowSide = mb_strtoupper((string) ($row['positionSide'] ?? $row['holdSide'] ?? 'BOTH'));
-            if ($rowSide === 'BOTH' || $rowSide === $direction) {
-                return $row;
-            }
-        }
-
-        return null;
+        return $snapshot->matchingPosition($this->position);
     }
 
     private function formatQuantity(string $rawQty): string

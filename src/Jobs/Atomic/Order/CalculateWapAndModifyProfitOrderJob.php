@@ -7,6 +7,7 @@ namespace Kraite\Core\Jobs\Atomic\Order;
 use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
+use Kraite\Core\Enums\PositionPresence;
 use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Jobs\Lifecycles\Position\ApplyWapJob;
 use Kraite\Core\Models\ApiSnapshot;
@@ -14,6 +15,8 @@ use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
+use Kraite\Core\Support\PositionSafety;
+use Kraite\Core\Support\PositionSnapshot;
 use RuntimeException;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Support\Steps;
@@ -47,9 +50,6 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
 
     public ?Order $profitOrder = null;
 
-    /** Send-once latch for the WAP-applied notification (see dispatchWapAppliedNotification). */
-    protected bool $wapNotificationDispatched = false;
-
     public ?string $breakEvenPrice = null;
 
     public ?string $positionQty = null;
@@ -57,6 +57,9 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
     public ?string $intendedPrice = null;
 
     public ?string $intendedQty = null;
+
+    /** Send-once latch for the WAP-applied notification (see dispatchWapAppliedNotification). */
+    protected bool $wapNotificationDispatched = false;
 
     public function __construct(int $positionId)
     {
@@ -103,26 +106,9 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
     {
         $scale = 8;
 
-        // 1) Read the latest account-positions snapshot
-        $positions = ApiSnapshot::getFrom($this->position->account, 'account-positions');
-
-        // 2) Build position key and find in snapshot
-        // Key format: "BTCUSDT:LONG" or "BTCUSDT:SHORT"
+        // 1) Resolve the exact logical position from the latest trusted snapshot.
         $positionKey = $this->buildPositionKey();
-
-        // Try keyed lookup first (for Binance format: symbol:direction)
-        $positionFromExchange = null;
-        if (is_array($positions)) {
-            if (array_key_exists($positionKey, $positions)) {
-                $positionFromExchange = $positions[$positionKey];
-            } else {
-                // Fallback: search by symbol (simpler format: just symbol key)
-                $symbolKey = $this->position->parsed_trading_pair;
-                if (array_key_exists($symbolKey, $positions)) {
-                    $positionFromExchange = $positions[$symbolKey];
-                }
-            }
-        }
+        $positionFromExchange = $this->resolvePositionFromSnapshot();
 
         if ($positionFromExchange === null) {
             // Position gone from the exchange snapshot — either closed by a
@@ -436,6 +422,37 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
             : 'BOTH';
 
         return "{$symbol}:{$segment}";
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    protected function resolvePositionFromSnapshot(): ?array
+    {
+        $positions = ApiSnapshot::getFrom($this->position->account, 'account-positions');
+
+        if (! is_array($positions)) {
+            throw new RuntimeException(
+                "Trusted account-positions snapshot is missing for WAP position #{$this->position->id}.",
+            );
+        }
+
+        $snapshot = PositionSnapshot::fromValidatedResult($positions);
+        $presence = $snapshot->presenceOf($this->position);
+
+        if ($presence === PositionPresence::Unknown) {
+            throw new RuntimeException(
+                "Trusted account-positions snapshot is malformed for WAP position #{$this->position->id}.",
+            );
+        }
+
+        if ($presence === PositionPresence::Flat) {
+            PositionSafety::scheduleFlatConfirmation($this->position, 'wap');
+
+            return null;
+        }
+
+        return $snapshot->matchingPosition($this->position);
     }
 
     /**

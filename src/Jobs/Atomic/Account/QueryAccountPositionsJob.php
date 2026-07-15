@@ -9,6 +9,8 @@ use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\ApiSystem;
+use Kraite\Core\Support\PositionSnapshot;
+use UnexpectedValueException;
 
 /**
  * QueryAccountPositionsJob (Atomic)
@@ -43,6 +45,14 @@ class QueryAccountPositionsJob extends BaseApiableJob
     public function computeApiable()
     {
         $apiResponse = $this->account->apiQueryPositions();
+
+        if (! PositionSnapshot::fromApiResponse($this->account, $apiResponse)->isValid()) {
+            throw new UnexpectedValueException(sprintf(
+                'Invalid %s positions response for account %d; trusted snapshot preserved.',
+                $this->apiSystem->canonical,
+                $this->account->id,
+            ));
+        }
 
         ApiSnapshot::storeFor($this->account, 'account-positions', $apiResponse->result);
 
