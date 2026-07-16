@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.73.3 - 2026-07-16
+
+### Bitget USDC futures
+
+- [FIXED] Very small contract tick sizes retain their full precision instead
+  of being stored as zero. The migration also repairs already-truncated rows
+  from their preserved exchange metadata.
+
 ## 1.73.2 - 2026-07-16
 
 ### Deployment safety
