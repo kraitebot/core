@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use Kraite\Core\Jobs\Atomic\Order\SyncPositionOrdersJob as AtomicSyncPositionOrdersJob;
 use Kraite\Core\Jobs\Lifecycles\Order\PrepareSyncOrdersJob;
+use Kraite\Core\Jobs\Models\ExchangeSymbol\ConcludeSymbolDirectionAtTimeframeJob;
+use Kraite\Core\Jobs\Models\Indicator\QuerySymbolIndicatorsJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\BinanceListenKey;
 use Kraite\Core\Models\ExchangeSymbol;
@@ -294,13 +296,17 @@ final class CheckSystemHealthCommand extends BaseCommand
         // whether the trading dispatcher is also paused. So gate on
         // the default prefix specifically; an all-scope pause also
         // returns true here because `isStepsDispatchPaused` ORs the
-        // all-scope flag onto every per-prefix check.
-        $dispatchPaused = MaintenanceMode::isStepsDispatchPaused('');
+        // all-scope flag onto every per-prefix check. The bounded
+        // post-warmup marker covers the other false-positive window:
+        // dispatch has resumed, but the first producer cron has not yet
+        // had time to refresh these two tables.
+        $dispatcherDataRecovering = MaintenanceMode::isStepsDispatchPaused('')
+            || MaintenanceMode::isPostWarmupRecoveryActive();
 
         $alertCount = 0;
 
         foreach ($checks as $check) {
-            if ($dispatchPaused && in_array($check, self::DISPATCHER_DEPENDENT_CHECKS, true)) {
+            if ($dispatcherDataRecovering && in_array($check, self::DISPATCHER_DEPENDENT_CHECKS, true)) {
                 continue;
             }
 
@@ -443,8 +449,30 @@ final class CheckSystemHealthCommand extends BaseCommand
     {
         $threshold = now()->subMinutes(self::INDICATOR_STALENESS_MINUTES);
 
+        // A live producer means the stale timestamp is already being repaired.
+        // Only trust workflows created inside the freshness window: an old
+        // Pending/Running zombie is itself evidence of an unattended outage.
+        $refreshingSymbolIds = Step::query()
+            ->forClasses([
+                QuerySymbolIndicatorsJob::class,
+                ConcludeSymbolDirectionAtTimeframeJob::class,
+            ])
+            ->inProgress()
+            ->where('created_at', '>=', $threshold)
+            ->get(['arguments'])
+            ->pluck('arguments.exchangeSymbolId')
+            ->filter(static fn (mixed $id): bool => is_numeric($id))
+            ->map(static fn (mixed $id): int => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+
         $stale = ExchangeSymbol::query()
             ->tradeable()
+            ->when(
+                $refreshingSymbolIds !== [],
+                fn (Builder $query): Builder => $query->whereNotIn('exchange_symbols.id', $refreshingSymbolIds),
+            )
             ->where(function ($q) use ($threshold): void {
                 // Either the column is null (never synced — bot's
                 // copy phase failed to populate this tradeable row)

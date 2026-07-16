@@ -37,6 +37,10 @@ use StepDispatcher\Support\Steps;
  */
 final class MaintenanceMode
 {
+    public const POST_WARMUP_RECOVERY_KEY = 'maintenance:post-warmup-recovery';
+
+    public const POST_WARMUP_RECOVERY_SECONDS = 600;
+
     /**
      * Cache key gating EVERY `steps:dispatch` entry regardless of
      * prefix. Set by the no-arg / `$prefix=null` form of
@@ -101,6 +105,33 @@ final class MaintenanceMode
         foreach (self::knownDispatcherPrefixes() as $prefix) {
             Cache::forget(self::cacheKeyFor($prefix));
         }
+    }
+
+    /**
+     * Start the short recovery window after an ingestion deployment.
+     *
+     * The first balance and indicator health ticks can race the producer
+     * crons immediately after warmup. During this bounded window, only the
+     * dispatcher-derived freshness checks are suppressed; daemon, queue,
+     * database, Redis, and mark-price health remain fully active.
+     */
+    public static function startPostWarmupRecovery(): void
+    {
+        Cache::put(
+            self::POST_WARMUP_RECOVERY_KEY,
+            ['started_at' => now()->toIso8601String()],
+            self::POST_WARMUP_RECOVERY_SECONDS,
+        );
+    }
+
+    public static function isPostWarmupRecoveryActive(): bool
+    {
+        return Cache::has(self::POST_WARMUP_RECOVERY_KEY);
+    }
+
+    public static function clearPostWarmupRecovery(): void
+    {
+        Cache::forget(self::POST_WARMUP_RECOVERY_KEY);
     }
 
     /**

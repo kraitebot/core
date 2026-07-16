@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.73.4 - 2026-07-16
+
+### Production alert quality
+
+- [FIXED] Successful WAP application uses normal Pushover priority instead
+  of bypassing quiet hours.
+- [FIXED] Balance and indicator freshness checks observe a bounded
+  post-warmup recovery window while independent health checks stay active.
+- [FIXED] An indicator symbol is not reported stale while its own recent
+  producer workflow is active. Terminal and abandoned old work cannot hide
+  genuine staleness.
+
+### Tests
+
+- [ADDED] Regression coverage for WAP delivery priority, post-warmup health
+  behavior, active query and conclusion workflows, terminal steps, and
+  abandoned steps.
+
 ## 1.73.3 - 2026-07-16
 
 ### Bitget USDC futures

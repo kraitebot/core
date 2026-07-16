@@ -42,9 +42,8 @@ final class NotificationMessageBuilder
      * the default severity-based mapping. Useful when a canonical wants a
      * specific Pushover priority that doesn't match the severity bucket
      * (e.g. a trading-event notification whose severity is Info but which
-     * should ping the device silently with priority = -1, or a WAP event
-     * whose High severity should specifically get priority = 1 to bypass
-     * quiet hours on the user's device).
+     * should ping the device silently with priority = -1, or a routine WAP
+     * event whose High severity is delivered at normal priority = 0).
      */
     public static function build(string|Notification $canonical, array $context = [], ?AuthUser $user = null): array
     {
@@ -731,7 +730,7 @@ final class NotificationMessageBuilder
 
                 return [
                     'severity' => NotificationSeverity::High,
-                    'priority' => 1,
+                    'priority' => 0,
                     'title' => "WAP Applied — {$direction} {$pair}",
                     'emailMessage' => implode(separator: "\n", array: $emailLines),
                     'pushoverMessage' => implode(separator: "\n", array: $pushoverLines),

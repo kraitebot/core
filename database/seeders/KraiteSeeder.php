@@ -908,7 +908,7 @@ final class KraiteSeeder extends Seeder
                 'canonical' => 'position_wap_applied',
                 'title' => 'Position WAP Applied',
                 'description' => 'Emitted when the weighted-average-price workflow successfully modifies the profit order after one or more DCA fills.',
-                'detailed_description' => 'Delivered at Pushover priority 1 (high) so it bypasses the device\'s quiet hours — a WAP is a meaningful strategy signal that DCA rungs are filling and the exit is being repositioned based on the exchange\'s breakEvenPrice.',
+                'detailed_description' => 'Delivered at Pushover priority 0 (normal). A WAP remains a meaningful strategy signal that DCA rungs are filling and the exit is being repositioned from the exchange\'s breakEvenPrice, but it no longer bypasses the device\'s quiet hours.',
                 'usage_reference' => 'Jobs/Atomic/Order/CalculateWapAndModifyProfitOrderJob',
                 'default_severity' => 'high',
                 'verified' => 1,

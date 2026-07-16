@@ -456,10 +456,10 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
     }
 
     /**
-     * Fire the `position_wap_applied` Pushover notification (priority 1 /
-     * high — bypasses quiet hours) so the owner sees that DCA fills have
-     * aggregated and the TP has been repositioned. Cache-throttled at 30s
-     * per position so rapid successive fills in the same tick don't
+     * Fire the `position_wap_applied` Pushover notification at normal
+     * priority so the owner sees that DCA fills have aggregated and the TP
+     * has been repositioned without bypassing quiet hours. Cache-throttled at
+     * 30s per position so rapid successive fills in the same tick don't
      * double-ping, but the follow-up-WAP mechanism will still surface a
      * second notification if it fires outside the 30s window.
      */

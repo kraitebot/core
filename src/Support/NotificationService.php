@@ -267,8 +267,8 @@ final class NotificationService
         // severity-derived mapping in AlertNotification (Critical → 2, else
         // 0). Trading-event canonicals use this to pick the right device
         // behaviour — e.g. Info severity delivered at priority -1 (silent),
-        // or a WAP event at priority 1 (bypass quiet hours) even though
-        // its severity is High.
+        // or a routine WAP event at normal priority 0 even though its
+        // severity remains High for email/dashboard presentation.
         if (isset($messageData['priority']) && is_int($messageData['priority'])) {
             $additionalParameters['priority'] = $messageData['priority'];
         }
