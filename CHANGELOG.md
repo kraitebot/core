@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.72.1 - 2026-07-16
+
+### Bitget position opening
+
+- [FIXED] **Bitget orders now preserve the account's selected margin mode.** Regular and plan orders use crossed or isolated mode from the account instead of forcing crossed mode.
+- [FIXED] **Bitget position protection targets the correct slot in both account modes.** TP/SL requests send long/short for hedge positions and buy/sell for one-way positions.
+- [FIXED] **HTTP-success vendor errors can no longer become successful requests or empty snapshots.** Bitget responses require vendor code `00000` before mapping and success logging; retries apply the same validation and retain the final failed response for diagnosis.
+
+### Tests
+
+- [ADDED] TDD coverage for the complete Bitget opening chain, margin modes, hedge/one-way TP/SL routing, malformed and failed HTTP-success envelopes, retry outcomes, and downstream state preservation.
+
 ## 1.72.0 - 2026-07-15
 
 ### Exchange listing lifecycle

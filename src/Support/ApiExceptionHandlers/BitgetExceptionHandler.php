@@ -10,6 +10,7 @@ use Illuminate\Support\Carbon;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Concerns\ApiExceptionHelpers;
 use Kraite\Core\Support\Throttlers\BitgetThrottler;
+use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use Throwable;
 
@@ -361,6 +362,41 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
         }
 
         return $data;
+    }
+
+    public function shouldThrowExceptionFromHTTP200(ResponseInterface $response, RequestInterface $request): void
+    {
+        $payload = json_decode((string) $response->getBody(), associative: true);
+
+        if (
+            ! is_array($payload)
+            || ! array_key_exists('code', $payload)
+            || (! is_string($payload['code']) && ! is_int($payload['code']))
+        ) {
+            $response->getBody()->rewind();
+
+            throw new RequestException(
+                'Bitget API error: malformed HTTP 200 response envelope',
+                $request,
+                $response
+            );
+        }
+
+        $code = (string) $payload['code'];
+
+        if ($code === '00000') {
+            return;
+        }
+
+        $rawMessage = $payload['msg'] ?? null;
+        $message = is_string($rawMessage) ? $rawMessage : 'Unknown Bitget API error';
+        $response->getBody()->rewind();
+
+        throw new RequestException(
+            "Bitget API error (code {$code}): {$message}",
+            $request,
+            $response
+        );
     }
 
     /**

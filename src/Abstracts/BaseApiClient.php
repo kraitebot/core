@@ -16,6 +16,7 @@ use Kraite\Core\Models\Kraite;
 use Kraite\Core\Support\HeaderSanitizer;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use Kraite\Core\Support\ValueObjects\ApiRequest;
+use Psr\Http\Message\ResponseInterface;
 use Throwable;
 
 /*
@@ -69,7 +70,7 @@ abstract class BaseApiClient
 
     abstract protected function getHeaders(): array;
 
-    protected function processRequest(ApiRequest $apiRequest, bool $sendAsJson = false)
+    protected function processRequest(ApiRequest $apiRequest, bool $sendAsJson = false): ResponseInterface
     {
         $headers = array_merge($this->getHeaders(), (array) ($apiRequest->properties->getOr('headers', [])));
 
@@ -88,18 +89,7 @@ abstract class BaseApiClient
                 $options
             );
 
-            // Check for API-level errors in HTTP 200 responses BEFORE
-            // recording success. Exchanges like Bybit/BitGet encode
-            // errors inside HTTP 200 bodies — pre-fix, the success log
-            // was written first (clearing the request payload) and
-            // ApiRequestLogObserver's server-instability cooldown
-            // classifier never saw the row as a failure. Reordering
-            // makes the throw run while the row is still in-flight,
-            // so the catch path captures it as a real failure log.
-            if ($this->exceptionHandler && $response->getStatusCode() === 200) {
-                $request = new Request($apiRequest->method, $this->baseURL.$apiRequest->path);
-                $this->exceptionHandler->shouldThrowExceptionFromHTTP200($response, $request);
-            }
+            $this->throwForApiErrorResponse($response, $apiRequest);
 
             $this->recordSuccessfulResponse($response, $logData, $startTime);
 
@@ -224,7 +214,7 @@ abstract class BaseApiClient
         return $options;
     }
 
-    protected function recordSuccessfulResponse($response, array &$logData, float $startTime): void
+    protected function recordSuccessfulResponse(ResponseInterface $response, array &$logData, float $startTime): void
     {
         $endTime = microtime(true);
         $logData['completed_at'] = now();
@@ -250,7 +240,7 @@ abstract class BaseApiClient
         $this->selfHealUserFixableBans($logData);
     }
 
-    protected function executeHttpRequest(string $method, string $path, array $options)
+    protected function executeHttpRequest(string $method, string $path, array $options): ResponseInterface
     {
         if (app()->environment('testing')) {
             $url = $this->baseURL.'/'.$path;
@@ -277,11 +267,9 @@ abstract class BaseApiClient
         return $this->httpRequest->request($method, $path, $options);
     }
 
-    protected function handleRequestException(RequestException $e, ApiRequest $apiRequest, array $options, array &$logData, float $startTime)
+    protected function handleRequestException(RequestException $e, ApiRequest $apiRequest, array $options, array &$logData, float $startTime): ResponseInterface
     {
-        $logData['http_response_code'] = $e->getResponse() ? $e->getResponse()->getStatusCode() : null;
-        $logData['response'] = $e->getResponse() ? json_decode((string) $e->getResponse()->getBody(), associative: true) : null;
-        $logData['http_headers_returned'] = $e->getResponse() ? $e->getResponse()->getHeaders() : null;
+        $this->captureFailedResponse($e, $logData);
 
         if ($this->shouldRetryRequest($e)) {
             return $this->retryRequest($apiRequest, $options, $logData, $startTime);
@@ -297,7 +285,7 @@ abstract class BaseApiClient
         return $this->exceptionHandler && $this->exceptionHandler->retryException($e);
     }
 
-    protected function retryRequest(ApiRequest $apiRequest, array $options, array &$logData, float $startTime)
+    protected function retryRequest(ApiRequest $apiRequest, array $options, array &$logData, float $startTime): ResponseInterface
     {
         $delay = $this->getRetryDelay();
         Sleep::for($delay)->seconds();
@@ -309,10 +297,15 @@ abstract class BaseApiClient
                 $options
             );
 
+            $this->throwForApiErrorResponse($response, $apiRequest);
             $this->recordSuccessfulResponse($response, $logData, $startTime);
 
             return $response;
         } catch (Throwable $retryException) {
+            if ($retryException instanceof RequestException) {
+                $this->captureFailedResponse($retryException, $logData);
+            }
+
             $logData['completed_at'] = now();
             $this->updateRequestLogData($logData);
             throw $retryException;
@@ -326,6 +319,27 @@ abstract class BaseApiClient
         }
 
         return 5;
+    }
+
+    private function captureFailedResponse(RequestException $exception, array &$logData): void
+    {
+        $response = $exception->getResponse();
+
+        $logData['http_response_code'] = $response?->getStatusCode();
+        $logData['response'] = $response === null
+            ? null
+            : json_decode((string) $response->getBody(), associative: true);
+        $logData['http_headers_returned'] = $response?->getHeaders();
+    }
+
+    private function throwForApiErrorResponse(ResponseInterface $response, ApiRequest $apiRequest): void
+    {
+        if ($this->exceptionHandler === null || $response->getStatusCode() !== 200) {
+            return;
+        }
+
+        $request = new Request($apiRequest->method, $this->baseURL.$apiRequest->path);
+        $this->exceptionHandler->shouldThrowExceptionFromHTTP200($response, $request);
     }
 
     /**

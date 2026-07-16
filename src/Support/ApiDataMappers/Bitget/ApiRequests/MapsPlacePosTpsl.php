@@ -39,13 +39,9 @@ trait MapsPlacePosTpsl
         $properties->set('options.productType', 'USDT-FUTURES');
         $properties->set('options.marginCoin', 'USDT');
 
-        // holdSide is HEDGE-only — Bitget V2 requires it (long/short) so the
-        // TP/SL targets the correct slot. In ONE-WAY mode the position is
-        // identified solely by symbol+marginCoin; sending holdSide triggers
-        // a "param error" rejection.
-        if ($position->account->isHedgeMode()) {
-            $properties->set('options.holdSide', mb_strtolower($position->direction));
-        }
+        // Bitget requires holdSide for this endpoint in both position modes:
+        // long/short in hedge mode, buy/sell in one-way mode.
+        $properties->set('options.holdSide', $this->positionHoldSide($position));
 
         // Take Profit parameters
         $properties->set('options.stopSurplusTriggerPrice', (string) api_format_price($tpPrice, $position->exchangeSymbol));

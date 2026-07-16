@@ -36,7 +36,7 @@ trait MapsPlacePlanOrder
         $properties->set('relatable', $order);
         $properties->set('options.symbol', (string) $order->position->exchangeSymbol->parsed_trading_pair);
         $properties->set('options.productType', 'USDT-FUTURES');
-        $properties->set('options.marginMode', 'crossed');
+        $properties->set('options.marginMode', mb_strtolower((string) $order->position->account->margin_mode));
         $properties->set('options.marginCoin', 'USDT');
         $properties->set('options.side', (string) $this->sideType($order->side));
         $properties->set('options.size', (string) api_format_quantity($order->quantity, $order->position->exchangeSymbol));

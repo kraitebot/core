@@ -6,7 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Bitget;
 
 use InvalidArgumentException;
 use Kraite\Core\Abstracts\BaseDataMapper;
-use Kraite\Core\Support\Math;
+use Kraite\Core\Models\Position;
 use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsAccountBalanceQuery;
 use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsAccountQuery;
 use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsAccountQueryTrades;
@@ -30,6 +30,7 @@ use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsServerTimeQuery;
 use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsSymbolConfigQuery;
 use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsSymbolMarginType;
 use Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests\MapsTokenLeverageRatios;
+use Kraite\Core\Support\Math;
 use SensitiveParameter;
 
 final class BitgetApiDataMapper extends BaseDataMapper
@@ -58,17 +59,17 @@ final class BitgetApiDataMapper extends BaseDataMapper
     use MapsSymbolMarginType;
     use MapsTokenLeverageRatios;
 
-    public function long()
+    public function long(): string
     {
         return 'long';
     }
 
-    public function short()
+    public function short(): string
     {
         return 'short';
     }
 
-    public function directionType(string $canonical)
+    public function directionType(string $canonical): string
     {
         if ($canonical === 'LONG' || $canonical === 'long') {
             return 'long';
@@ -81,7 +82,7 @@ final class BitgetApiDataMapper extends BaseDataMapper
         throw new InvalidArgumentException("Invalid BitGet direction type: {$canonical}");
     }
 
-    public function sideType(string $canonical)
+    public function sideType(string $canonical): string
     {
         if ($canonical === 'BUY' || $canonical === 'buy') {
             return 'buy';
@@ -92,6 +93,21 @@ final class BitgetApiDataMapper extends BaseDataMapper
         }
 
         throw new InvalidArgumentException("Invalid BitGet side type: {$canonical}");
+    }
+
+    public function positionHoldSide(Position $position): string
+    {
+        $direction = $this->directionType($position->direction);
+
+        if ($position->account->isHedgeMode()) {
+            return $direction;
+        }
+
+        return match ($direction) {
+            'long' => 'buy',
+            'short' => 'sell',
+            default => throw new InvalidArgumentException("Invalid normalized BitGet direction type: {$direction}"),
+        };
     }
 
     /**
