@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.73.5 - 2026-07-17
+
+### Safe local production clones
+
+- [FIXED] Production snapshots now replace every imported user password with
+  the configured local clone password and clear persistent login tokens.
+  Cloned admin data remains usable without knowing any production password.
+
 ## 1.73.4 - 2026-07-16
 
 ### Production alert quality

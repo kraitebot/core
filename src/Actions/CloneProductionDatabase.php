@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Actions;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Kraite\Core\Contracts\ProductionDatabaseCloneGateway;
@@ -44,6 +45,8 @@ final class CloneProductionDatabase
             throw new RuntimeException('Kraite must be frozen before cloning production data.');
         }
 
+        $localPassword = $this->requiredConfig('kraite.clone.local_password');
+
         $this->verifyMigrationParity();
         if ($progress !== null) {
             $progress('Migration parity confirmed.');
@@ -74,6 +77,10 @@ final class CloneProductionDatabase
                 $progress('Replacing cloneable local tables...');
             }
             $this->gateway->replaceLocalTables($tables, $localPath);
+            $resetUsers = $this->resetLocalUserPasswords($localPassword);
+            if ($progress !== null) {
+                $progress("Local login password reset for {$resetUsers} users.");
+            }
         } catch (Throwable $exception) {
             $failure = $exception;
         } finally {
@@ -186,5 +193,13 @@ final class CloneProductionDatabase
         }
 
         return $value;
+    }
+
+    private function resetLocalUserPasswords(string $password): int
+    {
+        return DB::table('users')->update([
+            'password' => Hash::make($password),
+            'remember_token' => null,
+        ]);
     }
 }
