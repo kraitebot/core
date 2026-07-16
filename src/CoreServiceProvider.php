@@ -401,6 +401,14 @@ final class CoreServiceProvider extends ServiceProvider
             'bindings' => $bindings,
         ]);
 
+        // Fresh installs and migrations can execute a slow schema query after
+        // slow_queries exists but before the singleton admin row is seeded.
+        // Keep the audit row above, but notification delivery cannot be built
+        // until Kraite::admin() has an id=1 source record.
+        if (! Kraite::query()->whereKey(1)->exists()) {
+            return;
+        }
+
         // Send notification to admin about slow query.
         //
         // Throttled per-connection via cache-based SETNX (cache_key=["connection"]

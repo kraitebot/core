@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.73.1 - 2026-07-16
+
+### Deployment safety
+
+- [FIXED] Slow schema migrations are audited without attempting an admin
+  notification before the Kraite singleton has been seeded.
+
 ## 1.73.0 - 2026-07-16
 
 ### Bitget USDC futures
