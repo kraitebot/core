@@ -16,6 +16,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Checkout brunocfalcao/step-dispatcher
+        uses: actions/checkout@v4
+        with:
+          repository: brunocfalcao/step-dispatcher
+          path: packages/brunocfalcao/step-dispatcher
+
+      - name: Checkout brunocfalcao/laravel-helpers
+        uses: actions/checkout@v4
+        with:
+          repository: brunocfalcao/laravel-helpers
+          path: packages/brunocfalcao/laravel-helpers
+
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -24,7 +36,10 @@ jobs:
           coverage: none
 
       - name: Install Composer dependencies
-        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+        run: |
+          composer config repositories.step-dispatcher path packages/brunocfalcao/step-dispatcher
+          composer config repositories.laravel-helpers path packages/brunocfalcao/laravel-helpers
+          composer install --no-interaction --prefer-dist --optimize-autoloader
 
       - name: PHP syntax check
         run: |

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.73.6 - 2026-07-17
+
+### Release reliability
+
+- [FIXED] Core CI now checks out its local package dependencies and resolves
+  them through explicit path repositories before linting.
+
 ## 1.73.5 - 2026-07-17
 
 ### Safe local production clones
