@@ -8,14 +8,17 @@ use DateTimeInterface;
 use Dotenv\Dotenv;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Mail\Events\MessageSending;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
 use Kraite\Core\Commands\BackfillOriginalPricesCommand;
 use Kraite\Core\Commands\Backtest\BacktestTokenCommand;
+use Kraite\Core\Commands\CloneCommand;
 use Kraite\Core\Commands\CooldownCommand;
 use Kraite\Core\Commands\Cronjobs\AnalyseBscsCommand;
 use Kraite\Core\Commands\Cronjobs\CheckBinanceListenKeysStaleCommand;
@@ -45,14 +48,17 @@ use Kraite\Core\Commands\Daemons\StreamBinancePricesCommand;
 use Kraite\Core\Commands\Daemons\StreamBinanceUserDataCommand;
 use Kraite\Core\Commands\DispatchDaemonCommand;
 use Kraite\Core\Commands\Fleet\ReportFleetMetricsCommand;
+use Kraite\Core\Commands\FreezeCommand;
 use Kraite\Core\Commands\Ingestion\IsEligibleCommand;
 use Kraite\Core\Commands\RecoverPositionsCommand;
 use Kraite\Core\Commands\SafeToRestartCommand;
 use Kraite\Core\Commands\Tests\TestNotificationCommand;
 use Kraite\Core\Commands\Tests\ThrottlerStressTestCommand;
+use Kraite\Core\Commands\UnfreezeCommand;
 use Kraite\Core\Commands\UpdateRecvwindowSafetyDurationCommand;
 use Kraite\Core\Commands\VerifyFleetTopologyCommand;
 use Kraite\Core\Commands\WarmupCommand;
+use Kraite\Core\Contracts\ProductionDatabaseCloneGateway;
 use Kraite\Core\Events\UserEmailConfirmed;
 use Kraite\Core\Listeners\AttachPrivateBetaCoupon;
 use Kraite\Core\Listeners\NotificationLogListener;
@@ -88,8 +94,11 @@ use Kraite\Core\Observers\PositionObserver;
 use Kraite\Core\Observers\SymbolObserver;
 use Kraite\Core\Observers\UserObserver;
 use Kraite\Core\Policies\AccountPolicy;
+use Kraite\Core\Support\Database\SshProductionDatabaseCloneGateway;
+use Kraite\Core\Support\FreezeMode;
 use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\StepRouter;
+use Psr\Http\Message\RequestInterface;
 use Schema;
 use StepDispatcher\Events\StaleStepsDetected;
 use StepDispatcher\Models\Step;
@@ -100,6 +109,16 @@ final class CoreServiceProvider extends ServiceProvider
 {
     public function boot()
     {
+        Http::globalRequestMiddleware(static function (RequestInterface $request): RequestInterface {
+            FreezeMode::assertExternalTrafficAllowed('Outbound HTTP request');
+
+            return $request;
+        });
+
+        Event::listen(MessageSending::class, static function (): ?bool {
+            return FreezeMode::isActive() ? false : null;
+        });
+
         $this->commands([
             SafeToRestartCommand::class,
             RecoverPositionsCommand::class,
@@ -140,6 +159,9 @@ final class CoreServiceProvider extends ServiceProvider
             DispatchDaemonCommand::class,
             WarmupCommand::class,
             ReportFleetMetricsCommand::class,
+            FreezeCommand::class,
+            UnfreezeCommand::class,
+            CloneCommand::class,
         ]);
 
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
@@ -274,6 +296,11 @@ final class CoreServiceProvider extends ServiceProvider
         $this->app->bind(
             Support\Drift\DriftChecker::class,
             Support\Drift\DriftCheckService::class,
+        );
+
+        $this->app->bind(
+            ProductionDatabaseCloneGateway::class,
+            SshProductionDatabaseCloneGateway::class,
         );
     }
 

@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.73.0 - 2026-07-16
+
+### Bitget USDC futures
+
+- [ADDED] **Bitget now supports USDC perpetuals across discovery and the
+  complete trading lifecycle.** Catalogue refresh atomically merges
+  `USDT-FUTURES` and `USDC-FUTURES`; balances, positions, orders,
+  prices, leverage, margin, protection, recovery, cancellation, and close
+  derive the correct product and margin coin from account or symbol quote.
+- [FIXED] **USDT and USDC contracts remain separate trading identities.**
+  Selection is constrained to the account's exchange and quote, metadata is
+  preserved per contract, and missing or unsupported quotes fail explicitly.
+- [FIXED] **Bitget one-way order correction uses the exchange's `BOTH`
+  position slot,** while hedge accounts continue to match LONG or SHORT.
+
+### Local snapshot safety
+
+- [ADDED] **`kraite:freeze` fully isolates local production-shaped data.**
+  Schedules, jobs, dispatchers, WebSockets, mail, notifications, inbound
+  external traffic, and outbound HTTP stop while local UI and data edits
+  remain available.
+- [ADDED] **`kraite:clone` imports a production snapshot only while
+  frozen and only with exact migration parity.** Nine high-volume local
+  tables remain untouched, credentials stay out of process arguments, and
+  temporary dumps are removed from both hosts.
+- [ADDED] **`kraite:unfreeze` refuses dirty trading state.** Interactive
+  cleanup or `--force` clears positions, orders, dispatcher state, logs,
+  API audit data, and queued jobs before automation can resume.
+
+### Tests
+
+- [ADDED] End-to-end USDC lifecycle, atomic catalogue, unsupported-quote,
+  full-freeze traffic, destructive-unfreeze, clone parity, secure transfer,
+  and schema-compatibility regression coverage.
+- [VERIFIED] Full ingestion suite, Step Dispatcher feature suite, Pint,
+  Rector, PHPStan, and type coverage pass.
+
 ## 1.72.1 - 2026-07-16
 
 ### Bitget position opening

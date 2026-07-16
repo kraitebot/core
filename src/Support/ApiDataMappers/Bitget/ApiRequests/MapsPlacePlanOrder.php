@@ -7,6 +7,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Support\Str;
 use Kraite\Core\Models\Order;
+use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
@@ -34,10 +35,11 @@ trait MapsPlacePlanOrder
 
         $properties = new ApiProperties;
         $properties->set('relatable', $order);
-        $properties->set('options.symbol', (string) $order->position->exchangeSymbol->parsed_trading_pair);
-        $properties->set('options.productType', 'USDT-FUTURES');
+        $properties->set('options.symbol', (string) $order->position->exchangeSymbol->asset);
+        $context = BitgetProductContext::fromQuote($order->position->exchangeSymbol->quote);
+        $properties->set('options.productType', $context->productType);
         $properties->set('options.marginMode', mb_strtolower((string) $order->position->account->margin_mode));
-        $properties->set('options.marginCoin', 'USDT');
+        $properties->set('options.marginCoin', $context->marginCoin);
         $properties->set('options.side', (string) $this->sideType($order->side));
         $properties->set('options.size', (string) api_format_quantity($order->quantity, $order->position->exchangeSymbol));
         $properties->set('options.clientOid', (string) $order->client_order_id);
@@ -102,8 +104,11 @@ trait MapsPlacePlanOrder
     {
         $properties = new ApiProperties;
         $properties->set('relatable', $order);
-        $properties->set('options.symbol', (string) $order->position->exchangeSymbol->parsed_trading_pair);
-        $properties->set('options.productType', 'USDT-FUTURES');
+        $properties->set('options.symbol', (string) $order->position->exchangeSymbol->asset);
+        $properties->set(
+            'options.productType',
+            BitgetProductContext::fromQuote($order->position->exchangeSymbol->quote)->productType
+        );
 
         // Use profit_loss planType for TPSL orders (covers pos_profit, pos_loss, profit_plan, loss_plan)
         $properties->set('options.planType', 'profit_loss');
@@ -196,10 +201,14 @@ trait MapsPlacePlanOrder
     {
         $properties = new ApiProperties;
         $properties->set('relatable', $order);
-        $properties->set('options.symbol', (string) $order->position->exchangeSymbol->parsed_trading_pair);
-        $properties->set('options.productType', 'USDT-FUTURES');
-        $properties->set('options.marginCoin', 'USDT');
-        $properties->set('options.orderId', (string) $order->exchange_order_id);
+        $properties->set('options.symbol', (string) $order->position->exchangeSymbol->asset);
+        $context = BitgetProductContext::fromQuote($order->position->exchangeSymbol->quote);
+        $properties->set('options.productType', $context->productType);
+        $properties->set('options.marginCoin', $context->marginCoin);
+        $properties->set('options.orderIdList', [[
+            'orderId' => (string) $order->exchange_order_id,
+            'clientOid' => '',
+        ]]);
 
         return $properties;
     }
@@ -220,12 +229,12 @@ trait MapsPlacePlanOrder
     public function resolvePlanOrderCancelResponse(Response $response): array
     {
         $data = json_decode((string) $response->getBody(), associative: true);
-        $cancelData = $data['data'] ?? [];
-
-        $success = ($data['code'] ?? '') === '00000';
+        $successList = $data['data']['successList'] ?? [];
+        $cancelledOrder = is_array($successList) ? ($successList[0] ?? null) : null;
+        $success = ($data['code'] ?? '') === '00000' && is_array($cancelledOrder);
 
         return [
-            'order_id' => $cancelData['orderId'] ?? null,
+            'order_id' => $cancelledOrder['orderId'] ?? null,
             'status' => $success ? 'CANCELLED' : 'NOT_FOUND',
             '_isPlanOrder' => true,
             '_raw' => $data,

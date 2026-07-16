@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Models\ModelLog;
+use Kraite\Core\Support\FreezeMode;
 use StepDispatcher\Abstracts\BaseStepJob;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Support\ExceptionParser;
@@ -41,6 +42,10 @@ abstract class BaseQueueableJob extends BaseStepJob
      */
     protected function prepareJobExecution(): bool
     {
+        if (FreezeMode::isActive()) {
+            return false;
+        }
+
         $prepared = parent::prepareJobExecution();
 
         if ($prepared) {

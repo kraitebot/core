@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
 trait MapsAccountQuery
@@ -15,8 +16,8 @@ trait MapsAccountQuery
         $properties = new ApiProperties;
         $properties->set('relatable', $account);
 
-        // BitGet V2 requires productType for futures
-        $properties->set('options.productType', 'USDT-FUTURES');
+        $context = BitgetProductContext::fromQuote($account->portfolio_quote);
+        $properties->set('options.productType', $context->productType);
 
         return $properties;
     }
@@ -59,11 +60,7 @@ trait MapsAccountQuery
 
         $accountsData = $data['data'] ?? [];
 
-        // Find USDT account data
-        $accountData = collect($accountsData)
-            ->first(static function ($acc) {
-                return ($acc['marginCoin'] ?? '') === 'USDT';
-            });
+        $accountData = collect($accountsData)->first();
 
         if (empty($accountData)) {
             return [];

@@ -170,6 +170,15 @@ abstract class AbstractPositionRecoverer
 
         $exchangeSymbol = ExchangeSymbol::query()
             ->where('api_system_id', $this->account->api_system_id)
+            ->where('asset', $tradingPair)
+            ->when(
+                $this->account->trading_quote !== null,
+                fn ($query) => $query->where('quote', $this->account->trading_quote)
+            )
+            ->first();
+
+        $exchangeSymbol ??= ExchangeSymbol::query()
+            ->where('api_system_id', $this->account->api_system_id)
             ->whereHas('symbol', fn ($q) => $q->where(function ($q2) use ($tradingPair) {
                 // Match by parsed pair (BTCUSDT / BTC-USDT) — the
                 // accessor on ExchangeSymbol composes token+quote.

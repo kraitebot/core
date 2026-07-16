@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\Order;
+use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
@@ -15,8 +16,11 @@ trait MapsOrderQuery
     {
         $properties = new ApiProperties;
         $properties->set('relatable', $order);
-        $properties->set('options.symbol', (string) $order->position->exchangeSymbol->parsed_trading_pair);
-        $properties->set('options.productType', 'USDT-FUTURES');
+        $properties->set('options.symbol', (string) $order->position->exchangeSymbol->asset);
+        $properties->set(
+            'options.productType',
+            BitgetProductContext::fromQuote($order->position->exchangeSymbol->quote)->productType
+        );
         $properties->set('options.orderId', (string) $order->exchange_order_id);
 
         return $properties;

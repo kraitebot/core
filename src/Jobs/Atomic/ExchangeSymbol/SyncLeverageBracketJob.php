@@ -57,7 +57,10 @@ final class SyncLeverageBracketJob extends BaseApiableJob
         // stops being retried every refresh cycle. Any other error bubbles up
         // to the normal API exception pipeline. Mirrors FetchKlinesJob.
         try {
-            $apiResponse = $apiSystem->apiQueryLeverageBracketsDataForSymbol($symbol);
+            $apiResponse = $apiSystem->apiQueryLeverageBracketsDataForSymbol(
+                $symbol,
+                $this->exchangeSymbol->quote
+            );
         } catch (Throwable $e) {
             if ($this->exceptionHandler->isSymbolDelisted($e)) {
                 return $this->handleSymbolDelisted();

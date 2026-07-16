@@ -11,6 +11,7 @@ use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\TokenMapper;
+use Kraite\Core\Support\FreezeMode;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\ApiWebsocketProxy;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
@@ -126,6 +127,18 @@ final class StreamBinancePricesCommand extends Command
 
     public function handle(): int
     {
+        if (FreezeMode::isActive()) {
+            $this->warn('Kraite is frozen. Mark-price stream waiting without connecting.');
+
+            if (app()->environment('testing')) {
+                return self::SUCCESS;
+            }
+
+            while (FreezeMode::isActive()) {
+                sleep(1);
+            }
+        }
+
         $account = Account::admin('binance');
 
         if (! $account) {
@@ -444,5 +457,4 @@ final class StreamBinancePricesCommand extends Command
             $this->refreshPairMap();
         }
     }
-
 }

@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\ExchangeSymbol;
+use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
 trait MapsMarkPriceQuery
@@ -14,8 +15,11 @@ trait MapsMarkPriceQuery
     {
         $properties = new ApiProperties;
         $properties->set('relatable', $exchangeSymbol);
-        $properties->set('options.productType', 'USDT-FUTURES');
-        $properties->set('options.symbol', (string) $exchangeSymbol->parsed_trading_pair);
+        $properties->set(
+            'options.productType',
+            BitgetProductContext::fromQuote($exchangeSymbol->quote)->productType
+        );
+        $properties->set('options.symbol', (string) $exchangeSymbol->asset);
 
         return $properties;
     }

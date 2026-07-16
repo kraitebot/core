@@ -6,6 +6,7 @@ namespace Kraite\Core\Abstracts;
 
 use Illuminate\Support\Facades\Log;
 use Kraite\Core\Models\Kraite;
+use Kraite\Core\Support\FreezeMode;
 use Kraite\Core\Support\NotificationService;
 use Ratchet\Client\Connector;
 use Ratchet\Client\WebSocket;
@@ -298,6 +299,13 @@ abstract class BaseWebsocketClient
 
     private function registerCallbacks(string $url, array $callback): void
     {
+        if (FreezeMode::isActive()) {
+            $this->shouldReconnect = false;
+            $this->loop->stop();
+
+            return;
+        }
+
         $this->startWatchdogOnce($url);
 
         $this->createWSConnection($url)->then(
@@ -448,6 +456,8 @@ abstract class BaseWebsocketClient
      */
     private function createWSConnection(string $url)
     {
+        FreezeMode::assertExternalTrafficAllowed('WebSocket connection');
+
         $dnsResolver = (new DnsResolverFactory)->createCached(self::DNS_NAMESERVER, $this->loop);
 
         $socketConnector = new SocketConnector([
@@ -508,7 +518,10 @@ abstract class BaseWebsocketClient
             // Without this guard, the timer would re-open a connection
             // to the stale URL even though shouldReconnect was flipped
             // to false in the meantime.
-            if (! $this->shouldReconnect) {
+            if (FreezeMode::isActive() || ! $this->shouldReconnect) {
+                $this->shouldReconnect = false;
+                $this->loop->stop();
+
                 Log::channel('jobs')->info(
                     '[WEBSOCKET] Deferred reconnect cancelled — intentional close ran while timer was pending',
                     ['url' => $url]
@@ -548,6 +561,13 @@ abstract class BaseWebsocketClient
         // open but the server stopped talking" zombie scenario that
         // froze the Binance daemon on 2026-04-24.
         $this->loop->addPeriodicTimer($this->watchdogCheckIntervalSeconds, function () use ($url) {
+            if (FreezeMode::isActive()) {
+                $this->close();
+                $this->loop->stop();
+
+                return;
+            }
+
             // Sustained-no-data self-exit. Checked BEFORE the wsConnection
             // null-guard on purpose: the DNS-wedge failure mode
             // (2026-07-02) holds wsConnection null across thousands of

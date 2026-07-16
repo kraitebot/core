@@ -17,6 +17,7 @@ use Kraite\Core\Models\BinanceListenKey;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\Fleet\FleetMetricsRepository;
 use Kraite\Core\Support\Health\OrphanReconciler;
 use Kraite\Core\Support\MaintenanceMode;
@@ -1174,16 +1175,36 @@ final class CheckSystemHealthCommand extends BaseCommand
     {
         $properties = new ApiProperties;
         $properties->set('account', $account);
+        $properties->set('options.symbol', $symbol);
+
+        if ($account->apiSystem->canonical === 'bitget') {
+            $context = BitgetProductContext::fromQuote($account->trading_quote);
+            $properties->set('options.productType', $context->productType);
+            $properties->set('options.marginCoin', $context->marginCoin);
+
+            if ($isAlgo) {
+                $properties->set('options.orderIdList', [[
+                    'orderId' => $orderId,
+                    'clientOid' => '',
+                ]]);
+                $account->withApi()->cancelPlanOrder($properties);
+
+                return;
+            }
+
+            $properties->set('options.orderId', $orderId);
+            $account->withApi()->cancelOrder($properties);
+
+            return;
+        }
 
         if ($isAlgo) {
-            $properties->set('options.symbol', $symbol);
             $properties->set('options.algoId', $orderId);
             $account->withApi()->cancelAlgoOrder($properties);
 
             return;
         }
 
-        $properties->set('options.symbol', $symbol);
         $properties->set('options.orderId', $orderId);
         $account->withApi()->cancelOrder($properties);
     }
@@ -1219,6 +1240,20 @@ final class CheckSystemHealthCommand extends BaseCommand
         $properties = new ApiProperties;
         $properties->set('account', $account);
         $properties->set('options.symbol', $symbol);
+
+        if ($account->apiSystem->canonical === 'bitget') {
+            $context = BitgetProductContext::fromQuote($account->trading_quote);
+            $properties->set('options.productType', $context->productType);
+
+            if ($account->isHedgeMode()) {
+                $properties->set('options.holdSide', mb_strtolower($direction));
+            }
+
+            $account->withApi()->flashClosePosition($properties);
+
+            return;
+        }
+
         $properties->set('options.type', 'MARKET');
         $properties->set('options.side', $direction === 'LONG' ? 'SELL' : 'BUY');
         $properties->set('options.quantity', $quantity);

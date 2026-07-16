@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
@@ -16,8 +17,10 @@ trait MapsOpenOrdersQuery
         $properties = new ApiProperties;
         $properties->set('relatable', $account);
 
-        // BitGet V2 requires productType for futures
-        $properties->set('options.productType', 'USDT-FUTURES');
+        $properties->set(
+            'options.productType',
+            BitgetProductContext::fromQuote($account->trading_quote)->productType
+        );
 
         return $properties;
     }

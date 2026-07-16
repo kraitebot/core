@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
 trait MapsAccountBalanceQuery
@@ -15,8 +16,8 @@ trait MapsAccountBalanceQuery
         $properties = new ApiProperties;
         $properties->set('relatable', $account);
 
-        // BitGet V2 requires productType for futures.
-        $properties->set('options.productType', $this->productTypeForBalanceQuote($account->balanceQuote()));
+        $context = BitgetProductContext::fromQuote($account->portfolio_quote);
+        $properties->set('options.productType', $context->productType);
 
         return $properties;
     }
@@ -82,15 +83,6 @@ trait MapsAccountBalanceQuery
             'cross-wallet-balance' => $accountEquity,
             'cross-unrealized-pnl' => $unrealizedPnl,
         ];
-    }
-
-    private function productTypeForBalanceQuote(string $balanceQuote): string
-    {
-        return match ($balanceQuote) {
-            'USDT' => 'USDT-FUTURES',
-            'USDC' => 'USDC-FUTURES',
-            default => 'COIN-FUTURES',
-        };
     }
 
     /**

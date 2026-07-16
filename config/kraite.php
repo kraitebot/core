@@ -8,6 +8,30 @@ $websiteUrl = mb_rtrim((string) env('KRAITE_WEBSITE_URL', $derivedWebsiteUrl), '
 
 return [
 
+    'freeze' => [
+        'marker_path' => env(
+            'KRAITE_FREEZE_MARKER_PATH',
+            storage_path(env('APP_ENV') === 'testing' ? 'framework/testing/kraite-frozen' : 'framework/kraite-frozen'),
+        ),
+        'logs_path' => env(
+            'KRAITE_FREEZE_LOGS_PATH',
+            storage_path(env('APP_ENV') === 'testing' ? 'framework/testing/kraite-freeze-logs' : 'logs'),
+        ),
+    ],
+
+    'clone' => [
+        'timeout_seconds' => (int) env('KRAITE_CLONE_TIMEOUT_SECONDS', 1800),
+        'local_dump_directory' => env('KRAITE_CLONE_LOCAL_DUMP_DIRECTORY', storage_path('app/private/kraite-clone')),
+        'remote_dump_directory' => env('KRAITE_CLONE_REMOTE_DUMP_DIRECTORY', '/home/athena/ingestion.kraite.com/storage/app/private/kraite-clone'),
+        'production' => [
+            'host' => env('KRAITE_CLONE_PRODUCTION_HOST', '37.27.243.164'),
+            'ssh_user' => env('KRAITE_CLONE_PRODUCTION_SSH_USER', 'root'),
+            'app_user' => env('KRAITE_CLONE_PRODUCTION_APP_USER', 'athena'),
+            'project_path' => env('KRAITE_CLONE_PRODUCTION_PROJECT_PATH', '/home/athena/ingestion.kraite.com'),
+            'identity_file' => env('KRAITE_CLONE_PRODUCTION_IDENTITY_FILE', mb_rtrim((string) env('HOME', ''), '/').'/.ssh/id_ed25519_kraite'),
+        ],
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | Admin User

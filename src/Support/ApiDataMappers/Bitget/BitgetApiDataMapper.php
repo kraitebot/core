@@ -113,15 +113,15 @@ final class BitgetApiDataMapper extends BaseDataMapper
     /**
      * Returns the well formed base symbol with the quote on it.
      *
-     * BitGet V2 API uses simple format like BTCUSDT, ETHUSDT.
-     * No suffix needed for perpetual contracts.
+     * BitGet uses TOKENUSDT for USDT futures and TOKENPERP for USDC futures.
      *
      * Token and quote are stored directly on exchange_symbols.
      */
     public function baseWithQuote(#[SensitiveParameter] string $token, string $quote): string
     {
-        // BitGet uses simple format: BTCUSDT, ETHUSDT (similar to Binance)
-        return $token.$quote;
+        return mb_strtoupper($quote) === 'USDC'
+            ? $token.'PERP'
+            : $token.$quote;
     }
 
     /**
@@ -136,6 +136,13 @@ final class BitgetApiDataMapper extends BaseDataMapper
      */
     public function identifyBaseAndQuote(string $symbol): array
     {
+        if (str_ends_with($symbol, 'PERP')) {
+            return [
+                'base' => mb_substr($symbol, 0, -4),
+                'quote' => 'USDC',
+            ];
+        }
+
         // BitGet primarily uses USDT, USDC as quote currencies
         $availableQuoteCurrencies = [
             'USDT', 'USDC', 'USD',

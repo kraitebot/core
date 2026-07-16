@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\ExchangeSymbol;
+use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
 trait MapsKlinesQuery
@@ -30,9 +31,12 @@ trait MapsKlinesQuery
     ): ApiProperties {
         $properties = new ApiProperties;
         $properties->set('relatable', $exchangeSymbol);
-        $properties->set('options.symbol', (string) $exchangeSymbol->parsed_trading_pair);
+        $properties->set('options.symbol', (string) $exchangeSymbol->asset);
         $properties->set('options.granularity', $this->normalizeBitgetGranularity($granularity));
-        $properties->set('options.productType', 'USDT-FUTURES');
+        $properties->set(
+            'options.productType',
+            BitgetProductContext::fromQuote($exchangeSymbol->quote)->productType
+        );
 
         if ($startTime !== null) {
             $properties->set('options.startTime', $startTime);

@@ -6,6 +6,7 @@ namespace Kraite\Core\Concerns\Position;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\Order;
+use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
@@ -207,10 +208,12 @@ trait InteractsWithApis
      */
     public function apiCloseBitget(): ApiResponse
     {
+        $context = BitgetProductContext::fromQuote($this->exchangeSymbol->quote);
+
         $this->apiProperties = new ApiProperties;
         $this->apiProperties->set('relatable', $this);
-        $this->apiProperties->set('options.symbol', $this->parsed_trading_pair);
-        $this->apiProperties->set('options.productType', 'USDT-FUTURES');
+        $this->apiProperties->set('options.symbol', $this->exchangeSymbol->asset);
+        $this->apiProperties->set('options.productType', $context->productType);
         $this->apiProperties->set('account', $this->account);
 
         // holdSide is HEDGE-only — required to disambiguate the LONG vs
@@ -249,10 +252,12 @@ trait InteractsWithApis
     private function setClosingPriceFromBitgetOrder(string $orderId): void
     {
         try {
+            $context = BitgetProductContext::fromQuote($this->exchangeSymbol->quote);
+
             $queryProperties = new ApiProperties;
             $queryProperties->set('relatable', $this);
-            $queryProperties->set('options.symbol', $this->parsed_trading_pair);
-            $queryProperties->set('options.productType', 'USDT-FUTURES');
+            $queryProperties->set('options.symbol', $this->exchangeSymbol->asset);
+            $queryProperties->set('options.productType', $context->productType);
             $queryProperties->set('options.orderId', $orderId);
             $queryProperties->set('account', $this->account);
 

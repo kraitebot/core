@@ -13,6 +13,7 @@ use Kraite\Core\Models\BinanceListenKey;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Support\ApiClients\Websocket\BinanceApiClient;
 use Kraite\Core\Support\Apis\REST\BinanceApi;
+use Kraite\Core\Support\FreezeMode;
 use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use React\EventLoop\Loop;
@@ -168,6 +169,18 @@ final class StreamBinanceUserDataCommand extends Command
 
     public function handle(): int
     {
+        if (FreezeMode::isActive()) {
+            $this->warn('Kraite is frozen. User-data streams waiting without connecting.');
+
+            if (app()->environment('testing')) {
+                return self::SUCCESS;
+            }
+
+            while (FreezeMode::isActive()) {
+                sleep(1);
+            }
+        }
+
         $binanceSystem = ApiSystem::firstWhere('canonical', 'binance');
 
         if ($binanceSystem === null) {
@@ -199,6 +212,12 @@ final class StreamBinanceUserDataCommand extends Command
         // external monitors can detect a wedged loop), checks memory,
         // and runs the reconnect-storm sweep.
         $loop->addPeriodicTimer(self::HEALTH_TICK_INTERVAL_SECONDS, function () {
+            if (FreezeMode::isActive()) {
+                $this->stopForFreeze();
+
+                return;
+            }
+
             $this->touchHeartbeatFlag();
             $this->checkMemoryPressure();
         });
@@ -229,6 +248,17 @@ final class StreamBinanceUserDataCommand extends Command
         $loop->run();
 
         return self::SUCCESS;
+    }
+
+    private function stopForFreeze(): void
+    {
+        foreach ($this->accountClients as $slot) {
+            $slot['client']->close();
+        }
+
+        $this->accountClients = [];
+        $this->spawning = [];
+        $this->loop->stop();
     }
 
     /**

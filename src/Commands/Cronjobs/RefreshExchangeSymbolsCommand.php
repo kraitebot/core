@@ -27,6 +27,9 @@ use StepDispatcher\Support\BaseCommand;
  *   - Discover CMC tokens for orphaned symbols
  *   - Verify TAAPI data (Binance only)
  *   - Sync leverage brackets per exchange
+ * - Index 4: Verify price alignment
+ *
+ * Targeted refreshes compact these phases into contiguous indexes 1, 2, and 3.
  *
  * Note: Binance overlap marking is handled reactively by ExchangeSymbolObserver.
  * Binance must sync first so other exchanges can check token overlap on creation.
@@ -84,6 +87,8 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
         $this->verboseInfo('Dispatching exchange symbol refresh steps...');
 
         DB::transaction(function () use ($exchanges, $blockUuid) {
+            $nextIndex = 1;
+
             // Index 1: Binance syncs FIRST (required for overlaps_with_binance detection)
             // The observer checks if tokens exist on Binance when creating non-Binance symbols.
             $binance = $exchanges->firstWhere('canonical', 'binance');
@@ -95,30 +100,38 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
                     'queue' => 'cronjobs',
                     'arguments' => ['apiSystemId' => $binance->id],
                     'block_uuid' => $blockUuid,
-                    'index' => 1,
+                    'index' => $nextIndex,
                 ]);
 
-                $this->verboseLine("  - Created upsert step for {$binance->name} (Index 1 - syncs first)");
+                $this->verboseLine("  - Created upsert step for {$binance->name} (Index {$nextIndex} - syncs first)");
+
+                $nextIndex++;
             }
 
-            // Index 2: Other exchanges sync AFTER Binance completes
-            foreach ($otherExchanges as $exchange) {
-                Step::create([
-                    'class' => UpsertExchangeSymbolsFromExchangeJob::class,
-                    'queue' => 'cronjobs',
-                    'arguments' => ['apiSystemId' => $exchange->id],
-                    'block_uuid' => $blockUuid,
-                    'index' => 2,
-                ]);
+            if ($otherExchanges->isNotEmpty()) {
+                // Other exchanges sync after Binance when it is in scope, or first for a targeted refresh.
+                foreach ($otherExchanges as $exchange) {
+                    Step::create([
+                        'class' => UpsertExchangeSymbolsFromExchangeJob::class,
+                        'queue' => 'cronjobs',
+                        'arguments' => ['apiSystemId' => $exchange->id],
+                        'block_uuid' => $blockUuid,
+                        'index' => $nextIndex,
+                    ]);
 
-                $this->verboseLine("  - Created upsert step for {$exchange->name} (Index 2)");
+                    $this->verboseLine("  - Created upsert step for {$exchange->name} (Index {$nextIndex})");
+                }
+
+                $nextIndex++;
             }
 
-            // Index 3: Parent lifecycle jobs that run in PARALLEL after all exchanges sync:
+            $postSyncIndex = $nextIndex;
+
+            // Parent lifecycle jobs run in parallel after all exchanges sync:
             // - DiscoverCMCTokensForOrphanedSymbolsJob: discovers CMC tokens for orphaned symbols
             // - TouchTaapiDataForExchangeSymbolsJob: touches TAAPI to check data availability (Binance only)
             // - SyncLeverageBracketsJob: syncs leverage brackets for each exchange
-            // All run at index 3 so they execute in parallel.
+            // All share one index so they execute in parallel.
             //
             // Each orchestrator self-elects to parent mode inside its own compute()
             // via buildChildChainOnce() — only when it actually has work
@@ -129,7 +142,7 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
                 'queue' => 'cronjobs',
                 'arguments' => [],
                 'block_uuid' => $blockUuid,
-                'index' => 3,
+                'index' => $postSyncIndex,
             ]);
 
             Step::create([
@@ -137,7 +150,7 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
                 'queue' => 'cronjobs',
                 'arguments' => [],
                 'block_uuid' => $blockUuid,
-                'index' => 3,
+                'index' => $postSyncIndex,
             ]);
 
             // Sync leverage brackets for each exchange
@@ -154,16 +167,16 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
                     'queue' => 'cronjobs',
                     'arguments' => ['apiSystemId' => $exchange->id],
                     'block_uuid' => $blockUuid,
-                    'index' => 3,
+                    'index' => $postSyncIndex,
                 ]);
 
-                $this->verboseLine("  - Created leverage brackets sync step for {$exchange->name} (Index 3)");
+                $this->verboseLine("  - Created leverage brackets sync step for {$exchange->name} (Index {$postSyncIndex})");
             }
 
-            $this->verboseLine('  - Created CMC discovery lifecycle step (Index 3)');
-            $this->verboseLine('  - Created TAAPI touch lifecycle step (Index 3, Binance only)');
+            $this->verboseLine("  - Created CMC discovery lifecycle step (Index {$postSyncIndex})");
+            $this->verboseLine("  - Created TAAPI touch lifecycle step (Index {$postSyncIndex}, Binance only)");
 
-            // Index 4: after CMC discovery (Index 3) has resolved symbol_id,
+            // After CMC discovery has resolved symbol_id,
             // verify each naming-divergent cross-exchange symbol's live price
             // against its Binance same-asset sibling. A unit-divergent contract
             // (KuCoin FLOKI vs Binance 1000FLOKI) carries a replicated price
@@ -174,10 +187,10 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
                 'queue' => 'cronjobs',
                 'arguments' => [],
                 'block_uuid' => $blockUuid,
-                'index' => 4,
+                'index' => $postSyncIndex + 1,
             ]);
 
-            $this->verboseLine('  - Created price-alignment verification lifecycle step (Index 4)');
+            $this->verboseLine('  - Created price-alignment verification lifecycle step (Index '.($postSyncIndex + 1).')');
         });
 
         $this->verboseInfo("Done. {$exchanges->count()} exchange step(s) created.");

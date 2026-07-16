@@ -116,6 +116,10 @@ final class NotificationService
         ?array $cacheKeys = null,
         ?array $channels = null,
     ): bool {
+        if (FreezeMode::isActive()) {
+            return false;
+        }
+
         // Tier 1 — global master switch. Singleton column wins, else
         // config. false here suppresses every notification, no exceptions.
         if (! Kraite::notificationsEnabled()) {

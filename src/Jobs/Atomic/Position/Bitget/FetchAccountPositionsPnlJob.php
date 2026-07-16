@@ -7,6 +7,7 @@ namespace Kraite\Core\Jobs\Atomic\Position\Bitget;
 use Carbon\Carbon;
 use Kraite\Core\Jobs\Atomic\Position\FetchAccountPositionsPnlJob as BaseFetchAccountPositionsPnlJob;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 
 /**
  * FetchAccountPositionsPnlJob (Atomic) - Bitget
@@ -108,8 +109,10 @@ class FetchAccountPositionsPnlJob extends BaseFetchAccountPositionsPnlJob
      */
     protected function queryHistoryFromExchange(int $startTime, int $endTime): array
     {
+        $context = BitgetProductContext::fromQuote($this->account->trading_quote);
+
         $response = $this->account->apiQueryHistoryPositions(
-            productType: 'USDT-FUTURES',
+            productType: $context->productType,
             startTime: $startTime,
             endTime: $endTime
         );

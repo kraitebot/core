@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Support\Apis\REST;
 
+use InvalidArgumentException;
 use Kraite\Core\Support\ApiClients\REST\BitgetApiClient;
+use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 use Kraite\Core\Support\ValueObjects\ApiRequest;
@@ -58,11 +60,7 @@ final class BitgetApi
     public function getExchangeInformation(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
-
-        // Default to USDT-FUTURES for perpetuals
-        if (! $properties->has('options.productType')) {
-            $properties->set('options.productType', 'USDT-FUTURES');
-        }
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'GET',
@@ -81,11 +79,7 @@ final class BitgetApi
     public function getKlines(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
-
-        // Default to USDT-FUTURES for perpetuals
-        if (! $properties->has('options.productType')) {
-            $properties->set('options.productType', 'USDT-FUTURES');
-        }
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'GET',
@@ -104,11 +98,7 @@ final class BitgetApi
     public function getPositions(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
-
-        // Default to USDT-FUTURES for perpetuals
-        if (! $properties->has('options.productType')) {
-            $properties->set('options.productType', 'USDT-FUTURES');
-        }
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'GET',
@@ -136,11 +126,7 @@ final class BitgetApi
     public function getAccountBalance(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
-
-        // Default to USDT-FUTURES for perpetuals
-        if (! $properties->has('options.productType')) {
-            $properties->set('options.productType', 'USDT-FUTURES');
-        }
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'GET',
@@ -159,11 +145,7 @@ final class BitgetApi
     public function getCurrentOpenOrders(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
-
-        // Default to USDT-FUTURES for perpetuals
-        if (! $properties->has('options.productType')) {
-            $properties->set('options.productType', 'USDT-FUTURES');
-        }
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'GET',
@@ -190,11 +172,7 @@ final class BitgetApi
     public function getPlanOrders(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
-
-        // Default to USDT-FUTURES for perpetuals
-        if (! $properties->has('options.productType')) {
-            $properties->set('options.productType', 'USDT-FUTURES');
-        }
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'GET',
@@ -213,6 +191,7 @@ final class BitgetApi
     public function placeOrder(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'POST',
@@ -231,6 +210,7 @@ final class BitgetApi
     public function getOrderDetail(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'GET',
@@ -257,6 +237,7 @@ final class BitgetApi
     public function cancelOrder(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'POST',
@@ -275,6 +256,7 @@ final class BitgetApi
     public function modifyOrder(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'POST',
@@ -293,6 +275,7 @@ final class BitgetApi
     public function cancelAllOrders(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'POST',
@@ -324,11 +307,7 @@ final class BitgetApi
     public function accountTrades(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
-
-        // Default to USDT-FUTURES for perpetuals
-        if (! $properties->has('options.productType')) {
-            $properties->set('options.productType', 'USDT-FUTURES');
-        }
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'GET',
@@ -347,11 +326,7 @@ final class BitgetApi
     public function getSymbolPrice(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
-
-        // Default to USDT-FUTURES for perpetuals
-        if (! $properties->has('options.productType')) {
-            $properties->set('options.productType', 'USDT-FUTURES');
-        }
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'GET',
@@ -383,6 +358,7 @@ final class BitgetApi
     public function setLeverage(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'POST',
@@ -409,6 +385,7 @@ final class BitgetApi
     public function setMarginMode(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'POST',
@@ -435,11 +412,7 @@ final class BitgetApi
     public function getLeverageBrackets(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
-
-        // Default to USDT-FUTURES for perpetuals
-        if (! $properties->has('options.productType')) {
-            $properties->set('options.productType', 'USDT-FUTURES');
-        }
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'GET',
@@ -458,6 +431,7 @@ final class BitgetApi
     public function placePlanOrder(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'POST',
@@ -478,11 +452,7 @@ final class BitgetApi
     public function getPlanOrderDetail(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
-
-        // Default to USDT-FUTURES for perpetuals
-        if (! $properties->has('options.productType')) {
-            $properties->set('options.productType', 'USDT-FUTURES');
-        }
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'GET',
@@ -501,11 +471,7 @@ final class BitgetApi
     public function getPlanOrderHistory(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
-
-        // Default to USDT-FUTURES for perpetuals
-        if (! $properties->has('options.productType')) {
-            $properties->set('options.productType', 'USDT-FUTURES');
-        }
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'GET',
@@ -524,6 +490,7 @@ final class BitgetApi
     public function cancelPlanOrder(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'POST',
@@ -546,6 +513,7 @@ final class BitgetApi
     public function placePosTpsl(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'POST',
@@ -570,6 +538,7 @@ final class BitgetApi
     public function placeTpslOrder(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'POST',
@@ -591,6 +560,7 @@ final class BitgetApi
     public function modifyTpslOrder(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'POST',
@@ -609,7 +579,7 @@ final class BitgetApi
      *
      * Required options:
      * - symbol: Trading pair (e.g., "JUPUSDT")
-     * - productType: "USDT-FUTURES"
+     * - productType: "USDT-FUTURES" or "USDC-FUTURES"
      * - holdSide: "long" or "short"
      *
      * @see https://www.bitget.com/api-doc/contract/trade/Flash-Close-Position
@@ -617,6 +587,7 @@ final class BitgetApi
     public function flashClosePosition(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'POST',
@@ -634,10 +605,7 @@ final class BitgetApi
     public function historyPosition(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
-
-        $this->validate($properties, [
-            'options.productType' => 'required|string',
-        ]);
+        $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
             'GET',
@@ -646,5 +614,29 @@ final class BitgetApi
         );
 
         return $this->client->signRequest($apiRequest);
+    }
+
+    private function requireProductContext(ApiProperties $properties): void
+    {
+        $productType = $properties->get('options.productType');
+
+        if (! is_string($productType) || trim($productType) === '') {
+            throw new InvalidArgumentException(
+                'Bitget futures productType is required. Resolve it from the account or exchange symbol quote.'
+            );
+        }
+
+        $supportedProductTypes = array_map(
+            static fn (string $quote): string => BitgetProductContext::fromQuote($quote)->productType,
+            BitgetProductContext::supportedQuotes()
+        );
+
+        if (! in_array($productType, $supportedProductTypes, true)) {
+            throw new InvalidArgumentException(sprintf(
+                'Unsupported Bitget futures productType [%s]. Supported product types: %s.',
+                $productType,
+                implode(', ', $supportedProductTypes)
+            ));
+        }
     }
 }

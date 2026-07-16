@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
 trait MapsTokenLeverageRatios
@@ -19,9 +20,10 @@ trait MapsTokenLeverageRatios
     {
         $properties = new ApiProperties;
         $properties->set('relatable', $position);
-        $properties->set('options.symbol', (string) $position->exchangeSymbol->parsed_trading_pair);
-        $properties->set('options.productType', 'USDT-FUTURES');
-        $properties->set('options.marginCoin', 'USDT');
+        $properties->set('options.symbol', (string) $position->exchangeSymbol->asset);
+        $context = BitgetProductContext::fromQuote($position->exchangeSymbol->quote);
+        $properties->set('options.productType', $context->productType);
+        $properties->set('options.marginCoin', $context->marginCoin);
         $properties->set('options.leverage', (string) $leverage);
 
         // holdSide is HEDGE-only — required to set leverage on the correct

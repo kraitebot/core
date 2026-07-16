@@ -13,6 +13,7 @@ use Kraite\Core\Models\ApiRequestLog;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ForbiddenHostname;
 use Kraite\Core\Models\Kraite;
+use Kraite\Core\Support\FreezeMode;
 use Kraite\Core\Support\HeaderSanitizer;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use Kraite\Core\Support\ValueObjects\ApiRequest;
@@ -72,6 +73,8 @@ abstract class BaseApiClient
 
     protected function processRequest(ApiRequest $apiRequest, bool $sendAsJson = false): ResponseInterface
     {
+        FreezeMode::assertExternalTrafficAllowed('Exchange/API request');
+
         $headers = array_merge($this->getHeaders(), (array) ($apiRequest->properties->getOr('headers', [])));
 
         $logData = $this->prepareLogData($apiRequest, $headers);
@@ -250,21 +253,37 @@ abstract class BaseApiClient
                 return Http::withHeaders($headers)->get($url, $options['query'] ?? [])->throw()->toPsrResponse();
             }
             if ($method === 'POST') {
-                $body = $options['json'] ?? $options['query'] ?? [];
+                $body = $this->testingRequestBody($options);
 
                 return Http::withHeaders($headers)->post($url, $body)->throw()->toPsrResponse();
             }
             if ($method === 'PUT') {
-                $body = $options['json'] ?? $options['query'] ?? [];
+                $body = $this->testingRequestBody($options);
 
                 return Http::withHeaders($headers)->put($url, $body)->throw()->toPsrResponse();
             }
             if ($method === 'DELETE') {
-                return Http::withHeaders($headers)->delete($url, $options['query'] ?? [])->throw()->toPsrResponse();
+                return Http::withHeaders($headers)->delete($url, $this->testingRequestBody($options))->throw()->toPsrResponse();
             }
         }
 
         return $this->httpRequest->request($method, $path, $options);
+    }
+
+    /** @return array<string, mixed> */
+    private function testingRequestBody(array $options): array
+    {
+        if (isset($options['json']) && is_array($options['json'])) {
+            return $options['json'];
+        }
+
+        if (isset($options['body']) && is_string($options['body'])) {
+            $decoded = json_decode($options['body'], associative: true, flags: JSON_THROW_ON_ERROR);
+
+            return is_array($decoded) ? $decoded : [];
+        }
+
+        return isset($options['query']) && is_array($options['query']) ? $options['query'] : [];
     }
 
     protected function handleRequestException(RequestException $e, ApiRequest $apiRequest, array $options, array &$logData, float $startTime): ResponseInterface

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Commands;
 
 use Illuminate\Console\Command;
+use Kraite\Core\Support\FreezeMode;
 use Kraite\Core\Support\MaintenanceMode;
 use StepDispatcher\Support\StepDispatcher;
 use StepDispatcher\Support\Steps;
@@ -28,7 +29,7 @@ final class DispatchDaemonCommand extends Command
         $this->info('Dispatch daemon started — '.count(self::GROUPS).' groups × 2 prefixes');
 
         while (true) {
-            if (! config('kraite.can_dispatch_steps')) {
+            if (FreezeMode::isActive() || ! config('kraite.can_dispatch_steps')) {
                 usleep($idleSleepMs * 1000);
 
                 continue;

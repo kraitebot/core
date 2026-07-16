@@ -567,7 +567,9 @@ trait InteractsWithApis
 
         // Find our position by symbol and direction
         $symbol = $this->position->exchangeSymbol->parsed_trading_pair;
-        $direction = mb_strtoupper($this->position->direction);
+        $direction = $account->isHedgeMode()
+            ? mb_strtoupper($this->position->direction)
+            : 'BOTH';
         $key = "{$symbol}:{$direction}";
 
         $positionData = $positions[$key] ?? [];

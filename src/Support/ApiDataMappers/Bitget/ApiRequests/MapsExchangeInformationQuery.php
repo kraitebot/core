@@ -6,19 +6,55 @@ namespace Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\ApiSystem;
+use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
+use UnexpectedValueException;
 
 trait MapsExchangeInformationQuery
 {
-    public function prepareQueryMarketDataProperties(ApiSystem $apiSystem): ApiProperties
+    public function prepareQueryMarketDataProperties(ApiSystem $apiSystem, ?string $quote = null): ApiProperties
     {
         $properties = new ApiProperties;
         $properties->set('relatable', $apiSystem);
-
-        // BitGet V2 requires productType for futures
-        $properties->set('options.productType', 'USDT-FUTURES');
+        $properties->set('options.productType', BitgetProductContext::fromQuote($quote)->productType);
 
         return $properties;
+    }
+
+    /**
+     * Merge complete product catalogues before any mapping or persistence.
+     *
+     * @param  list<Response>  $responses
+     */
+    public function mergeQueryMarketDataResponses(array $responses): Response
+    {
+        $contracts = [];
+
+        foreach ($responses as $response) {
+            $payload = json_decode((string) $response->getBody(), associative: true);
+            $productContracts = $payload['data'] ?? null;
+
+            if (! is_array($productContracts)) {
+                throw new UnexpectedValueException('Invalid Bitget futures catalogue response data.');
+            }
+
+            if ($productContracts === []) {
+                throw new UnexpectedValueException('Bitget futures catalogue response is empty.');
+            }
+
+            array_push($contracts, ...$productContracts);
+        }
+
+        return new Response(
+            200,
+            ['Content-Type' => 'application/json'],
+            json_encode([
+                'code' => '00000',
+                'msg' => 'success',
+                'requestTime' => now()->getTimestampMs(),
+                'data' => $contracts,
+            ], JSON_THROW_ON_ERROR)
+        );
     }
 
     /**

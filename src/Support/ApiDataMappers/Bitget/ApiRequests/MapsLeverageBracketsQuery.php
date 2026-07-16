@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\ApiSystem;
+use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 
 trait MapsLeverageBracketsQuery
@@ -17,11 +18,14 @@ trait MapsLeverageBracketsQuery
      *
      * @see https://www.bitget.com/api-doc/contract/position/Get-Query-Position-Lever
      */
-    public function prepareQueryLeverageBracketsDataProperties(ApiSystem $apiSystem, ?string $symbol = null): ApiProperties
-    {
+    public function prepareQueryLeverageBracketsDataProperties(
+        ApiSystem $apiSystem,
+        ?string $symbol = null,
+        ?string $quote = null
+    ): ApiProperties {
         $properties = new ApiProperties;
         $properties->set('relatable', $apiSystem);
-        $properties->set('options.productType', 'USDT-FUTURES');
+        $properties->set('options.productType', BitgetProductContext::fromQuote($quote)->productType);
 
         // BitGet can filter by symbol if provided
         if ($symbol) {

@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\Recovery;
 
 use Illuminate\Support\Str;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 use Throwable;
@@ -13,7 +14,7 @@ use Throwable;
 /**
  * BitgetPositionRecoverer
  *
- * Recovers a Bitget USDT-FUTURES account using the V2 endpoints:
+ * Recovers a Bitget USDT-FUTURES or USDC-FUTURES account using the V2 endpoints:
  *
  *   - GET /api/v2/mix/position/all-position           → open positions
  *   - GET /api/v2/mix/order/orders-pending            → live LIMIT/PROFIT
@@ -60,10 +61,11 @@ final class BitgetPositionRecoverer extends AbstractPositionRecoverer
      */
     protected function fetchOpenOrders(Position $position, array $exchangePosition): array
     {
-        $symbol = (string) ($exchangePosition['symbol'] ?? $position->parsed_trading_pair);
+        $symbol = (string) ($exchangePosition['symbol'] ?? $position->exchangeSymbol->asset);
 
-        $regular = $this->fetchPendingOrders($symbol);
-        $plan = $this->fetchPlanOrders($symbol);
+        $quote = $position->exchangeSymbol->quote;
+        $regular = $this->fetchPendingOrders($symbol, $quote);
+        $plan = $this->fetchPlanOrders($symbol, $quote);
 
         return [...$regular, ...$plan];
     }
@@ -83,13 +85,17 @@ final class BitgetPositionRecoverer extends AbstractPositionRecoverer
      */
     protected function fetchHistoricalFills(Position $position, array $exchangePosition): array
     {
-        $symbol = (string) ($exchangePosition['symbol'] ?? $position->parsed_trading_pair);
+        $symbol = (string) ($exchangePosition['symbol'] ?? $position->exchangeSymbol->asset);
         $positionAmt = (float) $this->absQuantity($exchangePosition);
 
         $properties = new ApiProperties;
         $properties->set('relatable', $position);
         $properties->set('account', $this->account);
         $properties->set('options.symbol', $symbol);
+        $properties->set(
+            'options.productType',
+            BitgetProductContext::fromQuote($position->exchangeSymbol->quote)->productType
+        );
 
         try {
             $response = $this->account->withApi()->accountTrades($properties);
@@ -307,13 +313,15 @@ final class BitgetPositionRecoverer extends AbstractPositionRecoverer
     /**
      * Live LIMIT / PROFIT-LIMIT / MARKET orders.
      */
-    protected function fetchPendingOrders(string $symbol): array
+    protected function fetchPendingOrders(string $symbol, string $quote): array
     {
+        $context = BitgetProductContext::fromQuote($quote);
+
         $properties = new ApiProperties;
         $properties->set('relatable', $this->account);
         $properties->set('account', $this->account);
         $properties->set('options.symbol', $symbol);
-        $properties->set('options.productType', 'USDT-FUTURES');
+        $properties->set('options.productType', $context->productType);
 
         try {
             $response = $this->account->withApi()->getCurrentOpenOrders($properties);
@@ -332,13 +340,15 @@ final class BitgetPositionRecoverer extends AbstractPositionRecoverer
     /**
      * Live plan orders (STOP-MARKET, position TP/SL).
      */
-    protected function fetchPlanOrders(string $symbol): array
+    protected function fetchPlanOrders(string $symbol, string $quote): array
     {
+        $context = BitgetProductContext::fromQuote($quote);
+
         $properties = new ApiProperties;
         $properties->set('relatable', $this->account);
         $properties->set('account', $this->account);
         $properties->set('options.symbol', $symbol);
-        $properties->set('options.productType', 'USDT-FUTURES');
+        $properties->set('options.productType', $context->productType);
         // profit_loss covers BOTH stop-loss and take-profit plan types,
         // including the position-level pos_profit / pos_loss flavours
         // that Bitget attaches via place-pos-tpsl.

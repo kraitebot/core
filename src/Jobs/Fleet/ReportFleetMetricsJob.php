@@ -14,6 +14,7 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 use Kraite\Core\Support\Fleet\FleetMetricsCollector;
 use Kraite\Core\Support\Fleet\FleetMetricsRepository;
+use Kraite\Core\Support\FreezeMode;
 use Throwable;
 
 /**
@@ -79,6 +80,10 @@ final class ReportFleetMetricsJob implements ShouldBeUniqueUntilProcessing, Shou
      */
     public static function seed(string $hostname): void
     {
+        if (FreezeMode::isActive()) {
+            return;
+        }
+
         self::routed($hostname);
     }
 
@@ -116,6 +121,10 @@ final class ReportFleetMetricsJob implements ShouldBeUniqueUntilProcessing, Shou
 
     public function handle(FleetMetricsCollector $collector, FleetMetricsRepository $repository): void
     {
+        if (FreezeMode::isActive()) {
+            return;
+        }
+
         try {
             $payload = $collector->collect($this->hostname, config('kraite.server_role'));
             $repository->write($this->hostname, $payload);
@@ -137,6 +146,10 @@ final class ReportFleetMetricsJob implements ShouldBeUniqueUntilProcessing, Shou
      */
     private function scheduleNext(): void
     {
+        if (FreezeMode::isActive()) {
+            return;
+        }
+
         // The sync driver runs dispatched jobs inline and ignores delay(), so
         // re-dispatching here would recurse forever. The heartbeat only makes
         // sense on a real queue (redis/Horizon) anyway — on sync we write one
