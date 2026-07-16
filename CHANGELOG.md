@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.73.2 - 2026-07-16
+
+### Deployment safety
+
+- [FIXED] Fresh migrations also skip slow-query notification before the
+  Kraite settings table itself exists.
+
 ## 1.73.1 - 2026-07-16
 
 ### Deployment safety

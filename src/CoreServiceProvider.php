@@ -405,7 +405,7 @@ final class CoreServiceProvider extends ServiceProvider
         // slow_queries exists but before the singleton admin row is seeded.
         // Keep the audit row above, but notification delivery cannot be built
         // until Kraite::admin() has an id=1 source record.
-        if (! Kraite::query()->whereKey(1)->exists()) {
+        if (! Schema::hasTable('kraite') || ! Kraite::query()->whereKey(1)->exists()) {
             return;
         }
 
