@@ -16,17 +16,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Checkout brunocfalcao/step-dispatcher
-        uses: actions/checkout@v4
-        with:
-          repository: brunocfalcao/step-dispatcher
-          path: packages/brunocfalcao/step-dispatcher
-
-      - name: Checkout brunocfalcao/laravel-helpers
-        uses: actions/checkout@v4
-        with:
-          repository: brunocfalcao/laravel-helpers
-          path: packages/brunocfalcao/laravel-helpers
+      - name: Checkout local packages
+        run: |
+          git clone --depth 1 https://github.com/brunocfalcao/step-dispatcher.git packages/brunocfalcao/step-dispatcher
+          git clone --depth 1 https://github.com/brunocfalcao/laravel-helpers.git packages/brunocfalcao/laravel-helpers
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
