@@ -707,26 +707,15 @@ return [
         ],
 
         'bitget' => [
-            // Minimum delay between requests in milliseconds
-            'min_delay_ms' => (int) env('BITGET_THROTTLER_MIN_DELAY_MS', 50),
-
-            // Safety threshold: stop making requests when reaching this percentage of limit (0.0-1.0)
-            // 0.85 = stop at 85% to leave 15% buffer before hitting the limit
+            // Optional floor above the endpoint-derived delay.
+            'min_delay_ms' => (int) env('BITGET_THROTTLER_MIN_DELAY_MS', 0),
             'safety_threshold' => (float) env('BITGET_THROTTLER_SAFETY_THRESHOLD', 0.85),
-
-            // Rate limit configuration
-            // BITGET FUTURES API OFFICIAL LIMITS:
-            // - Overall: 6000 requests per minute per IP
-            // - Public endpoints: 20 requests per second per IP
-            // - Private endpoints: 10 requests per second for orders
-            // - We use a conservative per-minute limit
-            //
-            // PROFILE GUIDE:
-            // Conservative (75% capacity): 75 req/min, 100ms delay
-            // Balanced (85% capacity): 90 req/min, 50ms delay
-            // Aggressive (95% capacity): 100 req/min, 25ms delay
-            'requests_per_window' => (int) env('BITGET_THROTTLER_REQUESTS_PER_WINDOW', 90), // Conservative for our workload
-            'window_seconds' => (int) env('BITGET_THROTTLER_WINDOW_SECONDS', 60),
+            'public_requests_per_second' => (int) env('BITGET_PUBLIC_REQUESTS_PER_SECOND', 20),
+            'position_tier_requests_per_second' => (int) env('BITGET_POSITION_TIER_REQUESTS_PER_SECOND', 10),
+            'private_requests_per_second' => (int) env('BITGET_PRIVATE_REQUESTS_PER_SECOND', 10),
+            'position_requests_per_second' => (int) env('BITGET_POSITION_REQUESTS_PER_SECOND', 5),
+            'position_history_requests_per_second' => (int) env('BITGET_POSITION_HISTORY_REQUESTS_PER_SECOND', 20),
+            'flash_close_requests_per_second' => (int) env('BITGET_FLASH_CLOSE_REQUESTS_PER_SECOND', 1),
         ],
     ],
 

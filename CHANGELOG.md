@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.73.7 - 2026-07-18
+
+### Bitget request pacing
+
+- [FIXED] Every real Bitget HTTP attempt now reserves an endpoint-specific
+  rate-limit slot, including multi-call jobs and internal client retries.
+- [FIXED] Public requests coordinate by source IP while signed requests
+  coordinate by API key. Signed retries receive a fresh timestamp and
+  signature after waiting.
+
+### Token selection
+
+- [FIXED] Fast-track re-entry considers only cleanly `closed` positions.
+  `cancelled` and `failed` histories cannot bypass normal scoring.
+
 ## 1.73.6 - 2026-07-17
 
 ### Release reliability

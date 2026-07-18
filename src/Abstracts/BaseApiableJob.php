@@ -7,6 +7,7 @@ namespace Kraite\Core\Abstracts;
 use Exception;
 use Kraite\Core\Concerns\BaseApiableJob\HandlesApiJobExceptions;
 use Kraite\Core\Concerns\BaseApiableJob\HandlesApiJobLifecycle;
+use Kraite\Core\Contracts\ClientLevelApiThrottler;
 use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Models\ForbiddenHostname;
 use Kraite\Core\Support\Proxies\ApiThrottlerProxy;
@@ -108,6 +109,10 @@ abstract class BaseApiableJob extends BaseQueueableJob
             }
         }
 
+        if (is_subclass_of($throttler, ClientLevelApiThrottler::class)) {
+            return true;
+        }
+
         // 2. Base-class check — window cap + min-delay. Returns milliseconds.
         $retryCount = $this->step->retries ?? 0;
         $msToWait = $throttler::canDispatch($retryCount, $accountId, $stepId);
@@ -197,7 +202,7 @@ abstract class BaseApiableJob extends BaseQueueableJob
             // Automatically record API dispatch BEFORE calling computeApiable()
             $throttler = $this->getThrottlerForApiSystem();
 
-            if ($throttler) {
+            if ($throttler && ! is_subclass_of($throttler, ClientLevelApiThrottler::class)) {
                 // Extract account ID for per-account rate limit tracking
                 $accountId = $this->exceptionHandler->account?->id;
                 $stepId = $this->step->id;

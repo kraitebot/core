@@ -7,8 +7,11 @@ namespace Kraite\Core\Support\ApiClients\REST;
 use Kraite\Core\Abstracts\BaseApiClient;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\ApiSystem;
+use Kraite\Core\Support\Throttlers\BitgetThrottler;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use Kraite\Core\Support\ValueObjects\ApiRequest;
+use Psr\Http\Message\ResponseInterface;
+use RuntimeException;
 
 /**
  * BitgetApiClient
@@ -63,8 +66,7 @@ final class BitgetApiClient extends BaseApiClient
      */
     public function signRequest(ApiRequest $apiRequest)
     {
-        $timestamp = (string) round(microtime(true) * 1000);
-        $method = strtoupper($apiRequest->method);
+        $method = mb_strtoupper($apiRequest->method);
         $endpoint = $apiRequest->path;
 
         // Build query string for GET requests or body for POST
@@ -73,29 +75,19 @@ final class BitgetApiClient extends BaseApiClient
         $body = '';
 
         if ($method === 'GET' && ! empty($options)) {
-            $queryString = '?' . http_build_query($options);
+            $queryString = '?'.http_build_query($options);
         } elseif (in_array($method, ['POST', 'PUT', 'DELETE']) && ! empty($options)) {
-            $body = json_encode($options);
+            $body = json_encode($options, JSON_THROW_ON_ERROR);
             $apiRequest->properties->set('body', $body);
         }
 
-        // BitGet signature algorithm:
-        // 1. Concatenate: timestamp + method + endpoint + queryString + body
-        $stringToSign = $timestamp . $method . $endpoint . $queryString . $body;
-
-        // 2. HMAC-SHA256 with API secret
-        $secret = $this->credentials->get('api_secret');
-        $signature = base64_encode(hash_hmac('sha256', $stringToSign, $secret, true));
-
-        // Add authentication headers (passphrase is plain text, NOT encrypted like KuCoin)
-        $apiRequest->properties->set('headers.ACCESS-KEY', $this->credentials->get('api_key'));
-        $apiRequest->properties->set('headers.ACCESS-SIGN', $signature);
-        $apiRequest->properties->set('headers.ACCESS-TIMESTAMP', $timestamp);
-        $apiRequest->properties->set('headers.ACCESS-PASSPHRASE', $this->credentials->get('passphrase'));
+        foreach ($this->signatureHeaders($method, $endpoint.$queryString, $body) as $name => $value) {
+            $apiRequest->properties->set("headers.{$name}", $value);
+        }
 
         // Update path to include query string for GET requests
         if ($method === 'GET' && ! empty($options)) {
-            $apiRequest->path = $endpoint . $queryString;
+            $apiRequest->path = $endpoint.$queryString;
             $apiRequest->properties->delete('options');
         }
 
@@ -113,5 +105,68 @@ final class BitgetApiClient extends BaseApiClient
             'Accept' => 'application/json',
             'locale' => 'en-US',
         ];
+    }
+
+    /**
+     * Pace every real attempt, including BaseApiClient's internal retry.
+     *
+     * ACCESS-KEY is present only on signed calls. Public calls therefore use
+     * the per-IP budget while private calls use the per-UID key.
+     *
+     * @param  array<string, mixed>  $options
+     */
+    protected function executeHttpRequest(string $method, string $path, array $options): ResponseInterface
+    {
+        $apiKey = data_get($options, 'headers.ACCESS-KEY');
+        $apiKey = is_string($apiKey) && $apiKey !== '' ? $apiKey : null;
+
+        BitgetThrottler::throttleRequest($path, $apiKey);
+
+        if ($apiKey !== null) {
+            $body = data_get($options, 'body');
+            $headers = data_get($options, 'headers');
+            $options['headers'] = array_merge(
+                is_array($headers) ? $headers : [],
+                $this->signatureHeaders(
+                    mb_strtoupper($method),
+                    $path,
+                    is_string($body) ? $body : ''
+                )
+            );
+        }
+
+        return parent::executeHttpRequest($method, $path, $options);
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function signatureHeaders(string $method, string $path, string $body): array
+    {
+        $timestamp = (string) now()->getTimestampMs();
+        $signature = base64_encode(hash_hmac(
+            'sha256',
+            $timestamp.$method.$path.$body,
+            $this->credential('api_secret'),
+            true
+        ));
+
+        return [
+            'ACCESS-KEY' => $this->credential('api_key'),
+            'ACCESS-SIGN' => $signature,
+            'ACCESS-TIMESTAMP' => $timestamp,
+            'ACCESS-PASSPHRASE' => $this->credential('passphrase'),
+        ];
+    }
+
+    private function credential(string $key): string
+    {
+        $value = $this->credentials?->get($key);
+
+        if (! is_string($value) || $value === '') {
+            throw new RuntimeException("Bitget credential [{$key}] is missing.");
+        }
+
+        return $value;
     }
 }

@@ -52,7 +52,7 @@ use Kraite\Core\Trading\Kraite;
  * - positions() relationship returning Position models
  * - tradeConfiguration property for timeframes
  * - availableExchangeSymbols() method returning usable ExchangeSymbols
- * - fastTrackedPositions() returning recently profitable positions
+ * - fastTrackedPositions() returning recently closed positions
  */
 trait HasTokenDiscovery
 {
@@ -432,7 +432,6 @@ trait HasTokenDiscovery
              * Fast-tracked positions are those that:
              * - Closed recently (within last hour by default)
              * - Had quick duration (<10 minutes by default)
-             * - Were profitable
              *
              * Fast-tracked symbols ONLY verify direction match.
              * They skip correlation/elasticity checks entirely.
@@ -534,8 +533,8 @@ trait HasTokenDiscovery
          * Fast-Track Symbol Selection
          *
          * Purpose:
-         * Prioritize tokens from recently profitable quick trades.
-         * Assumes tokens that closed profitably in <10 minutes still have momentum.
+         * Prioritize tokens from recent, quickly closed positions.
+         * Assumes a token that completed quickly may still have momentum.
          *
          * IMPORTANT: Fast-tracked symbols ONLY check:
          * 1. Direction match (verify it hasn't changed since the fast trade)
@@ -543,7 +542,7 @@ trait HasTokenDiscovery
          * 3. Available in pool
          *
          * They SKIP correlation/elasticity checks entirely.
-         * This is intentional - proven momentum trumps theoretical scoring.
+         * This is intentional - recent momentum trumps theoretical scoring.
          */
 
         $fastTracked = $this->fastTrackedPositions()->where('direction', $direction);

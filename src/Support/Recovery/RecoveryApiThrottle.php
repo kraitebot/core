@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Support\Recovery;
 
+use Kraite\Core\Contracts\ClientLevelApiThrottler;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Support\Proxies\ApiThrottlerProxy;
 
@@ -43,7 +44,7 @@ final class RecoveryApiThrottle
         /** @var class-string|null $throttler */
         $throttler = ApiThrottlerProxy::getThrottler($account->apiSystem->canonical);
 
-        if ($throttler === null) {
+        if ($throttler === null || is_subclass_of($throttler, ClientLevelApiThrottler::class)) {
             return $apiCall();
         }
 

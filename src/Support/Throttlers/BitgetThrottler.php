@@ -6,84 +6,114 @@ namespace Kraite\Core\Support\Throttlers;
 
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Sleep;
+use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseApiThrottler;
+use Kraite\Core\Contracts\ClientLevelApiThrottler;
+use Kraite\Core\Models\Kraite;
 use Psr\Http\Message\ResponseInterface;
+use RuntimeException;
 use Throwable;
+use UnexpectedValueException;
 
 /**
  * BitgetThrottler
  *
- * Rate limiter for BitGet Futures API based on their documented limits:
+ * Request-level limiter for Bitget Classic Futures V2:
  * - Public endpoints: 20 requests per second per IP
- * - Private endpoints: 10 requests per second per IP (orders)
- * - Overall: 6000 requests per minute per IP
+ * - Most private endpoints: 10 requests per second per UID
+ * - Positions and account configuration: 5 requests per second per UID
+ * - Flash close: 1 request per second per UID
  *
- * BitGet Ban Behavior:
- * - Exceeding limits triggers HTTP 429 "Too Many Requests"
- * - Ban duration varies based on severity
- *
- * This throttler:
- * 1. Enforces conservative rate limiting to stay under 90 req/min (85% of safe limit)
- * 2. Tracks IP ban status (429 responses)
- * 3. Enforces minimum delays between requests
- * 4. Uses sliding window to prevent bursts
- *
- * Usage:
- *   $secondsToWait = BitgetThrottler::canDispatch();
- *   if ($secondsToWait > 0) {
- *       // Throttled - retry later
- *       $this->retryJob(now()->addSeconds($secondsToWait));
- *       return;
- *   }
- *   BitgetThrottler::recordDispatch();
- *   // Make API request...
- *   BitgetThrottler::recordResponseHeaders($response); // Optional
+ * Reservations happen immediately before every HTTP attempt. This is
+ * intentionally below jobs and recovery services: one job may make several
+ * requests, and BaseApiClient may retry internally.
  */
-final class BitgetThrottler extends BaseApiThrottler
+final class BitgetThrottler extends BaseApiThrottler implements ClientLevelApiThrottler
 {
+    private const RESERVATION_TTL_BUFFER_MS = 60_000;
+
+    private const RESERVATION_LOCK_SECONDS = 10;
+
+    private const RESERVATION_LOCK_WAIT_SECONDS = 5;
+
     /**
-     * Pre-flight safety check called before canDispatch().
-     * Checks IP ban status, minimum delay, and rate limit threshold.
+     * Atomically reserve and pace one real Bitget HTTP attempt.
      *
-     * @param  int|null  $accountId  Optional account ID (not used by BitGet - all limits are IP-based)
-     * @param  int|string|null  $stepId  Optional step ID for throttle logging
-     * @return int Seconds to wait, or 0 if safe to proceed
+     * Public calls share the server-IP budget. Signed calls share the UID
+     * budget using a one-way hash of the API key, which is a safer UID proxy
+     * than the local account ID when credentials are reused.
      */
-    /**
-     * Pre-flight safety check — returns milliseconds to wait, or 0 if OK.
-     */
-    public static function isSafeToDispatch(?int $accountId = null, int|string|null $stepId = null): int
+    public static function throttleRequest(string $path, ?string $apiKey): void
     {
-        $prefix = self::getCacheKeyPrefix();
+        if (self::isCurrentlyBanned()) {
+            $banWaitSeconds = self::getSecondsUntilBanLifts();
 
-        $ip = self::getCurrentIp();
-        $minDelayMs = (int) config('kraite.throttlers.bitget.min_delay_ms', 0);
-
-        if ($minDelayMs > 0) {
-            $lastRequestTs = Cache::get("bitget:{$ip}:last_request");
-            $lastDispatch = Cache::get($prefix.':last_dispatch');
-
-            $nowMs = (int) round(now()->getPreciseTimestamp(3));
-            $elapsedMs = PHP_INT_MAX;
-
-            if ($lastRequestTs) {
-                $elapsedMs = min($elapsedMs, ($nowMs / 1000 - (int) $lastRequestTs) * 1000);
+            if ($banWaitSeconds <= 0) {
+                throw new RuntimeException('Bitget request blocked because its IP-ban state is unavailable.');
             }
 
-            if ($lastDispatch instanceof \Illuminate\Support\Carbon) {
-                $elapsedMs = min(
-                    $elapsedMs,
-                    abs(now()->diffInMilliseconds($lastDispatch, false))
-                );
-            }
-
-            if ($elapsedMs < $minDelayMs) {
-                return $minDelayMs - (int) $elapsedMs;
-            }
+            Sleep::for($banWaitSeconds)->seconds();
         }
 
+        $endpoint = Str::before($path, '?');
+        $requestsPerSecond = self::requestsPerSecond($endpoint, $apiKey !== null);
+        $intervalMs = self::intervalMilliseconds($requestsPerSecond);
+        $scope = self::requestScope($apiKey);
+        $reservationKey = sprintf(
+            '%s:request:%s:%s',
+            self::getCacheKeyPrefix(),
+            $scope,
+            hash('sha256', $endpoint)
+        );
+
+        $reservation = Cache::lock(
+            $reservationKey.':lock',
+            self::RESERVATION_LOCK_SECONDS
+        )->block(
+            self::RESERVATION_LOCK_WAIT_SECONDS,
+            static function () use ($reservationKey, $intervalMs): int {
+                $nowMs = (int) round(now()->getPreciseTimestamp(3));
+                $cachedNextAvailableAtMs = Cache::get($reservationKey, $nowMs);
+
+                if (! is_int($cachedNextAvailableAtMs)) {
+                    throw new UnexpectedValueException('Bitget throttle reservation cache value must be an integer.');
+                }
+
+                $nextAvailableAtMs = max(
+                    $nowMs,
+                    $cachedNextAvailableAtMs
+                );
+                $newNextAvailableAtMs = $nextAvailableAtMs + $intervalMs;
+                $waitMs = $nextAvailableAtMs - $nowMs;
+                $ttlMs = $waitMs + $intervalMs + self::RESERVATION_TTL_BUFFER_MS;
+
+                Cache::put(
+                    $reservationKey,
+                    $newNextAvailableAtMs,
+                    now()->addMilliseconds($ttlMs)
+                );
+
+                return $waitMs;
+            }
+        );
+
+        if (! is_int($reservation)) {
+            throw new UnexpectedValueException('Bitget throttle reservation wait must be an integer.');
+        }
+
+        $waitMs = $reservation;
+
+        if ($waitMs > 0) {
+            Sleep::for($waitMs)->milliseconds();
+        }
+    }
+
+    /** Pre-flight ban check for queue routing. Request pacing lives in the client. */
+    public static function isSafeToDispatch(?int $accountId = null, int|string|null $stepId = null): int
+    {
         if (self::isCurrentlyBanned()) {
-            return self::getSecondsUntilBanLifts() * 1000;
+            return max(5, self::getSecondsUntilBanLifts()) * 1000;
         }
 
         return 0;
@@ -92,17 +122,16 @@ final class BitgetThrottler extends BaseApiThrottler
     /**
      * Record BitGet response headers.
      * BitGet doesn't provide specific rate limit headers,
-     * but we track request timestamps for minimum delay enforcement.
+     * but the timestamp remains useful for operational diagnostics.
      *
      * @param  ResponseInterface  $response  The API response
-     * @param  int|null  $accountId  Optional account ID (not used by BitGet - all limits are IP-based)
+     * @param  int|null  $accountId  Optional account ID (not used here)
      */
     public static function recordResponseHeaders(ResponseInterface $response, ?int $accountId = null): void
     {
         try {
             $ip = self::getCurrentIp();
 
-            // Record last request timestamp for minimum delay enforcement
             Cache::put("bitget:{$ip}:last_request", now()->timestamp, 60);
         } catch (Throwable $e) {
             // Fail silently - don't break the application if Cache fails
@@ -118,7 +147,11 @@ final class BitgetThrottler extends BaseApiThrottler
             $ip = self::getCurrentIp();
             $bannedUntil = Cache::get("bitget:{$ip}:banned_until");
 
-            return $bannedUntil && now()->timestamp < (int) $bannedUntil;
+            if ($bannedUntil === null) {
+                return false;
+            }
+
+            return ! is_int($bannedUntil) || now()->getTimestamp() < $bannedUntil;
         } catch (Throwable $e) {
             // Fail CLOSED on cache failure — see BinanceThrottler for the
             // full rationale.
@@ -151,25 +184,23 @@ final class BitgetThrottler extends BaseApiThrottler
         }
     }
 
-    /**
-     * BitGet Rate Limits (configurable via config/kraite.php)
-     *
-     * Default configuration: Balanced settings to avoid 429 ban
-     * - Overall: 6000 requests per minute per IP
-     * - We use 90/min to stay safe (conservative limit)
-     * - Uses sliding window algorithm for burst protection
-     *
-     * To adjust, update config/kraite.php:
-     * 'throttlers.bitget.requests_per_window'
-     * 'throttlers.bitget.window_seconds'
-     */
+    /** Compatibility fallback; active Bitget pacing uses throttleRequest(). */
     protected static function getRateLimitConfig(): array
     {
         return [
-            'requests_per_window' => config('kraite.throttlers.bitget.requests_per_window', 90),
-            'window_seconds' => config('kraite.throttlers.bitget.window_seconds', 60),
-            'min_delay_between_requests_ms' => config('kraite.throttlers.bitget.min_delay_ms', 50),
-            'safety_threshold' => config('kraite.throttlers.bitget.safety_threshold', 0.85),
+            'requests_per_window' => self::integerConfig(
+                'kraite.throttlers.bitget.public_requests_per_second',
+                20
+            ),
+            'window_seconds' => 1,
+            'min_delay_between_requests_ms' => self::integerConfig(
+                'kraite.throttlers.bitget.min_delay_ms',
+                0
+            ),
+            'safety_threshold' => self::floatConfig(
+                'kraite.throttlers.bitget.safety_threshold',
+                0.85
+            ),
         ];
     }
 
@@ -187,8 +218,8 @@ final class BitgetThrottler extends BaseApiThrottler
             $ip = self::getCurrentIp();
             $bannedUntil = Cache::get("bitget:{$ip}:banned_until");
 
-            if ($bannedUntil) {
-                return max(0, (int) $bannedUntil - now()->timestamp);
+            if (is_int($bannedUntil)) {
+                return max(0, $bannedUntil - now()->getTimestamp());
             }
 
             return 0;
@@ -202,6 +233,88 @@ final class BitgetThrottler extends BaseApiThrottler
      */
     protected static function getCurrentIp(): string
     {
-        return \Kraite\Core\Models\Kraite::ip();
+        return Kraite::ip();
+    }
+
+    private static function requestsPerSecond(string $endpoint, bool $signed): int
+    {
+        if (! $signed) {
+            return match ($endpoint) {
+                '/api/v2/mix/market/query-position-lever' => self::integerConfig(
+                    'kraite.throttlers.bitget.position_tier_requests_per_second',
+                    10
+                ),
+                default => self::integerConfig(
+                    'kraite.throttlers.bitget.public_requests_per_second',
+                    20
+                ),
+            };
+        }
+
+        return match ($endpoint) {
+            '/api/v2/mix/order/close-positions' => self::integerConfig(
+                'kraite.throttlers.bitget.flash_close_requests_per_second',
+                1
+            ),
+            '/api/v2/mix/position/all-position',
+            '/api/v2/mix/account/set-leverage',
+            '/api/v2/mix/account/set-margin-mode' => self::integerConfig(
+                'kraite.throttlers.bitget.position_requests_per_second',
+                5
+            ),
+            '/api/v2/mix/position/history-position' => self::integerConfig(
+                'kraite.throttlers.bitget.position_history_requests_per_second',
+                20
+            ),
+            default => self::integerConfig(
+                'kraite.throttlers.bitget.private_requests_per_second',
+                10
+            ),
+        };
+    }
+
+    private static function intervalMilliseconds(int $requestsPerSecond): int
+    {
+        $safeRequestsPerSecond = max(1, $requestsPerSecond);
+        $safetyThreshold = min(
+            1.0,
+            max(0.01, self::floatConfig('kraite.throttlers.bitget.safety_threshold', 0.85))
+        );
+        $minimumDelayMs = max(
+            0,
+            self::integerConfig('kraite.throttlers.bitget.min_delay_ms', 0)
+        );
+
+        return max(
+            $minimumDelayMs,
+            (int) ceil(1000 / ($safeRequestsPerSecond * $safetyThreshold))
+        );
+    }
+
+    private static function requestScope(?string $apiKey): string
+    {
+        if ($apiKey !== null && $apiKey !== '') {
+            return 'uid:'.hash('sha256', $apiKey);
+        }
+
+        return 'ip:'.hash('sha256', self::getCurrentIp());
+    }
+
+    private static function integerConfig(string $key, int $default): int
+    {
+        $value = config($key, $default);
+
+        return is_int($value) ? $value : $default;
+    }
+
+    private static function floatConfig(string $key, float $default): float
+    {
+        $value = config($key, $default);
+
+        if (is_float($value)) {
+            return $value;
+        }
+
+        return is_int($value) ? (float) $value : $default;
     }
 }

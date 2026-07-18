@@ -28,15 +28,14 @@ trait HasCollections
     }
 
     /**
-     * Returns positions that were fast traded. Used to open new fast trade
-     * positions again, if possible.
+     * Returns recently closed positions eligible for fast-track re-entry.
      */
     public function fastTrackedPositions(): Collection
     {
         $config = $this->tradeConfiguration;
 
         return $this->positions()
-            ->nonActive()
+            ->where('positions.status', 'closed')
             ->where('positions.closed_at', '>=', now()->subSeconds($config->fast_trade_position_closed_age_seconds))
             ->whereRaw(
                 'TIMESTAMPDIFF(SECOND, positions.opened_at, positions.closed_at) <= ?',
