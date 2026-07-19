@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.75.0 - 2026-07-19
+
+### Mobile API authentication
+
+- [ADDED] Shared schema now stores expiring, ability-scoped personal access
+  tokens for the first-party mobile API.
+
 ## 1.74.0 - 2026-07-19
 
 ### Bitget position opening
