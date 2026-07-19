@@ -16,7 +16,7 @@ use Kraite\Core\Support\ValueObjects\ApiProperties;
  * Unlike plan orders, this doesn't require a size parameter - it automatically
  * applies to the entire position and adjusts when position size changes.
  *
- * @see https://www.bitget.com/api-doc/contract/position/Set-Position-Tpsl
+ * @see https://www.bitget.com/api-doc/classic/contract/plan/Place-Pos-Tpsl-Order
  */
 trait MapsPlacePosTpsl
 {
@@ -30,10 +30,15 @@ trait MapsPlacePosTpsl
      * @param  string  $tpPrice  Take-profit trigger price
      * @param  string  $slPrice  Stop-loss trigger price
      *
-     * @see https://www.bitget.com/api-doc/contract/position/Set-Position-Tpsl
+     * @see https://www.bitget.com/api-doc/classic/contract/plan/Place-Pos-Tpsl-Order
      */
-    public function preparePlacePosTpslProperties(Position $position, string $tpPrice, string $slPrice): ApiProperties
-    {
+    public function preparePlacePosTpslProperties(
+        Position $position,
+        string $tpPrice,
+        string $slPrice,
+        ?string $profitClientOrderId = null,
+        ?string $stopLossClientOrderId = null,
+    ): ApiProperties {
         $properties = new ApiProperties;
         $properties->set('relatable', $position);
         $properties->set('options.symbol', (string) $position->exchangeSymbol->asset);
@@ -48,11 +53,17 @@ trait MapsPlacePosTpsl
         // Take Profit parameters
         $properties->set('options.stopSurplusTriggerPrice', (string) api_format_price($tpPrice, $position->exchangeSymbol));
         $properties->set('options.stopSurplusTriggerType', 'mark_price');
+        if ($profitClientOrderId !== null && $profitClientOrderId !== '') {
+            $properties->set('options.stopSurplusClientOid', $profitClientOrderId);
+        }
         // Omit stopSurplusExecutePrice for market execution (default behavior)
 
         // Stop Loss parameters
         $properties->set('options.stopLossTriggerPrice', (string) api_format_price($slPrice, $position->exchangeSymbol));
         $properties->set('options.stopLossTriggerType', 'mark_price');
+        if ($stopLossClientOrderId !== null && $stopLossClientOrderId !== '') {
+            $properties->set('options.stopLossClientOid', $stopLossClientOrderId);
+        }
         // Omit stopLossExecutePrice for market execution (default behavior)
 
         return $properties;
@@ -61,31 +72,61 @@ trait MapsPlacePosTpsl
     /**
      * Resolve Bitget place position TP/SL response.
      *
-     * Note: The response only confirms the operation succeeded.
-     * The actual TP/SL order IDs are returned via position query (takeProfitId, stopLossId).
-     *
      * Bitget V2 response structure:
      * {
      *     "code": "00000",
      *     "msg": "success",
      *     "requestTime": 1627116936176,
-     *     "data": {
-     *         "symbol": "BTCUSDT",
-     *         "holdSide": "long"
-     *     }
+     *     "data": [
+     *         {"orderId": "123", "stopSurplusClientOid": "profit-client-id"},
+     *         {"orderId": "456", "stopLossClientOid": "stop-client-id"}
+     *     ]
      * }
      */
     public function resolvePlacePosTpslResponse(Response $response): array
     {
         $data = json_decode((string) $response->getBody(), associative: true);
         $responseData = $data['data'] ?? [];
-
         $success = ($data['code'] ?? '') === '00000';
+        $ordersByClientOid = [];
+        $candidateOrderIds = [];
+
+        if (is_array($responseData) && array_is_list($responseData)) {
+            foreach ($responseData as $orderData) {
+                if (! is_array($orderData)) {
+                    continue;
+                }
+
+                $orderId = $orderData['orderId'] ?? null;
+                if (! is_string($orderId) || $orderId === '') {
+                    continue;
+                }
+
+                foreach (['clientOid', 'stopSurplusClientOid', 'stopLossClientOid'] as $clientIdField) {
+                    $clientOrderId = $orderData[$clientIdField] ?? null;
+
+                    if (is_string($clientOrderId) && $clientOrderId !== '') {
+                        $candidateOrderIds[$clientOrderId][$orderId] = true;
+                    }
+                }
+            }
+        }
+
+        foreach ($candidateOrderIds as $clientOrderId => $orderIds) {
+            if (count($orderIds) === 1) {
+                $ordersByClientOid[$clientOrderId] = array_key_first($orderIds);
+            }
+        }
 
         return [
             'success' => $success,
-            'symbol' => $responseData['symbol'] ?? null,
-            'holdSide' => $responseData['holdSide'] ?? null,
+            'ordersByClientOid' => $ordersByClientOid,
+            'symbol' => is_array($responseData) && ! array_is_list($responseData)
+                ? ($responseData['symbol'] ?? null)
+                : null,
+            'holdSide' => is_array($responseData) && ! array_is_list($responseData)
+                ? ($responseData['holdSide'] ?? null)
+                : null,
             '_raw' => $data,
         ];
     }

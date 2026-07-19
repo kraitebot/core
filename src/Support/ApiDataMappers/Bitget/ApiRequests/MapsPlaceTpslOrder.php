@@ -50,11 +50,13 @@ trait MapsPlaceTpslOrder
             // Stop Loss parameters only
             $properties->set('options.stopLossTriggerPrice', (string) api_format_price($order->price, $order->position->exchangeSymbol));
             $properties->set('options.stopLossTriggerType', 'mark_price');
+            $properties->set('options.stopLossClientOid', (string) $order->client_order_id);
             // Omit stopLossExecutePrice for market execution (default behavior)
         } else {
             // Take Profit parameters only
             $properties->set('options.stopSurplusTriggerPrice', (string) api_format_price($order->price, $order->position->exchangeSymbol));
             $properties->set('options.stopSurplusTriggerType', 'mark_price');
+            $properties->set('options.stopSurplusClientOid', (string) $order->client_order_id);
             // Omit stopSurplusExecutePrice for market execution (default behavior)
         }
 
@@ -64,34 +66,38 @@ trait MapsPlaceTpslOrder
     /**
      * Resolve Bitget place-pos-tpsl response.
      *
-     * Note: This endpoint doesn't return the orderId directly.
-     * The orderId must be fetched by querying the position afterwards.
-     *
      * Bitget V2 response structure:
      * {
      *     "code": "00000",
      *     "msg": "success",
-     *     "data": {
-     *         "symbol": "MASKUSDT",
-     *         "holdSide": "long"
-     *     }
+     *     "data": [{"orderId": "123", "stopLossClientOid": "local-client-id"}]
      * }
      */
     public function resolvePlaceTpslOrderResponse(Response $response): array
     {
         $data = json_decode((string) $response->getBody(), associative: true);
         $responseData = $data['data'] ?? [];
-
         $success = ($data['code'] ?? '') === '00000';
+        $orderData = is_array($responseData) && array_is_list($responseData)
+            ? ($responseData[0] ?? [])
+            : $responseData;
+        $orderData = is_array($orderData) ? $orderData : [];
+        $orderId = $orderData['orderId'] ?? null;
+        $clientOrderId = collect([
+            $orderData['clientOid'] ?? null,
+            $orderData['stopSurplusClientOid'] ?? null,
+            $orderData['stopLossClientOid'] ?? null,
+        ])->first(static fn (mixed $value): bool => is_string($value) && $value !== '');
 
         return [
             'success' => $success,
-            'orderId' => null, // Must be fetched from position query
-            'symbol' => $responseData['symbol'] ?? null,
-            'holdSide' => $responseData['holdSide'] ?? null,
+            'orderId' => is_string($orderId) && $orderId !== '' ? $orderId : null,
+            'clientOid' => is_string($clientOrderId) && $clientOrderId !== '' ? $clientOrderId : null,
+            'symbol' => $orderData['symbol'] ?? null,
+            'holdSide' => $orderData['holdSide'] ?? null,
             'status' => $success ? 'NEW' : 'FAILED',
             '_isPositionTpsl' => true,
-            '_requiresOrderIdFetch' => true,
+            '_requiresOrderIdFetch' => ! is_string($orderId) || $orderId === '',
             '_raw' => $data,
         ];
     }

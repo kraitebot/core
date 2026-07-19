@@ -7,9 +7,11 @@ namespace Kraite\Core\Concerns\Account;
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 use Kraite\Core\Support\Proxies\ApiRESTProxy;
+use Kraite\Core\Support\Security\ExchangeApiKeyPermissions;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 use Kraite\Core\Support\ValueObjects\ApiResponse;
+use UnexpectedValueException;
 
 trait InteractsWithApis
 {
@@ -163,6 +165,26 @@ trait InteractsWithApis
         return new ApiResponse(
             response: $this->apiResponse,
             result: $this->apiMapper()->resolveGetBalanceResponse($this->apiResponse, $this)
+        );
+    }
+
+    public function apiQueryWithdrawalPermission(): ApiResponse
+    {
+        $exchange = $this->apiSystem->canonical;
+        $this->apiProperties = new ApiProperties;
+        $this->apiProperties->set('account', $this);
+        $this->apiResponse = $this->withApi()->getApiKeyPermissions($this->apiProperties);
+        $payload = json_decode((string) $this->apiResponse->getBody(), associative: true, flags: JSON_THROW_ON_ERROR);
+
+        if (! is_array($payload)) {
+            throw new UnexpectedValueException("{$exchange} did not return valid API key permissions.");
+        }
+
+        return new ApiResponse(
+            response: $this->apiResponse,
+            result: [
+                'withdrawals_enabled' => ExchangeApiKeyPermissions::withdrawalsEnabled($exchange, $payload),
+            ],
         );
     }
 

@@ -138,6 +138,40 @@ final class BitgetApi
     }
 
     /**
+     * Get symbol-scoped account details, including the live position mode.
+     *
+     * @see https://www.bitget.com/api-doc/classic/contract/account/Get-Single-Account
+     */
+    public function getSingleAccount(?ApiProperties $properties = null): mixed
+    {
+        $properties ??= new ApiProperties;
+        $this->requireProductContext($properties);
+
+        $apiRequest = ApiRequest::make(
+            'GET',
+            '/api/v2/mix/account/account',
+            $properties
+        );
+
+        return $this->client->signRequest($apiRequest);
+    }
+
+    /**
+     * @see https://www.bitget.com/api-doc/classic/spot/account/Get-Account-Info
+     */
+    public function getApiKeyPermissions(?ApiProperties $properties = null): mixed
+    {
+        $properties ??= new ApiProperties;
+        $apiRequest = ApiRequest::make(
+            'GET',
+            '/api/v2/spot/account/info',
+            $properties
+        );
+
+        return $this->client->signRequest($apiRequest);
+    }
+
+    /**
      * Get current open orders.
      *
      * @see https://www.bitget.com/api-doc/contract/trade/Get-Orders-Pending

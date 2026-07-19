@@ -387,9 +387,19 @@ trait InteractsWithApis
             result: $this->apiMapper()->resolvePlaceTpslOrderResponse($this->apiResponse)
         );
 
-        // place-pos-tpsl doesn't return orderId - fetch it from position query
         if ($finalResponse->result['success'] ?? false) {
-            $orderId = $this->fetchTpslOrderIdFromPosition();
+            $returnedClientOrderId = $finalResponse->result['clientOid'] ?? null;
+            $orderId = $finalResponse->result['orderId'] ?? null;
+
+            if (is_string($returnedClientOrderId)
+                && $returnedClientOrderId !== ''
+                && $returnedClientOrderId !== $this->client_order_id) {
+                $orderId = null;
+            }
+
+            if (! is_string($orderId) || $orderId === '') {
+                $orderId = $this->fetchTpslOrderIdFromPosition();
+            }
 
             $this->updateSaving([
                 'exchange_order_id' => $orderId,

@@ -75,6 +75,7 @@ final class BitgetApiClient extends BaseApiClient
         $body = '';
 
         if ($method === 'GET' && ! empty($options)) {
+            ksort($options);
             $queryString = '?'.http_build_query($options);
         } elseif (in_array($method, ['POST', 'PUT', 'DELETE']) && ! empty($options)) {
             $body = json_encode($options, JSON_THROW_ON_ERROR);

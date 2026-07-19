@@ -19,10 +19,18 @@ final class BinanceApi
 
     private BinanceApiClient $client;
 
+    private BinanceApiClient $walletClient;
+
     public function __construct(ApiCredentials $credentials)
     {
         $this->client = new BinanceApiClient([
             'url' => config('kraite.api.url.binance.rest'),
+            'api_key' => $credentials->get('binance_api_key'),
+            'api_secret' => $credentials->get('binance_api_secret'),
+        ]);
+
+        $this->walletClient = new BinanceApiClient([
+            'url' => config('kraite.api.url.binance.wallet_rest', 'https://api.binance.com'),
             'api_key' => $credentials->get('binance_api_key'),
             'api_secret' => $credentials->get('binance_api_secret'),
         ]);
@@ -181,6 +189,17 @@ final class BinanceApi
         $apiRequest = ApiRequest::make('GET', '/fapi/v3/balance');
 
         return $this->client->signRequest($apiRequest);
+    }
+
+    /**
+     * @see https://developers.binance.com/docs/wallet/account/api-key-permission
+     */
+    public function getApiKeyPermissions(?ApiProperties $properties = null): mixed
+    {
+        $properties ??= new ApiProperties;
+        $apiRequest = ApiRequest::make('GET', '/sapi/v1/account/apiRestrictions', $properties);
+
+        return $this->walletClient->signRequest($apiRequest);
     }
 
     public function getSpotAccountBalance(): mixed

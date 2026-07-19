@@ -95,6 +95,17 @@ final class BitgetApiDataMapper extends BaseDataMapper
         throw new InvalidArgumentException("Invalid BitGet side type: {$canonical}");
     }
 
+    public function hedgePositionSide(Position $position): string
+    {
+        return match ($this->directionType($position->direction)) {
+            'long' => 'buy',
+            'short' => 'sell',
+            default => throw new InvalidArgumentException(
+                "Invalid BitGet position direction: {$position->direction}"
+            ),
+        };
+    }
+
     public function positionHoldSide(Position $position): string
     {
         $direction = $this->directionType($position->direction);

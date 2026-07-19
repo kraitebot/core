@@ -710,6 +710,7 @@ return [
             // Optional floor above the endpoint-derived delay.
             'min_delay_ms' => (int) env('BITGET_THROTTLER_MIN_DELAY_MS', 0),
             'safety_threshold' => (float) env('BITGET_THROTTLER_SAFETY_THRESHOLD', 0.85),
+            'aggregate_requests_per_minute' => (int) env('BITGET_AGGREGATE_REQUESTS_PER_MINUTE', 6000),
             'public_requests_per_second' => (int) env('BITGET_PUBLIC_REQUESTS_PER_SECOND', 20),
             'position_tier_requests_per_second' => (int) env('BITGET_POSITION_TIER_REQUESTS_PER_SECOND', 10),
             'private_requests_per_second' => (int) env('BITGET_PRIVATE_REQUESTS_PER_SECOND', 10),

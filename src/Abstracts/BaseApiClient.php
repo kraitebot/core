@@ -246,11 +246,16 @@ abstract class BaseApiClient
     protected function executeHttpRequest(string $method, string $path, array $options): ResponseInterface
     {
         if (app()->environment('testing')) {
-            $url = $this->baseURL.'/'.$path;
+            $url = mb_rtrim($this->baseURL, '/').'/'.mb_ltrim($path, '/');
             $headers = $options['headers'] ?? [];
 
             if ($method === 'GET') {
-                return Http::withHeaders($headers)->get($url, $options['query'] ?? [])->throw()->toPsrResponse();
+                $request = Http::withHeaders($headers);
+                $query = $options['query'] ?? null;
+
+                return ($query === null ? $request->get($url) : $request->get($url, $query))
+                    ->throw()
+                    ->toPsrResponse();
             }
             if ($method === 'POST') {
                 $body = $this->testingRequestBody($options);

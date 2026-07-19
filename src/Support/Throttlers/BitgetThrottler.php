@@ -24,6 +24,7 @@ use UnexpectedValueException;
  * - Most private endpoints: 10 requests per second per UID
  * - Positions and account configuration: 5 requests per second per UID
  * - Flash close: 1 request per second per UID
+ * - All endpoints combined: 6000 requests per minute per server IP
  *
  * Reservations happen immediately before every HTTP attempt. This is
  * intentionally below jobs and recovery services: one job may make several
@@ -40,9 +41,9 @@ final class BitgetThrottler extends BaseApiThrottler implements ClientLevelApiTh
     /**
      * Atomically reserve and pace one real Bitget HTTP attempt.
      *
-     * Public calls share the server-IP budget. Signed calls share the UID
-     * budget using a one-way hash of the API key, which is a safer UID proxy
-     * than the local account ID when credentials are reused.
+     * Public calls share the server-IP budget. Signed calls keep a one-way
+     * API-key scope and a conservative server-shared private scope because
+     * Bitget does not expose the UID needed to combine multiple API keys.
      */
     public static function throttleRequest(string $path, ?string $apiKey): void
     {
@@ -57,52 +58,40 @@ final class BitgetThrottler extends BaseApiThrottler implements ClientLevelApiTh
         }
 
         $endpoint = Str::before($path, '?');
-        $requestsPerSecond = self::requestsPerSecond($endpoint, $apiKey !== null);
-        $intervalMs = self::intervalMilliseconds($requestsPerSecond);
+        $signed = $apiKey !== null;
+        $requestsPerSecond = self::requestsPerSecond($endpoint, $signed);
         $scope = self::requestScope($apiKey);
-        $reservationKey = sprintf(
-            '%s:request:%s:%s',
-            self::getCacheKeyPrefix(),
-            $scope,
-            hash('sha256', $endpoint)
-        );
+        $endpointHash = hash('sha256', $endpoint);
+        $reservations = [[
+            sprintf('%s:request:%s:%s', self::getCacheKeyPrefix(), $scope, $endpointHash),
+            self::intervalMilliseconds($requestsPerSecond),
+        ]];
 
-        $reservation = Cache::lock(
-            $reservationKey.':lock',
-            self::RESERVATION_LOCK_SECONDS
-        )->block(
-            self::RESERVATION_LOCK_WAIT_SECONDS,
-            static function () use ($reservationKey, $intervalMs): int {
-                $nowMs = (int) round(now()->getPreciseTimestamp(3));
-                $cachedNextAvailableAtMs = Cache::get($reservationKey, $nowMs);
-
-                if (! is_int($cachedNextAvailableAtMs)) {
-                    throw new UnexpectedValueException('Bitget throttle reservation cache value must be an integer.');
-                }
-
-                $nextAvailableAtMs = max(
-                    $nowMs,
-                    $cachedNextAvailableAtMs
-                );
-                $newNextAvailableAtMs = $nextAvailableAtMs + $intervalMs;
-                $waitMs = $nextAvailableAtMs - $nowMs;
-                $ttlMs = $waitMs + $intervalMs + self::RESERVATION_TTL_BUFFER_MS;
-
-                Cache::put(
-                    $reservationKey,
-                    $newNextAvailableAtMs,
-                    now()->addMilliseconds($ttlMs)
-                );
-
-                return $waitMs;
-            }
-        );
-
-        if (! is_int($reservation)) {
-            throw new UnexpectedValueException('Bitget throttle reservation wait must be an integer.');
+        if ($signed) {
+            $reservations[] = [
+                sprintf(
+                    '%s:request:private-ip:%s:%s',
+                    self::getCacheKeyPrefix(),
+                    hash('sha256', self::getCurrentIp()),
+                    $endpointHash
+                ),
+                self::intervalMilliseconds($requestsPerSecond),
+            ];
         }
 
-        $waitMs = $reservation;
+        $reservations[] = [
+            sprintf(
+                '%s:request:aggregate-ip:%s',
+                self::getCacheKeyPrefix(),
+                hash('sha256', self::getCurrentIp())
+            ),
+            self::aggregateIntervalMilliseconds(),
+        ];
+
+        $waitMs = 0;
+        foreach ($reservations as [$reservationKey, $intervalMs]) {
+            $waitMs = max($waitMs, self::reserve($reservationKey, $intervalMs));
+        }
 
         if ($waitMs > 0) {
             Sleep::for($waitMs)->milliseconds();
@@ -166,9 +155,9 @@ final class BitgetThrottler extends BaseApiThrottler implements ClientLevelApiTh
     /**
      * Record an IP ban in Cache when 429 errors occur.
      *
-     * @param  int  $retryAfterSeconds  Seconds until ban lifts (default: 30 seconds)
+     * @param  int  $retryAfterSeconds  Seconds until ban lifts (default: five minutes)
      */
-    public static function recordIpBan(int $retryAfterSeconds = 30): void
+    public static function recordIpBan(int $retryAfterSeconds = 300): void
     {
         try {
             $ip = self::getCurrentIp();
@@ -236,6 +225,47 @@ final class BitgetThrottler extends BaseApiThrottler implements ClientLevelApiTh
         return Kraite::ip();
     }
 
+    private static function reserve(string $reservationKey, int $intervalMs): int
+    {
+
+        $reservation = Cache::lock(
+            $reservationKey.':lock',
+            self::RESERVATION_LOCK_SECONDS
+        )->block(
+            self::RESERVATION_LOCK_WAIT_SECONDS,
+            static function () use ($reservationKey, $intervalMs): int {
+                $nowMs = (int) round(now()->getPreciseTimestamp(3));
+                $cachedNextAvailableAtMs = Cache::get($reservationKey, $nowMs);
+
+                if (! is_int($cachedNextAvailableAtMs)) {
+                    throw new UnexpectedValueException('Bitget throttle reservation cache value must be an integer.');
+                }
+
+                $nextAvailableAtMs = max(
+                    $nowMs,
+                    $cachedNextAvailableAtMs
+                );
+                $newNextAvailableAtMs = $nextAvailableAtMs + $intervalMs;
+                $waitMs = $nextAvailableAtMs - $nowMs;
+                $ttlMs = $waitMs + $intervalMs + self::RESERVATION_TTL_BUFFER_MS;
+
+                Cache::put(
+                    $reservationKey,
+                    $newNextAvailableAtMs,
+                    now()->addMilliseconds($ttlMs)
+                );
+
+                return $waitMs;
+            }
+        );
+
+        if (! is_int($reservation)) {
+            throw new UnexpectedValueException('Bitget throttle reservation wait must be an integer.');
+        }
+
+        return $reservation;
+    }
+
     private static function requestsPerSecond(string $endpoint, bool $signed): int
     {
         if (! $signed) {
@@ -289,6 +319,20 @@ final class BitgetThrottler extends BaseApiThrottler implements ClientLevelApiTh
             $minimumDelayMs,
             (int) ceil(1000 / ($safeRequestsPerSecond * $safetyThreshold))
         );
+    }
+
+    private static function aggregateIntervalMilliseconds(): int
+    {
+        $requestsPerMinute = max(
+            1,
+            self::integerConfig('kraite.throttlers.bitget.aggregate_requests_per_minute', 6_000)
+        );
+        $safetyThreshold = min(
+            1.0,
+            max(0.01, self::floatConfig('kraite.throttlers.bitget.safety_threshold', 0.85))
+        );
+
+        return (int) ceil(60_000 / ($requestsPerMinute * $safetyThreshold));
     }
 
     private static function requestScope(?string $apiKey): string

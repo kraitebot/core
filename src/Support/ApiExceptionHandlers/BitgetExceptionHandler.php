@@ -21,6 +21,21 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
         rateLimitUntil as baseRateLimitUntil;
     }
 
+    private const array ACCOUNT_BLOCKED_CODES = [
+        '40006',
+        '40009',
+        '40011',
+        '40012',
+        '40014',
+        '40025',
+        '40036',
+        '40037',
+        '40040',
+        '40041',
+    ];
+
+    private const array IP_NOT_WHITELISTED_CODES = ['40018', '40038'];
+
     /**
      * Server instability — exchange is having infrastructure problems.
      * Triggers exchange-level cooldown to prevent opening new positions.
@@ -75,11 +90,14 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
 
     /**
      * IP not whitelisted by user on their API key settings.
-     * BitGet may return 403 for IP whitelist issues.
+     * 40018: Invalid IP.
+     * 40038: Current IP is not bound to the API key.
      *
-     * @var array<int, array<int, int>|int>
+     * @var array<int, array<int, string>|int>
      */
-    public array $ipNotWhitelistedHttpCodes = [];
+    public array $ipNotWhitelistedHttpCodes = [
+        200 => self::IP_NOT_WHITELISTED_CODES,
+    ];
 
     /**
      * IP temporarily rate-limited (auto-recovers).
@@ -102,15 +120,14 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
      * Account blocked — API key revoked, disabled, or permission issues.
      * HTTP 401: Authentication failed
      *
-     * BitGet error codes:
-     * - 40014: Invalid API key
-     * - 40017: Parameter verification failed or not a trader
-     * - 40018: Invalid passphrase
+     * Current Bitget credential and permission failures. Generic parameter
+     * errors and IP-whitelist failures are intentionally excluded.
      *
-     * @var array<int, array<int, int>|int>
+     * @var array<int, array<int, string>|int>
      */
     public array $accountBlockedHttpCodes = [
         401,
+        200 => self::ACCOUNT_BLOCKED_CODES,
     ];
 
     /**
@@ -167,38 +184,22 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
         return false;
     }
 
+    public function isIpNotWhitelisted(Throwable $exception): bool
+    {
+        return $this->containsBitgetVendorCode($exception, self::IP_NOT_WHITELISTED_CODES);
+    }
+
     /**
      * Case 4: Account blocked.
      * Specific account's API key is revoked, disabled, or has permission issues.
-     * Detected by: HTTP 401 or BitGet codes 40014, 40017, 40018.
+     * Detected by: HTTP 401 or current Bitget credential/permission codes.
      *
      * Recovery: User regenerates API key on exchange.
      */
     public function isAccountBlocked(Throwable $exception): bool
     {
-        // Check HTTP 401
-        if ($this->containsHttpExceptionIn($exception, $this->accountBlockedHttpCodes)) {
-            return true;
-        }
-
-        // Check BitGet-specific account blocked codes
-        if ($exception instanceof RequestException && $exception->hasResponse()) {
-            $body = (string) $exception->getResponse()->getBody();
-            $json = json_decode($body, associative: true);
-
-            if (is_array($json) && isset($json['code'])) {
-                // 40009: Sign signature error (invalid secret)
-                // 40014: Invalid API key
-                // 40017: Parameter verification failed or not a trader
-                // 40018: Invalid passphrase
-                // 40037: API key does not exist
-                if (in_array($json['code'], ['40009', '40014', '40017', '40018', '40037'], strict: true)) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
+        return $this->containsHttpExceptionIn($exception, [401])
+            || $this->containsBitgetVendorCode($exception, self::ACCOUNT_BLOCKED_CODES);
     }
 
     /**
@@ -216,9 +217,9 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
             return $this->baseRateLimitUntil($exception);
         }
 
-        // 2) BitGet uses per-minute rate limits (6000 req/min/IP)
-        // If we hit 429, wait for a window reset + jitter
-        return Carbon::now()->addSeconds(5 + random_int(1, 3));
+        // Bitget directs clients that receive 429 to stop requests for five
+        // minutes before resuming when no explicit Retry-After is supplied.
+        return Carbon::now()->addMinutes(5);
     }
 
     /**
@@ -435,5 +436,24 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
     {
         // If IP is banned, return false
         return BitgetThrottler::isSafeToDispatch() === 0;
+    }
+
+    /** @param array<int, string> $codes */
+    private function containsBitgetVendorCode(Throwable $exception, array $codes): bool
+    {
+        $current = $exception;
+
+        do {
+            $error = $this->extractHttpErrorCodes($current);
+            $vendorCode = $error['status_code'] ?? null;
+
+            if (is_string($vendorCode) && in_array($vendorCode, $codes, strict: true)) {
+                return true;
+            }
+
+            $current = $current->getPrevious();
+        } while ($current instanceof Throwable);
+
+        return false;
     }
 }

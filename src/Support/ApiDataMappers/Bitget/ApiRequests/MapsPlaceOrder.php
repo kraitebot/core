@@ -26,19 +26,22 @@ trait MapsPlaceOrder
         $properties->set('options.productType', $context->productType);
         $properties->set('options.marginMode', mb_strtolower((string) $order->position->account->margin_mode));
         $properties->set('options.marginCoin', $context->marginCoin);
-        $properties->set('options.side', (string) $this->sideType($order->side));
+        $isHedgeMode = $order->position->account->isHedgeMode();
+        $side = $isHedgeMode
+            ? $this->hedgePositionSide($order->position)
+            : $this->sideType($order->side);
+        $properties->set('options.side', $side);
         $properties->set('options.size', (string) api_format_quantity($order->quantity, $order->position->exchangeSymbol));
         $properties->set('options.clientOid', (string) $order->client_order_id);
 
-        // Position-mode-aware payload. In HEDGE mode every order MUST carry
-        // posSide=long/short and tradeSide=open/close so Bitget can target the
-        // correct LONG vs SHORT slot. In ONE-WAY mode tradeSide is ignored
-        // (per Bitget V2 docs) and posSide must be omitted; closing-intent
+        // Position-mode-aware payload. In HEDGE mode V2 uses
+        // tradeSide=open/close together with side=buy/sell. `posSide` belongs
+        // to other Bitget API surfaces and is not accepted by V2 place-order.
+        // In ONE-WAY mode tradeSide is ignored; closing-intent
         // orders MUST carry reduceOnly=YES — otherwise the same `side`
         // reopens an opposing position instead of closing the existing one.
-        if ($order->position->account->isHedgeMode()) {
+        if ($isHedgeMode) {
             $properties->set('options.tradeSide', $this->determineTradeSide($order));
-            $properties->set('options.posSide', $this->determinePosSide($order));
         } elseif ($this->isClosingIntent($order)) {
             $properties->set('options.reduceOnly', 'YES');
         }
@@ -132,25 +135,5 @@ trait MapsPlaceOrder
             'STOP-MARKET',
             'MARKET-CANCEL',
         ], strict: true);
-    }
-
-    /**
-     * Determine the position side for hedge mode.
-     *
-     * BitGet requires posSide in hedge mode to know which position to affect.
-     * 'long' - Long position
-     * 'short' - Short position
-     */
-    private function determinePosSide(Order $order): string
-    {
-        // Use the order's position_side if set (from apiClose)
-        if (! empty($order->position_side)) {
-            return mb_strtolower($order->position_side);
-        }
-
-        // Derive from the position's direction
-        $direction = $order->position->direction ?? 'LONG';
-
-        return mb_strtolower($direction);
     }
 }

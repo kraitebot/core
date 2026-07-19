@@ -6,8 +6,10 @@ namespace Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Models\Position;
 use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
+use UnexpectedValueException;
 
 trait MapsAccountQuery
 {
@@ -75,5 +77,35 @@ trait MapsAccountQuery
             'availableFunds' => (string) ($accountData['available'] ?? '0'),
             'initialMargin' => (string) ($accountData['locked'] ?? '0'),
         ];
+    }
+
+    public function prepareQueryPositionModeProperties(Position $position): ApiProperties
+    {
+        $properties = new ApiProperties;
+        $properties->set('relatable', $position->account);
+        $context = BitgetProductContext::fromQuote($position->exchangeSymbol->quote);
+        $properties->set('options.productType', $context->productType);
+        $properties->set('options.marginCoin', $context->marginCoin);
+        $properties->set('options.symbol', (string) $position->exchangeSymbol->asset);
+
+        return $properties;
+    }
+
+    public function resolveQueryPositionModeResponse(Response $response, Position $position): string
+    {
+        $data = json_decode((string) $response->getBody(), associative: true);
+        $account = is_array($data['data'] ?? null) ? $data['data'] : [];
+        $quote = mb_strtoupper((string) $position->exchangeSymbol->quote);
+        $hasExpectedMarginCoin = mb_strtoupper((string) ($account['marginCoin'] ?? '')) === $quote;
+        $positionMode = $hasExpectedMarginCoin ? ($account['posMode'] ?? null) : null;
+
+        if (! is_string($positionMode)
+            || ! in_array($positionMode, ['hedge_mode', 'one_way_mode'], strict: true)) {
+            throw new UnexpectedValueException(
+                "Bitget did not return a valid {$quote} position mode; opening cannot safely continue."
+            );
+        }
+
+        return $positionMode;
     }
 }

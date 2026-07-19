@@ -206,6 +206,7 @@ trait HandlesApiJobExceptions
      *     unilateral position type" — fires when the payload assumes the
      *     wrong position mode (e.g. sending tradeSide=open on a one-way
      *     account, or omitting it on a hedge account).
+     *   "43075": "Position pattern mismatch" — current equivalent.
      *
      * Listening for the family rather than the single canonical code per
      * exchange defends against renaming and asymmetric variants. Other
@@ -234,7 +235,7 @@ trait HandlesApiJobExceptions
 
         // Bitget returns string codes. Compared as strings to avoid the
         // numeric cast collapsing leading zeros / non-numeric variants.
-        if (in_array((string) $code, ['40774'], strict: true)) {
+        if (in_array((string) $code, ['40774', '43075'], strict: true)) {
             return true;
         }
 

@@ -5,15 +5,18 @@ declare(strict_types=1);
 namespace Kraite\Core\Jobs\Atomic\Order\Bitget;
 
 use GuzzleHttp\Psr7\Response;
+use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Models\ExchangeSymbolPrice;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 use Kraite\Core\Support\TpSlResolver;
 use Kraite\Core\Trading\Kraite;
 use RuntimeException;
+use StepDispatcher\Models\Step;
 use Throwable;
 
 /**
@@ -27,10 +30,9 @@ use Throwable;
  * 2. computeApiable():
  *    - Calculate TP price via Kraite::calculateProfitOrder()
  *    - Calculate SL price via Kraite::calculateStopLossOrder()
+ *    - Persist durable local TP/SL identities
  *    - Call placePosTpsl() API
- *    - Query position to get takeProfitId and stopLossId
- *    - Create TP Order record (type=PROFIT-LIMIT)
- *    - Create SL Order record (type=STOP-MARKET)
+ *    - Persist returned exchange order IDs, querying position only as fallback
  * 3. doubleCheck(): Query position, verify both IDs present
  * 4. complete(): Set reference_* fields on both orders, set first_profit_price on position
  */
@@ -46,9 +48,16 @@ final class PlacePositionTpslJob extends BaseApiableJob
 
     public ?string $slPrice = null;
 
-    public function __construct(int $positionId)
-    {
+    public function __construct(
+        int $positionId,
+        ?int $profitOrderId = null,
+        ?int $stopLossOrderId = null,
+    ) {
         $this->position = Position::findOrFail($positionId);
+        $this->profitOrder = $this->findProtectionOrder($profitOrderId, 'PROFIT-LIMIT');
+        $this->stopLossOrder = $this->findProtectionOrder($stopLossOrderId, 'STOP-MARKET');
+        $this->tpPrice = $this->profitOrder?->price;
+        $this->slPrice = $this->stopLossOrder?->price;
     }
 
     public function assignExceptionHandler(): void
@@ -190,7 +199,7 @@ final class PlacePositionTpslJob extends BaseApiableJob
         // This Bitget-side single-row update writes through the
         // same sidecar so the accessor on ExchangeSymbol returns
         // the freshly-fetched value on subsequent reads.
-        \Kraite\Core\Models\ExchangeSymbolPrice::updateOrCreate(
+        ExchangeSymbolPrice::updateOrCreate(
             ['exchange_symbol_id' => $exchangeSymbol->id],
             ['mark_price' => $markPrice, 'mark_price_synced_at' => now()],
         );
@@ -224,12 +233,20 @@ final class PlacePositionTpslJob extends BaseApiableJob
         );
         $this->slPrice = $stopLossData['price'];
 
+        // Persist both local identities before the mutating API call. The
+        // dispatcher reconstructs jobs from Step.arguments on every retry;
+        // without these IDs it loses the rows and cannot prove that Bitget
+        // already accepted the protection request.
+        $this->persistProtectionOrders($side);
+
         // Place combined TP/SL on exchange via position endpoint
         $mapper = new ApiDataMapperProxy($account->apiSystem->canonical);
         $properties = $mapper->preparePlacePosTpslProperties(
             $this->position,
             $this->tpPrice,
-            $this->slPrice
+            $this->slPrice,
+            $this->profitOrder->client_order_id,
+            $this->stopLossOrder->client_order_id,
         );
         $properties->set('account', $account);
 
@@ -241,38 +258,27 @@ final class PlacePositionTpslJob extends BaseApiableJob
             throw new RuntimeException('Failed to place position TP/SL: '.json_encode($result['_raw'] ?? []));
         }
 
-        // Query position to get the TP/SL order IDs
-        $positionData = $this->queryPositionForTpslIds();
-        $takeProfitId = $positionData['takeProfitId'] ?? null;
-        $stopLossId = $positionData['stopLossId'] ?? null;
+        $ordersByClientOrderId = is_array($result['ordersByClientOid'] ?? null)
+            ? $result['ordersByClientOid']
+            : [];
+        $takeProfitId = $ordersByClientOrderId[$this->profitOrder->client_order_id] ?? null;
+        $stopLossId = $ordersByClientOrderId[$this->stopLossOrder->client_order_id] ?? null;
 
-        // Create TP Order record
-        // is_algo=true required for BitGet position-level TP/SL because sync must use
-        // plan order endpoints (apiSyncPlanOrder) instead of regular order detail
-        $this->profitOrder = Order::create([
-            'position_id' => $this->position->id,
-            'type' => 'PROFIT-LIMIT',
-            'status' => 'NEW',
-            'side' => $side,
-            'position_side' => $direction,
-            'price' => $this->tpPrice,
-            'quantity' => $this->position->quantity,
+        // Compatibility fallback for older Bitget response shapes. The normal
+        // path uses the IDs returned by place-pos-tpsl and avoids an extra
+        // rate-limited positions request.
+        if ($takeProfitId === null || $stopLossId === null) {
+            $positionData = $this->queryPositionForTpslIds();
+            $takeProfitId ??= $positionData['takeProfitId'] ?? null;
+            $stopLossId ??= $positionData['stopLossId'] ?? null;
+        }
+
+        $this->profitOrder->updateSaving([
             'exchange_order_id' => $takeProfitId,
-            'is_algo' => true,
             'opened_at' => now(),
         ]);
-
-        // Create SL Order record
-        $this->stopLossOrder = Order::create([
-            'position_id' => $this->position->id,
-            'type' => 'STOP-MARKET',
-            'status' => 'NEW',
-            'side' => $side,
-            'position_side' => $direction,
-            'price' => $this->slPrice,
-            'quantity' => $this->position->quantity,
+        $this->stopLossOrder->updateSaving([
             'exchange_order_id' => $stopLossId,
-            'is_algo' => true,
             'opened_at' => now(),
         ]);
 
@@ -439,5 +445,70 @@ final class PlacePositionTpslJob extends BaseApiableJob
         $this->position->updateSaving([
             'error_message' => 'Position TP/SL failed: '.$e->getMessage(),
         ]);
+    }
+
+    private function findProtectionOrder(?int $orderId, string $type): ?Order
+    {
+        if ($orderId === null) {
+            return null;
+        }
+
+        return Order::query()
+            ->where('position_id', $this->position->id)
+            ->where('type', $type)
+            ->findOrFail($orderId);
+    }
+
+    private function persistProtectionOrders(string $side): void
+    {
+        DB::transaction(function () use ($side): void {
+            $attributes = [
+                'status' => 'NEW',
+                'side' => $side,
+                'position_side' => $this->position->direction,
+                'quantity' => $this->position->quantity,
+                'is_algo' => true,
+            ];
+
+            if ($this->profitOrder === null) {
+                $this->profitOrder = Order::create([
+                    ...$attributes,
+                    'position_id' => $this->position->id,
+                    'type' => 'PROFIT-LIMIT',
+                    'price' => $this->tpPrice,
+                ]);
+            } else {
+                $this->profitOrder->updateSaving([
+                    ...$attributes,
+                    'price' => $this->tpPrice,
+                ]);
+            }
+
+            if ($this->stopLossOrder === null) {
+                $this->stopLossOrder = Order::create([
+                    ...$attributes,
+                    'position_id' => $this->position->id,
+                    'type' => 'STOP-MARKET',
+                    'price' => $this->slPrice,
+                ]);
+            } else {
+                $this->stopLossOrder->updateSaving([
+                    ...$attributes,
+                    'price' => $this->slPrice,
+                ]);
+            }
+
+            if (! isset($this->step)) {
+                return;
+            }
+
+            /** @var Step $step */
+            $step = Step::query()->whereKey($this->step->id)->lockForUpdate()->firstOrFail();
+            $arguments = is_array($step->arguments) ? $step->arguments : [];
+            $arguments['profitOrderId'] = $this->profitOrder->id;
+            $arguments['stopLossOrderId'] = $this->stopLossOrder->id;
+            $step->update(['arguments' => $arguments]);
+            $this->step->setAttribute('arguments', $arguments);
+        });
     }
 }

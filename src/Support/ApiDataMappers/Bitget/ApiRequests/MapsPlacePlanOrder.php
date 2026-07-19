@@ -40,7 +40,11 @@ trait MapsPlacePlanOrder
         $properties->set('options.productType', $context->productType);
         $properties->set('options.marginMode', mb_strtolower((string) $order->position->account->margin_mode));
         $properties->set('options.marginCoin', $context->marginCoin);
-        $properties->set('options.side', (string) $this->sideType($order->side));
+        $isHedgeMode = $order->position->account->isHedgeMode();
+        $side = $isHedgeMode
+            ? $this->hedgePositionSide($order->position)
+            : $this->sideType($order->side);
+        $properties->set('options.side', $side);
         $properties->set('options.size', (string) api_format_quantity($order->quantity, $order->position->exchangeSymbol));
         $properties->set('options.clientOid', (string) $order->client_order_id);
 
@@ -55,7 +59,7 @@ trait MapsPlacePlanOrder
         // tradeSide is ignored by the API; reduceOnly=YES is what makes
         // close-intent triggers actually reduce (rather than reopen the
         // opposite side).
-        if ($order->position->account->isHedgeMode()) {
+        if ($isHedgeMode) {
             $properties->set('options.tradeSide', $this->determinePlanTradeSide($order));
         } elseif ($this->isPlanClosingIntent($order)) {
             $properties->set('options.reduceOnly', 'YES');

@@ -9,6 +9,7 @@ use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Server;
+use Kraite\Core\Support\Security\ExchangeApiKeyPermissions;
 use Throwable;
 
 final class TestServerConnectivityStep extends BaseQueueableJob
@@ -38,6 +39,11 @@ final class TestServerConnectivityStep extends BaseQueueableJob
         try {
             $balance = $this->account->apiQueryBalance();
             $openOrders = $this->account->apiQueryOpenOrders();
+            $withdrawalsEnabled = null;
+
+            if (ExchangeApiKeyPermissions::supports($this->account->apiSystem->canonical)) {
+                $withdrawalsEnabled = $this->account->apiQueryWithdrawalPermission()->result['withdrawals_enabled'];
+            }
         } catch (Throwable $e) {
             $this->recordForbiddenHostnameIfNeeded($handler, $e);
 
@@ -52,6 +58,7 @@ final class TestServerConnectivityStep extends BaseQueueableJob
             'result' => 'ok',
             'balance_checked' => $balance->result !== null,
             'open_orders_count' => count($openOrders->result ?? []),
+            'withdrawals_enabled' => $withdrawalsEnabled,
         ];
     }
 

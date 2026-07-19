@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.74.0 - 2026-07-19
+
+### Bitget position opening
+
+- [FIXED] Each Bitget opening reads the live position mode for its selected
+  futures product before any mutating request.
+- [FIXED] Hedge orders use Bitget V2 buy or sell and open or close semantics
+  without sending the unsupported `posSide` field. One-way closing orders
+  remain reduce-only.
+- [FIXED] Combined position TP and SL orders persist their local identities
+  before placement and resume safely after worker retries.
+- [FIXED] Signed query parameters are sorted before signing, retries use the
+  current exchange error code, and position-mode error `43075` is handled.
+
+### Bitget request pacing
+
+- [FIXED] Private requests coordinate both by API key and by a conservative
+  server-shared endpoint budget.
+- [FIXED] All Bitget traffic observes the 6,000-request-per-minute source-IP
+  ceiling. A 429 pauses the server for five minutes unless Bitget asks for
+  longer.
+
+### API-key safety
+
+- [ADDED] Binance and Bitget connectivity checks report whether withdrawal
+  permission is enabled so onboarding can fail closed before activation.
+
 ## 1.73.7 - 2026-07-18
 
 ### Bitget request pacing
