@@ -6,7 +6,9 @@ namespace Kraite\Core\Concerns\Position;
 
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
+use Kraite\Core\Enums\PositionPresence;
 use Kraite\Core\Models\ApiSnapshot;
+use Kraite\Core\Support\PositionSnapshot;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 
 trait HasTradingActions
@@ -29,7 +31,8 @@ trait HasTradingActions
     {
         $openPositions = ApiSnapshot::getFrom($this->account, 'account-positions');
 
-        return is_array($openPositions) && array_key_exists(key: $this->parsed_trading_pair, array: $openPositions);
+        return is_array($openPositions)
+            && PositionSnapshot::fromValidatedResult($openPositions)->presenceOf($this) === PositionPresence::Open;
     }
 
     public function syncOrders()

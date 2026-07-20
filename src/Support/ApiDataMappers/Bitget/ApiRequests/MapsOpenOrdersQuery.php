@@ -77,6 +77,15 @@ trait MapsOpenOrdersQuery
         $orders = $data['data']['entrustedList'] ?? $data['data']['list'] ?? [];
 
         return array_map(callback: function (array $order): array {
+            $order['state'] ??= $order['orderStatus'] ?? '';
+            $order['size'] ??= $order['qty'] ?? '0';
+            $order['filledQty'] ??= $order['cumExecQty'] ?? '0';
+            $order['priceAvg'] ??= $order['avgPrice'] ?? '0';
+            $order['positionSide'] ??= isset($order['posSide'])
+                ? mb_strtoupper((string) $order['posSide'])
+                : null;
+            $order['clientOrderId'] ??= $order['clientOid'] ?? null;
+            $order['status'] ??= $this->normalizeOpenOrderStatus((string) $order['state']);
             $order['_price'] = $this->computeOrderPrice($order);
             $order['_orderType'] = $this->canonicalOrderType($order);
 
@@ -107,6 +116,17 @@ trait MapsOpenOrdersQuery
             'limit' => $price,
             'market' => Math::gt((string) $priceAvg, '0') ? (string) $priceAvg : '0',
             default => Math::gt($price, '0') ? $price : '0',
+        };
+    }
+
+    private function normalizeOpenOrderStatus(string $status): string
+    {
+        return match (mb_strtolower($status)) {
+            'new', 'live' => 'NEW',
+            'partially_filled', 'partial-fill' => 'PARTIALLY_FILLED',
+            'filled', 'full-fill' => 'FILLED',
+            'cancelled', 'canceled' => 'CANCELLED',
+            default => mb_strtoupper($status),
         };
     }
 }

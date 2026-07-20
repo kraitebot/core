@@ -26,8 +26,8 @@ use StepDispatcher\Models\Step;
  * Orchestrator that creates step(s) for dispatching a position to BitGet.
  *
  * Flow:
- * • Step 1: VerifyTradingPairNotOpenJob - Verify pair not already open (showstopper)
- * • Step 2: SyncPositionModeJob - Read live mode for this futures product
+ * • Step 1: SyncPositionModeJob - Read live mode for this futures product
+ * • Step 2: VerifyTradingPairNotOpenJob - Verify the live symbol is free (showstopper)
  * • Step 3: SetMarginModeJob - Set margin mode (isolated/cross)
  * • Step 4: PreparePositionDataJob - Populate margin, indicators (no leverage)
  * • Step 5: DetermineLeverageJob - Determine optimal leverage based on margin and brackets
@@ -49,18 +49,19 @@ final class DispatchPositionJob extends BaseDispatchPositionJob
         // (a duplicated chain here means a second market entry).
         $built = $this->buildChildChainOnce(function (string $blockUuid) use ($resolver): void {
 
-            // Step 1: Verify trading pair not already open
-            $verifyLifecycleClass = $resolver->resolve(VerifyTradingPairNotOpenLifecycle::class);
-            $verifyLifecycle = new $verifyLifecycleClass($this->position);
-            $nextIndex = $verifyLifecycle->dispatch(
+            // Step 1: Read the live mode before deciding whether the opposite
+            // side of this symbol is an independent hedge slot.
+            $positionModeLifecycle = new SyncPositionModeLifecycle($this->position);
+            $nextIndex = $positionModeLifecycle->dispatch(
                 blockUuid: $blockUuid,
                 startIndex: 1,
                 workflowId: null
             );
 
-            // Step 2: Read the live position mode before any mutating call.
-            $positionModeLifecycle = new SyncPositionModeLifecycle($this->position);
-            $nextIndex = $positionModeLifecycle->dispatch(
+            // Step 2: Verify the mode-aware trading slot is not already open.
+            $verifyLifecycleClass = $resolver->resolve(VerifyTradingPairNotOpenLifecycle::class);
+            $verifyLifecycle = new $verifyLifecycleClass($this->position);
+            $nextIndex = $verifyLifecycle->dispatch(
                 blockUuid: $blockUuid,
                 startIndex: $nextIndex,
                 workflowId: null

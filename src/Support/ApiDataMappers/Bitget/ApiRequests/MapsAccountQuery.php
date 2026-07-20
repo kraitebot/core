@@ -62,6 +62,19 @@ trait MapsAccountQuery
 
         $accountsData = $data['data'] ?? [];
 
+        if (is_array($accountsData) && ! array_is_list($accountsData)) {
+            $accountEquity = (string) ($accountsData['accountEquity'] ?? '0');
+
+            return [
+                'totalWalletBalance' => $accountEquity,
+                'totalUnrealizedProfit' => (string) ($accountsData['unrealisedPnl'] ?? '0'),
+                'totalMaintMargin' => (string) ($accountsData['mmr'] ?? '0'),
+                'totalMarginBalance' => $accountEquity,
+                'availableFunds' => (string) ($accountsData['effEquity'] ?? '0'),
+                'initialMargin' => (string) ($accountsData['imr'] ?? '0'),
+            ];
+        }
+
         $accountData = collect($accountsData)->first();
 
         if (empty($accountData)) {
@@ -95,6 +108,13 @@ trait MapsAccountQuery
     {
         $data = json_decode((string) $response->getBody(), associative: true);
         $account = is_array($data['data'] ?? null) ? $data['data'] : [];
+
+        $unifiedPositionMode = $account['holdMode'] ?? null;
+        if (is_string($unifiedPositionMode)
+            && in_array($unifiedPositionMode, ['hedge_mode', 'one_way_mode'], strict: true)) {
+            return $unifiedPositionMode;
+        }
+
         $quote = mb_strtoupper((string) $position->exchangeSymbol->quote);
         $hasExpectedMarginCoin = mb_strtoupper((string) ($account['marginCoin'] ?? '')) === $quote;
         $positionMode = $hasExpectedMarginCoin ? ($account['posMode'] ?? null) : null;

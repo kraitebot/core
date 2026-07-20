@@ -23,7 +23,7 @@ use Throwable;
  *
  * Each concrete recoverer overrides three responsibilities:
  *
- *   1. {@see fetchOpenPositions()}   — list LONG/SHORT slots with size > 0
+ *   1. {@see fetchOpenPositions()}   — list exchange positions with size > 0
  *   2. {@see fetchOpenOrders()}      — pending LIMIT/PROFIT/STOP-MARKET
  *                                       orders attached to the position
  *   3. {@see fetchHistoricalFills()} — FILLED orders since position open
@@ -33,7 +33,11 @@ use Throwable;
  * idempotency lookups, percentage back-calculation, report accumulation.
  *
  * Idempotency contract:
- *   - Position match: account + exchange_symbol + direction + status IN openedStatuses().
+ *   - Position match: account + exchange_symbol + status IN openedStatuses(),
+ *     with the exchange direction required to match the local direction.
+ *   - Opposite LONG/SHORT positions on one symbol are rejected. Exchange
+ *     hedge mode changes the API contract; it does not change Kraite's
+ *     one-position-per-symbol trading policy.
  *   - Order match: exchange_order_id (one-shot dedupe per row).
  *   Already-present rows are left untouched. Only the missing pieces
  *   are inserted, so subsequent runs are no-ops.
@@ -131,6 +135,8 @@ abstract class AbstractPositionRecoverer
             $this->report->line("  → Filtered by --token={$this->tokenFilter}: {$count} of {$before} retained");
         }
 
+        $positions = $this->withoutConflictingSymbolSides($positions);
+
         foreach ($positions as $exchangePosition) {
             try {
                 DB::transaction(function () use ($exchangePosition): void {
@@ -144,6 +150,56 @@ abstract class AbstractPositionRecoverer
                 $this->report->line("    ✗ {$symbol}: {$e->getMessage()}");
             }
         }
+    }
+
+    /**
+     * Reject an externally-created hedged symbol as one invalid unit. This
+     * prevents array order from deciding which side is partially recovered.
+     * Valid hedge-mode accounts still recover normally when only one side of
+     * each symbol is open.
+     *
+     * @param  array<int, array<string, mixed>>  $positions
+     * @return array<int, array<string, mixed>>
+     */
+    private function withoutConflictingSymbolSides(array $positions): array
+    {
+        $directionsBySymbol = [];
+        $rowsBySymbol = [];
+
+        foreach ($positions as $position) {
+            $symbol = mb_strtoupper(trim((string) ($position['symbol'] ?? '')));
+            if ($symbol === '') {
+                continue;
+            }
+
+            $directionsBySymbol[$symbol][$this->normaliseDirection($position)] = true;
+            $rowsBySymbol[$symbol] = ($rowsBySymbol[$symbol] ?? 0) + 1;
+        }
+
+        $conflictingSymbols = [];
+
+        foreach ($directionsBySymbol as $symbol => $directions) {
+            if (count($directions) < 2) {
+                continue;
+            }
+
+            $conflictingSymbols[$symbol] = true;
+            $skipped = $rowsBySymbol[$symbol];
+            $this->report->positionsSkipped += $skipped;
+            $this->report->warning(
+                "Account #{$this->account->id} — symbol {$symbol} has simultaneous LONG and SHORT exchange positions; Kraite does not hedge symbols, so neither side was recovered."
+            );
+            $this->report->line("    ✗ {$symbol}: simultaneous LONG and SHORT exchange positions rejected ({$skipped} sides skipped)");
+        }
+
+        if ($conflictingSymbols === []) {
+            return array_values($positions);
+        }
+
+        return array_values(array_filter(
+            $positions,
+            static fn (array $position): bool => ! isset($conflictingSymbols[mb_strtoupper(trim((string) ($position['symbol'] ?? '')))]),
+        ));
     }
 
     /**
@@ -206,11 +262,20 @@ abstract class AbstractPositionRecoverer
         $existingPosition = Position::query()
             ->where('account_id', $this->account->id)
             ->where('exchange_symbol_id', $exchangeSymbol->id)
-            ->where('direction', $direction)
             ->whereIn('status', (new Position)->openedStatuses())
             ->first();
 
         if ($existingPosition !== null) {
+            if ($existingPosition->direction !== $direction) {
+                $this->report->positionsSkipped++;
+                $this->report->warning(
+                    "Account #{$this->account->id} — {$tradingPair} already has an open {$existingPosition->direction} position; opposite {$direction} exchange side was not recovered."
+                );
+                $this->report->line("    ✗ {$tradingPair} {$direction}: open {$existingPosition->direction} position #{$existingPosition->id} already owns the symbol");
+
+                return;
+            }
+
             $this->report->line("    • {$tradingPair} {$direction}: position #{$existingPosition->id} already exists (status={$existingPosition->status}) — checking orders");
             $this->reconcileOrders($existingPosition, $exchangePosition);
             $this->report->positionsUpdated++;

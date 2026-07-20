@@ -179,7 +179,7 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
 
             Step::create([
                 'class' => $confirmationClass,
-                'queue' => 'positions',
+                'queue' => 'priority',
                 'priority' => 'high',
                 'relatable_type' => $locked->getMorphClass(),
                 'relatable_id' => $locked->getKey(),

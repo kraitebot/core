@@ -22,7 +22,7 @@ final class SyncLeverageBracketsJob extends BaseQueueableJob
      * Symbols are chunked into sequential step batches so StepDispatcher
      * only promotes ~N peers to Pending at a time instead of the full
      * fan-out. Without this, 500+ steps become eligible on the same tick
-     * and Horizon's `indicators` pool (30 workers) races `canDispatch`
+     * and Horizon's `indicators` worker pool races `canDispatch`
      * past the exchange cap — the observed 14:15 burst pattern. A batch
      * of 5 caps the concurrent-worker-vs-throttler race to 5 and keeps
      * each rolled-back 429 contained to a single step's dispatch_after
@@ -37,12 +37,13 @@ final class SyncLeverageBracketsJob extends BaseQueueableJob
         $this->apiSystem = ApiSystem::findOrFail($apiSystemId);
     }
 
-    public function relatable()
+    public function relatable(): ApiSystem
     {
         return $this->apiSystem;
     }
 
-    public function compute()
+    /** @return array{exchange: string, steps_created: int, message: string} */
+    public function compute(): array
     {
         // Skip symbols already flagged for delisting — the exchange will
         // answer "contract removed" for them and fail the whole parent step

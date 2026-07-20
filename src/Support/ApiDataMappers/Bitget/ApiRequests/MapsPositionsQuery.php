@@ -102,8 +102,8 @@ trait MapsPositionsQuery
                 $position['size'] = $size;
 
                 // Add Binance-compatible fields for apiClose() compatibility.
-                // Hedge mode reports LONG/SHORT (independent slots);
-                // one-way mode reports BOTH (single slot per symbol) so
+                // Hedge mode identifies a response row as LONG/SHORT;
+                // one-way mode identifies it as BOTH so
                 // consumers that key by `symbol:BOTH` (Binance convention)
                 // can locate the position regardless of exchange.
                 $isOneWay = ($position['posMode'] ?? '') === 'one_way_mode';
@@ -118,9 +118,10 @@ trait MapsPositionsQuery
                 return $position;
             })
             ->keyBy(static function ($position) {
-                // Key by symbol:direction to mirror Binance:
-                //   hedge mode  → symbol:LONG / symbol:SHORT (independent slots)
-                //   one-way     → symbol:BOTH (single slot per symbol)
+                // Preserve exchange-side identity like Binance:
+                //   hedge mode  → symbol:LONG / symbol:SHORT response rows
+                //   one-way     → symbol:BOTH response row
+                // Kraite still permits only one bot position per symbol.
                 return $position['symbol'].':'.$position['positionSide'];
             })
             ->toArray();

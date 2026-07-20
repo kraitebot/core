@@ -86,7 +86,7 @@ trait InteractsWithApis
 
         return new ApiResponse(
             response: $this->apiResponse,
-            result: $this->apiMapper()->resolveQueryTradeResponse($this->apiResponse)
+            result: $this->apiMapper()->resolveQueryTradeResponse($this->apiResponse, $this)
         );
     }
 
@@ -226,7 +226,21 @@ trait InteractsWithApis
         $this->apiResponse = $this->account->withApi()->flashClosePosition($this->apiProperties);
 
         $body = json_decode((string) $this->apiResponse->getBody(), associative: true);
-        $successList = $body['data']['successList'] ?? [];
+        $utaList = $body['data']['list'] ?? null;
+        $successList = is_array($utaList)
+            ? array_values(array_filter(
+                $utaList,
+                static fn (array $result): bool => in_array((string) ($result['code'] ?? ''), ['', '00000'], true),
+            ))
+            : ($body['data']['successList'] ?? []);
+        $failureList = is_array($utaList)
+            ? array_values(array_filter(
+                $utaList,
+                static fn (array $result): bool => ! in_array((string) ($result['code'] ?? ''), ['', '00000'], true),
+            ))
+            : ($body['data']['failureList'] ?? []);
+        $success = ($body['code'] ?? '') === '00000'
+            && (! is_array($utaList) || ($successList !== [] && $failureList === []));
 
         // Query the flash close order to get the fill price for closing_price
         if (! empty($successList)) {
@@ -239,9 +253,9 @@ trait InteractsWithApis
         return new ApiResponse(
             response: $this->apiResponse,
             result: [
-                'success' => ($body['code'] ?? '') === '00000',
+                'success' => $success,
                 'successList' => $successList,
-                'failureList' => $body['data']['failureList'] ?? [],
+                'failureList' => $failureList,
             ]
         );
     }
@@ -265,7 +279,10 @@ trait InteractsWithApis
             $orderBody = json_decode((string) $orderResponse->getBody(), associative: true);
 
             // BitGet returns priceAvg for filled market orders
-            $fillPrice = $orderBody['data']['priceAvg'] ?? $orderBody['data']['price'] ?? null;
+            $fillPrice = $orderBody['data']['priceAvg']
+                ?? $orderBody['data']['avgPrice']
+                ?? $orderBody['data']['price']
+                ?? null;
 
             if ($fillPrice !== null && $fillPrice !== '' && Math::gt((string) $fillPrice, '0')) {
                 $this->updateSaving(['closing_price' => $fillPrice]);

@@ -6,6 +6,7 @@ namespace Kraite\Core\Jobs\Atomic\Order\Bitget;
 
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
+use Kraite\Core\Enums\BitgetAccountMode;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
@@ -16,8 +17,11 @@ use Throwable;
 /**
  * ModifyAlgoOrderJob (Atomic) — Bitget
  *
- * Restores a drifted Bitget position-level TP/SL order back to its
- * `reference_price` by re-calling `place-pos-tpsl` with both legs.
+ * Restores a drifted Bitget position-level TP/SL order to its
+ * `reference_price`.
+ *
+ * Unified modifies the one affected v3 strategy. Classic re-calls
+ * `place-pos-tpsl` with both legs because its protection is position-scoped.
  *
  * Bitget's `pos_profit` / `pos_loss` orders are attached to the position
  * and cannot be modified by the per-order endpoints used elsewhere:
@@ -34,8 +38,8 @@ use Throwable;
  *
  * Flow:
  *  1. startOrFail: position active, order is_algo + drifted, has reference_price
- *  2. computeApiable: re-place both TP+SL via place-pos-tpsl
- *  3. doubleCheck: trivially true — overwrite is server-side atomic and
+ *  2. computeApiable: modify the Unified strategy or re-place Classic TP+SL
+ *  3. doubleCheck: trivially true — mutation is server-side and
  *     the subsequent SyncPositionOrdersJob will re-pull the live trigger
  *  4. complete: write reference_price back into local price column so the
  *     OrderObserver does not re-fire the correction loop
@@ -97,6 +101,23 @@ final class ModifyAlgoOrderJob extends BaseApiableJob
     {
         $account = $this->position->account;
         $referencePrice = (string) $this->order->reference_price;
+
+        if ($account->resolveBitgetAccountMode() === BitgetAccountMode::Unified) {
+            $response = $this->order->apiModifyTpsl($referencePrice);
+
+            if (! ($response->result['success'] ?? false)) {
+                throw new RuntimeException('Failed to modify Bitget UTA TP/SL strategy order.');
+            }
+
+            return [
+                'position_id' => $this->position->id,
+                'order_id' => $this->order->id,
+                'type' => $this->order->type,
+                'old_price' => (string) $this->order->price,
+                'new_price' => $referencePrice,
+                'message' => 'Bitget UTA TP/SL strategy trigger restored to reference price',
+            ];
+        }
 
         $sibling = $this->findSiblingAlgoOrder();
         if ($sibling === null) {
@@ -161,9 +182,8 @@ final class ModifyAlgoOrderJob extends BaseApiableJob
     }
 
     /**
-     * Modify is server-side atomic on Bitget — there is no separate
-     * verification endpoint. The next `SyncPositionOrdersJob` will pull
-     * the live trigger and confirm the change.
+     * The next `SyncPositionOrdersJob` pulls the live trigger and confirms
+     * the server-side mutation for either account mode.
      */
     public function doubleCheck(): bool
     {

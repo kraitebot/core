@@ -58,6 +58,11 @@ trait MapsOrderQuery
         $body = json_decode((string) $response->getBody(), associative: true);
         $result = $body['data'] ?? [];
 
+        $result['state'] ??= $result['orderStatus'] ?? '';
+        $result['priceAvg'] ??= $result['avgPrice'] ?? '0';
+        $result['filledQty'] ??= $result['cumExecQty'] ?? '0';
+        $result['size'] ??= $result['qty'] ?? '0';
+
         $raw = $result;
 
         // Normalize state to uppercase status (like Binance).

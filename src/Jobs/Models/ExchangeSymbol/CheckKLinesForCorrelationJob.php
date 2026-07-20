@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Models\ExchangeSymbol;
 
-use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\Candle;
 use Kraite\Core\Models\ExchangeSymbol;
@@ -103,27 +102,26 @@ final class CheckKLinesForCorrelationJob extends BaseQueueableJob
             ];
         }
 
-        // Create child block with FetchKlines steps
-        $childBlockUuid = Str::uuid()->toString();
         $group = $this->step->group;
 
-        foreach ($missingSteps as $missing) {
-            Step::create([
-                'class' => FetchKlinesJob::class,
-                'queue' => 'indicators',
-                'block_uuid' => $childBlockUuid,
-                'group' => $group,
-                'index' => 1,
-                'arguments' => [
-                    'exchangeSymbolId' => $missing['exchange_symbol_id'],
-                    'timeframe' => $timeframe,
-                    'limit' => $windowSize,
-                ],
-            ]);
-        }
+        $this->buildChildChainOnce(function (string $childBlockUuid) use ($group, $missingSteps, $timeframe, $windowSize): void {
+            foreach ($missingSteps as $missing) {
+                Step::create([
+                    'class' => FetchKlinesJob::class,
+                    'queue' => 'indicators',
+                    'block_uuid' => $childBlockUuid,
+                    'group' => $group,
+                    'index' => 1,
+                    'arguments' => [
+                        'exchangeSymbolId' => $missing['exchange_symbol_id'],
+                        'timeframe' => $timeframe,
+                        'limit' => $windowSize,
+                    ],
+                ]);
+            }
+        });
 
-        // Link child block to this step
-        $this->step->update(['child_block_uuid' => $childBlockUuid]);
+        $childBlockUuid = $this->step->child_block_uuid;
 
         return [
             'result' => 'fetching_candles',

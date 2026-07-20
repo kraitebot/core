@@ -15,6 +15,7 @@ use Kraite\Core\Jobs\Lifecycles\Order\PrepareSyncOrdersJob;
 use Kraite\Core\Jobs\Models\ExchangeSymbol\ConcludeSymbolDirectionAtTimeframeJob;
 use Kraite\Core\Jobs\Models\Indicator\QuerySymbolIndicatorsJob;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\BinanceListenKey;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Kraite;
@@ -482,7 +483,40 @@ final class CheckSystemHealthCommand extends BaseCommand
                 $q->whereNull('exchange_symbols.indicators_synced_at')
                     ->orWhere('exchange_symbols.indicators_synced_at', '<', $threshold);
             })
-            ->get(['id', 'token', 'quote', 'indicators_synced_at', 'indicators_timeframe']);
+            ->get(['id', 'api_system_id', 'token', 'quote', 'indicators_synced_at', 'indicators_timeframe']);
+
+        // Copy-lag suppression (2026-07-20, Bruno-approved). Indicators are
+        // computed natively ONLY on Binance; sibling rows receive their
+        // stamp when the copy phase lands, so on a stable direction plus a
+        // busy queue a sibling legitimately ages past the threshold while
+        // the SOURCE signal is provably current. A stale non-Binance row
+        // whose Binance sibling is fresh is "waiting for its copy turn",
+        // not "data outdated" — suppress it. A genuine outage (TAAPI /
+        // klines / conclude down) freezes the Binance stamps themselves,
+        // so it still alerts at full severity through the Binance rows and
+        // their siblings.
+        $binanceSystemId = ApiSystem::query()->where('canonical', 'binance')->value('id');
+
+        if ($binanceSystemId !== null) {
+            $staleSiblings = $stale->filter(
+                fn (ExchangeSymbol $row): bool => (int) $row->api_system_id !== (int) $binanceSystemId,
+            );
+
+            if ($staleSiblings->isNotEmpty()) {
+                $freshSourcePairs = ExchangeSymbol::query()
+                    ->where('api_system_id', $binanceSystemId)
+                    ->where('indicators_synced_at', '>=', $threshold)
+                    ->whereIn('token', $staleSiblings->pluck('token')->unique())
+                    ->get(['token', 'quote'])
+                    ->map(fn (ExchangeSymbol $source): string => $source->token.':'.$source->quote)
+                    ->flip();
+
+                $stale = $stale->reject(
+                    fn (ExchangeSymbol $row): bool => (int) $row->api_system_id !== (int) $binanceSystemId
+                        && isset($freshSourcePairs[$row->token.':'.$row->quote]),
+                );
+            }
+        }
 
         $alerts = 0;
         foreach ($stale as $row) {
@@ -969,17 +1003,15 @@ final class CheckSystemHealthCommand extends BaseCommand
         $openResp = $account->apiQueryOpenOrders();
         $exchangeOpenOrders = collect($openResp->result ?? []);
 
-        // Algo endpoint exists on Binance only as a separate
-        // call — Bitget bundles algos into apiQueryOpenOrders. The
-        // additional algo pull on Bitget is harmless (returns empty)
-        // but Binance's algos are otherwise invisible.
-        $algoOrders = collect();
-        try {
-            $algoResp = $account->apiQueryAlgoOrders();
-            $algoOrders = collect($algoResp->result ?? []);
-        } catch (Throwable) {
-            // Bitget / one-way without algos: silent skip.
-        }
+        // Conditional orders live on exchange-specific surfaces and are not
+        // returned by regular open-order queries. Acquisition must fail the
+        // account pass if its supported endpoint fails; reconciling a partial
+        // exchange snapshot could classify live protection as absent.
+        $algoOrders = match ($account->apiSystem->canonical) {
+            'binance' => collect($account->apiQueryAlgoOrders()->result ?? []),
+            'bitget' => collect($account->apiQueryPlanOrders()->result ?? []),
+            default => collect(),
+        };
 
         $exchangePositionsResp = $account->apiQueryPositions();
         $exchangePositions = collect($exchangePositionsResp->result ?? []);

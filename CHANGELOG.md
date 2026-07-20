@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.77.0 - 2026-07-20
+
+### Bitget full trading compatibility
+
+- [ADDED] Unified v3 trading for one-way and hedge accounts: entries, limits,
+  trigger orders, independent TP/SL strategies, modification, cancellation,
+  close, fills, PnL history, leverage, margin context, sync, drift, and recovery.
+- [FIXED] Classic one-way closing fills keep their native execution side;
+  hedge-only side normalization no longer inverts the recorded close.
+- [CHANGED] Exchange hedge mode changes request/response shape only. Kraite
+  still enforces one non-terminal position per account and symbol.
+
+### Dispatcher workload and recovery
+
+- [CHANGED] Hourly catalogue refresh creates zero leverage-bracket steps; an
+  explicit `--with-brackets` run performs the full six-hour sweep.
+- [CHANGED] Child workflow creation and indicator finalization are atomic and
+  idempotent, including rollback-safe symbol conclusions.
+- [FIXED] Stale copied indicator rows are suppressed only while their Binance
+  source is fresh; genuine source staleness still alerts.
+- [CHANGED] Connectivity and position-safety work uses the low-latency priority
+  path, and Bitget orphan checks acquire regular plus strategy orders atomically.
+
 ## 1.76.0 - 2026-07-20
 
 ### Bitget unified accounts (Phase 1 — onboarding + reads)

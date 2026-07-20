@@ -37,7 +37,7 @@ final class PositionSafety
 
             Step::create([
                 'class' => $confirmationClass,
-                'queue' => 'positions',
+                'queue' => 'priority',
                 'priority' => 'high',
                 'relatable_type' => $locked->getMorphClass(),
                 'relatable_id' => $locked->getKey(),
@@ -82,7 +82,7 @@ final class PositionSafety
 
             Step::create([
                 'class' => $cancellationClass,
-                'queue' => 'positions',
+                'queue' => 'priority',
                 'priority' => 'high',
                 'relatable_type' => $locked->getMorphClass(),
                 'relatable_id' => $locked->getKey(),

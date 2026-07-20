@@ -147,7 +147,10 @@ trait MapsPlacePlanOrder
     public function resolvePlanOrderQueryResponse(Response $response, ?string $targetOrderId = null): array
     {
         $data = json_decode((string) $response->getBody(), associative: true);
-        $orders = $data['data']['entrustedList'] ?? [];
+        $responseData = $data['data'] ?? [];
+        $orders = is_array($responseData)
+            ? ($responseData['entrustedList'] ?? $responseData['list'] ?? (array_is_list($responseData) ? $responseData : []))
+            : [];
 
         // Find the order matching our orderId
         $order = null;
@@ -171,8 +174,13 @@ trait MapsPlacePlanOrder
             ];
         }
 
-        $status = $this->normalizePlanOrderStatus($order['planStatus'] ?? '');
-        $planType = $order['planType'] ?? '';
+        $isUnified = array_key_exists('status', $order)
+            || array_key_exists('takeProfit', $order)
+            || array_key_exists('stopLoss', $order);
+        $status = $this->normalizePlanOrderStatus($order['planStatus'] ?? $order['status'] ?? '');
+        $hasStopLoss = Math::gt((string) ($order['stopLoss'] ?? '0'), '0');
+        $hasTrigger = Math::gt((string) ($order['triggerPrice'] ?? '0'), '0');
+        $planType = $order['planType'] ?? ($hasTrigger ? 'normal_plan' : ($hasStopLoss ? 'pos_loss' : 'pos_profit'));
 
         // Position-level TPSL orders (pos_profit, pos_loss) have size=0 because they
         // track the entire position dynamically. Return null for quantity so the
@@ -186,9 +194,9 @@ trait MapsPlacePlanOrder
             'status' => $status,
             'price' => $this->computePlanOrderDisplayPrice($order),
             '_price' => $this->computePlanOrderDisplayPrice($order),
-            'quantity' => $quantity,
-            'type' => 'STOP_MARKET',
-            '_orderType' => 'STOP_MARKET',
+            'quantity' => $isPositionTpsl ? null : ($isUnified ? (string) ($order['qty'] ?? '0') : $quantity),
+            'type' => $hasTrigger || $hasStopLoss || ! $isUnified ? 'STOP_MARKET' : 'PROFIT_LIMIT',
+            '_orderType' => $hasTrigger || $hasStopLoss || ! $isUnified ? 'STOP_MARKET' : 'PROFIT_LIMIT',
             'side' => $order['side'] ?? '',
             '_isPlanOrder' => true,
             '_isPositionTpsl' => $isPositionTpsl,
@@ -233,6 +241,15 @@ trait MapsPlacePlanOrder
     public function resolvePlanOrderCancelResponse(Response $response): array
     {
         $data = json_decode((string) $response->getBody(), associative: true);
+        if (($data['code'] ?? '') === '00000' && ($data['data'] ?? null) === null) {
+            return [
+                'order_id' => null,
+                'status' => 'CANCELLED',
+                '_isPlanOrder' => true,
+                '_raw' => $data,
+            ];
+        }
+
         $successList = $data['data']['successList'] ?? [];
         $cancelledOrder = is_array($successList) ? ($successList[0] ?? null) : null;
         $success = ($data['code'] ?? '') === '00000' && is_array($cancelledOrder);
@@ -277,10 +294,12 @@ trait MapsPlacePlanOrder
      */
     private function computePlanOrderDisplayPrice(array $order): string
     {
-        $triggerPrice = $order['triggerPrice'] ?? '0';
+        foreach (['triggerPrice', 'stopLoss', 'takeProfit'] as $field) {
+            $triggerPrice = (string) ($order[$field] ?? '0');
 
-        if (Math::gt($triggerPrice, 0)) {
-            return (string) $triggerPrice;
+            if (Math::gt($triggerPrice, 0)) {
+                return $triggerPrice;
+            }
         }
 
         return '0';
@@ -294,8 +313,8 @@ trait MapsPlacePlanOrder
     private function normalizePlanOrderStatus(string $status): string
     {
         return match (mb_strtolower($status)) {
-            'live', 'not_trigger' => 'NEW',
-            'executed', 'triggered' => 'FILLED',
+            'live', 'not_trigger', 'pending', 'submitting' => 'NEW',
+            'executed', 'triggered', 'success' => 'FILLED',
             'cancelled', 'canceled' => 'CANCELLED',
             'fail', 'failed' => 'REJECTED',
             default => mb_strtoupper($status),

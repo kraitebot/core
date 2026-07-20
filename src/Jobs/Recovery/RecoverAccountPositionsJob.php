@@ -105,7 +105,14 @@ final class RecoverAccountPositionsJob extends BaseApiableJob
         }
 
         try {
-            $algo = RecoveryApiThrottle::call($this->account, fn () => $this->account->apiQueryAlgoOrders(), $stepId)->result ?? [];
+            $algo = RecoveryApiThrottle::call(
+                $this->account,
+                fn () => match ($this->account->apiSystem->canonical) {
+                    'bitget' => $this->account->apiQueryPlanOrders(),
+                    default => $this->account->apiQueryAlgoOrders(),
+                },
+                $stepId,
+            )->result ?? [];
         } catch (Throwable) {
             $algo = null;
         }

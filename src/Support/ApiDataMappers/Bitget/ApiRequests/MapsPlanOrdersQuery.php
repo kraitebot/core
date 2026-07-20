@@ -72,9 +72,15 @@ trait MapsPlanOrdersQuery
     public function resolveQueryPlanOrdersResponse(Response $response): array
     {
         $data = json_decode((string) $response->getBody(), associative: true);
-        $orders = $data['data']['entrustedList'] ?? [];
+        $responseData = $data['data'] ?? [];
+        $orders = is_array($responseData)
+            ? ($responseData['entrustedList'] ?? $responseData['list'] ?? (array_is_list($responseData) ? $responseData : []))
+            : [];
 
         return array_map(callback: function (array $order): array {
+            $order = $this->normalizeUnifiedStrategyOrder($order);
+            $order['clientOrderId'] ??= $order['clientOid'] ?? null;
+            $order['status'] ??= $this->normalizePlanSnapshotStatus((string) ($order['planStatus'] ?? ''));
             // Add _price using triggerPrice for plan orders
             $order['_price'] = $this->computePlanOrderPrice($order);
             $order['_orderType'] = $this->canonicalOrderType($order);
@@ -84,6 +90,41 @@ trait MapsPlanOrdersQuery
 
             return $order;
         }, array: $orders);
+    }
+
+    private function normalizePlanSnapshotStatus(string $status): string
+    {
+        return match (mb_strtolower($status)) {
+            'live', 'not_trigger', 'pending', 'submitting' => 'NEW',
+            'executed', 'triggered', 'success' => 'FILLED',
+            'cancelled', 'canceled' => 'CANCELLED',
+            'fail', 'failed' => 'REJECTED',
+            default => mb_strtoupper($status),
+        };
+    }
+
+    private function normalizeUnifiedStrategyOrder(array $order): array
+    {
+        if (! array_key_exists('status', $order)
+            && ! array_key_exists('takeProfit', $order)
+            && ! array_key_exists('stopLoss', $order)) {
+            return $order;
+        }
+
+        $hasStopLoss = Math::gt((string) ($order['stopLoss'] ?? '0'), '0');
+        $hasTrigger = Math::gt((string) ($order['triggerPrice'] ?? '0'), '0');
+        $order['planStatus'] ??= $order['status'] ?? '';
+        $order['size'] ??= $order['qty'] ?? '0';
+        $order['planType'] ??= $hasTrigger ? 'normal_plan' : ($hasStopLoss ? 'pos_loss' : 'pos_profit');
+        $order['stopLossTriggerPrice'] ??= $hasStopLoss ? (string) $order['stopLoss'] : '';
+        $order['stopSurplusTriggerPrice'] ??= ! $hasStopLoss && ! $hasTrigger
+            ? (string) ($order['takeProfit'] ?? '')
+            : '';
+        $order['positionSide'] ??= isset($order['posSide'])
+            ? mb_strtoupper((string) $order['posSide'])
+            : null;
+
+        return $order;
     }
 
     /**

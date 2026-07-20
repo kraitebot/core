@@ -157,10 +157,7 @@ final readonly class PositionSnapshot
             'binance' => array_is_list($body)
                 && self::rowsContain($body, ['symbol', 'positionAmt']),
             'bitget' => (string) ($body['code'] ?? '') === '00000'
-                && isset($body['data'])
-                && is_array($body['data'])
-                && array_is_list($body['data'])
-                && self::rowsContain($body['data'], ['symbol', 'total', 'holdSide']),
+                && self::hasValidBitgetRows($body),
             'bybit' => (int) ($body['retCode'] ?? -1) === 0
                 && isset($body['result']['list'])
                 && is_array($body['result']['list'])
@@ -183,7 +180,8 @@ final readonly class PositionSnapshot
         $canonical = mb_strtolower($canonical);
         $rows = match ($canonical) {
             'binance' => $body,
-            'bitget', 'kucoin' => $body['data'],
+            'bitget' => self::bitgetRows($body),
+            'kucoin' => $body['data'],
             'bybit' => $body['result']['list'],
             default => null,
         };
@@ -242,6 +240,46 @@ final readonly class PositionSnapshot
         }
 
         return true;
+    }
+
+    /** @param array<string, mixed> $body */
+    private static function hasValidBitgetRows(array $body): bool
+    {
+        $rows = self::bitgetRows($body);
+
+        if ($rows === null || ! self::rowsContain($rows, ['symbol', 'total'])) {
+            return false;
+        }
+
+        foreach ($rows as $row) {
+            if (! is_array($row)
+                || (! array_key_exists('holdSide', $row) && ! array_key_exists('posSide', $row))) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param  array<string, mixed>  $body
+     * @return array<int, mixed>|null
+     */
+    private static function bitgetRows(array $body): ?array
+    {
+        $data = $body['data'] ?? null;
+
+        if (! is_array($data)) {
+            return null;
+        }
+
+        if (array_is_list($data)) {
+            return $data;
+        }
+
+        $rows = $data['list'] ?? null;
+
+        return is_array($rows) && array_is_list($rows) ? $rows : null;
     }
 
     /**

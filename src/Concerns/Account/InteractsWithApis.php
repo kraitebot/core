@@ -254,8 +254,13 @@ trait InteractsWithApis
     /**
      * Query historical closed positions from Bitget with exchange-computed PnL.
      */
-    public function apiQueryHistoryPositions(string $productType, ?string $symbol = null, ?int $startTime = null, ?int $endTime = null): ApiResponse
-    {
+    public function apiQueryHistoryPositions(
+        string $productType,
+        ?string $symbol = null,
+        ?int $startTime = null,
+        ?int $endTime = null,
+        ?string $cursor = null,
+    ): ApiResponse {
         $this->apiProperties = new ApiProperties;
         $this->apiProperties->set('account', $this);
         $this->apiProperties->set('options.productType', $productType);
@@ -268,6 +273,9 @@ trait InteractsWithApis
         }
         if ($endTime !== null) {
             $this->apiProperties->set('options.endTime', (string) $endTime);
+        }
+        if ($cursor !== null && $cursor !== '') {
+            $this->apiProperties->set('options.cursor', $cursor);
         }
         $this->apiProperties->set('options.limit', '100');
 

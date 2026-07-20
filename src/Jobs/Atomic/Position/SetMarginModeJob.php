@@ -6,6 +6,7 @@ namespace Kraite\Core\Jobs\Atomic\Position;
 
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
+use Kraite\Core\Enums\BitgetAccountMode;
 use Kraite\Core\Models\Position;
 
 /**
@@ -45,6 +46,17 @@ class SetMarginModeJob extends BaseApiableJob
     {
         $marginMode = $this->position->account->margin_mode;
         $tradingPair = $this->position->exchangeSymbol->parsed_trading_pair;
+
+        if ($this->position->account->apiSystem->canonical === 'bitget'
+            && $this->position->account->resolveBitgetAccountMode() === BitgetAccountMode::Unified) {
+            return [
+                'position_id' => $this->position->id,
+                'trading_pair' => $tradingPair,
+                'margin_mode' => $marginMode,
+                'message' => "Margin mode {$marginMode} will be applied by the UTA leverage and order requests for {$tradingPair}",
+                'api_response' => null,
+            ];
+        }
 
         $apiResponse = $this->position->apiUpdateMarginType();
 

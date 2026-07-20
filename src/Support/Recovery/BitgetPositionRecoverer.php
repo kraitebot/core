@@ -14,12 +14,10 @@ use Throwable;
 /**
  * BitgetPositionRecoverer
  *
- * Recovers a Bitget USDT-FUTURES or USDC-FUTURES account using the V2 endpoints:
+ * Recovers Bitget USDT-FUTURES or USDC-FUTURES accounts from either API family:
  *
- *   - GET /api/v2/mix/position/all-position           → open positions
- *   - GET /api/v2/mix/order/orders-pending            → live LIMIT/PROFIT
- *   - GET /api/v2/mix/order/orders-plan-pending       → live STOP / TPSL
- *   - GET /api/v2/mix/order/fills                     → historical fills
+ *   - Classic uses v2 mix position, order, plan-order, and fill endpoints
+ *   - Unified uses v3 position, order, strategy-order, and fill endpoints
  *
  * Bitget's `tradeSide=close` reporting on fills is hedge-mode-specific
  * (account 4 today). The bot's existing trades-mapper already
@@ -64,14 +62,15 @@ final class BitgetPositionRecoverer extends AbstractPositionRecoverer
         $symbol = (string) ($exchangePosition['symbol'] ?? $position->exchangeSymbol->asset);
 
         $quote = $position->exchangeSymbol->quote;
-        $regular = $this->fetchPendingOrders($symbol, $quote);
-        $plan = $this->fetchPlanOrders($symbol, $quote);
+        $direction = (string) $position->direction;
+        $regular = $this->fetchPendingOrders($symbol, $quote, $direction);
+        $plan = $this->fetchPlanOrders($symbol, $quote, $direction);
 
         return [...$regular, ...$plan];
     }
 
     /**
-     * Per-symbol fill history via /api/v2/mix/order/fills. We bucket
+     * Per-symbol fill history via the Classic v2 or Unified v3 fills endpoint. We bucket
      * multi-row fills by orderId to land one Order per unique exchange
      * order, mirroring the Binance recoverer.
      *
@@ -106,10 +105,18 @@ final class BitgetPositionRecoverer extends AbstractPositionRecoverer
             return [];
         }
 
-        $fills = $body['data']['fillList'] ?? [];
+        $data = $body['data'] ?? [];
+        $fills = is_array($data)
+            ? ($data['fillList'] ?? $data['list'] ?? [])
+            : [];
         if (! is_array($fills) || $fills === []) {
             return [];
         }
+
+        $fills = array_values(array_filter(
+            array_map(fn (array $fill): array => $this->normalizeFill($fill), $fills),
+            fn (array $fill): bool => $this->fillBelongsToPosition($fill, $position, $symbol),
+        ));
 
         // Window the fill list to only those that built the current
         // open slot. Bitget orders fills newest-first by default; we
@@ -201,11 +208,17 @@ final class BitgetPositionRecoverer extends AbstractPositionRecoverer
 
         $quantity = $this->firstNonEmpty([
             $exchangeOrder['size'] ?? null,
+            $exchangeOrder['qty'] ?? null,
             $exchangeOrder['baseVolume'] ?? null,
             $exchangeOrder['filledQty'] ?? null,
+            $exchangeOrder['cumExecQty'] ?? null,
         ], '0');
 
-        $rawTime = $exchangeOrder['cTime'] ?? $exchangeOrder['uTime'] ?? null;
+        $rawTime = $exchangeOrder['cTime']
+            ?? $exchangeOrder['createdTime']
+            ?? $exchangeOrder['uTime']
+            ?? $exchangeOrder['updatedTime']
+            ?? null;
         $openedAt = null;
         if ($rawTime !== null) {
             $secs = (int) $rawTime;
@@ -313,59 +326,87 @@ final class BitgetPositionRecoverer extends AbstractPositionRecoverer
     /**
      * Live LIMIT / PROFIT-LIMIT / MARKET orders.
      */
-    protected function fetchPendingOrders(string $symbol, string $quote): array
+    protected function fetchPendingOrders(string $symbol, string $quote, string $direction): array
     {
-        $context = BitgetProductContext::fromQuote($quote);
+        if ($this->batchedOpenOrders !== null) {
+            $list = $this->batchedOpenOrders;
+        } else {
+            $context = BitgetProductContext::fromQuote($quote);
 
-        $properties = new ApiProperties;
-        $properties->set('relatable', $this->account);
-        $properties->set('account', $this->account);
-        $properties->set('options.symbol', $symbol);
-        $properties->set('options.productType', $context->productType);
+            $properties = new ApiProperties;
+            $properties->set('relatable', $this->account);
+            $properties->set('account', $this->account);
+            $properties->set('options.symbol', $symbol);
+            $properties->set('options.productType', $context->productType);
 
-        try {
-            $response = $this->account->withApi()->getCurrentOpenOrders($properties);
-            $body = json_decode((string) $response->getBody(), associative: true);
-        } catch (Throwable $e) {
-            $this->report->warning("Bitget getCurrentOpenOrders failed for {$symbol} on account #{$this->account->id}: {$e->getMessage()}");
+            try {
+                $response = $this->account->withApi()->getCurrentOpenOrders($properties);
+                $body = json_decode((string) $response->getBody(), associative: true);
+            } catch (Throwable $e) {
+                $this->report->warning("Bitget getCurrentOpenOrders failed for {$symbol} on account #{$this->account->id}: {$e->getMessage()}");
 
+                return [];
+            }
+
+            $data = $body['data'] ?? [];
+            $list = is_array($data)
+                ? ($data['entrustedList'] ?? $data['list'] ?? [])
+                : [];
+        }
+
+        if (! is_array($list)) {
             return [];
         }
 
-        $list = $body['data']['entrustedList'] ?? [];
-
-        return is_array($list) ? $list : [];
+        return array_map(
+            fn (array $order): array => $this->normalizeRegularOrder($order),
+            $this->filterOrdersForPosition($list, $symbol, $direction),
+        );
     }
 
     /**
      * Live plan orders (STOP-MARKET, position TP/SL).
      */
-    protected function fetchPlanOrders(string $symbol, string $quote): array
+    protected function fetchPlanOrders(string $symbol, string $quote, string $direction): array
     {
-        $context = BitgetProductContext::fromQuote($quote);
+        if ($this->batchedAlgoOrders !== null) {
+            $list = $this->batchedAlgoOrders;
+        } else {
+            $context = BitgetProductContext::fromQuote($quote);
 
-        $properties = new ApiProperties;
-        $properties->set('relatable', $this->account);
-        $properties->set('account', $this->account);
-        $properties->set('options.symbol', $symbol);
-        $properties->set('options.productType', $context->productType);
-        // profit_loss covers BOTH stop-loss and take-profit plan types,
-        // including the position-level pos_profit / pos_loss flavours
-        // that Bitget attaches via place-pos-tpsl.
-        $properties->set('options.planType', 'profit_loss');
+            $properties = new ApiProperties;
+            $properties->set('relatable', $this->account);
+            $properties->set('account', $this->account);
+            $properties->set('options.symbol', $symbol);
+            $properties->set('options.productType', $context->productType);
+            // profit_loss covers BOTH stop-loss and take-profit plan types,
+            // including the position-level pos_profit / pos_loss flavours
+            // that Bitget attaches via place-pos-tpsl.
+            $properties->set('options.planType', 'profit_loss');
 
-        try {
-            $response = $this->account->withApi()->getPlanOrders($properties);
-            $body = json_decode((string) $response->getBody(), associative: true);
-        } catch (Throwable $e) {
-            $this->report->warning("Bitget getPlanOrders failed for {$symbol} on account #{$this->account->id}: {$e->getMessage()}");
+            try {
+                $response = $this->account->withApi()->getPlanOrders($properties);
+                $body = json_decode((string) $response->getBody(), associative: true);
+            } catch (Throwable $e) {
+                $this->report->warning("Bitget getPlanOrders failed for {$symbol} on account #{$this->account->id}: {$e->getMessage()}");
 
+                return [];
+            }
+
+            $data = $body['data'] ?? [];
+            $list = is_array($data)
+                ? ($data['entrustedList'] ?? $data['list'] ?? (array_is_list($data) ? $data : []))
+                : [];
+        }
+
+        if (! is_array($list)) {
             return [];
         }
 
-        $list = $body['data']['entrustedList'] ?? [];
-
-        return is_array($list) ? $list : [];
+        return array_map(
+            fn (array $order): array => $this->normalizeStrategyOrder($order, $direction),
+            $this->filterOrdersForPosition($list, $symbol, $direction),
+        );
     }
 
     /**
@@ -399,14 +440,121 @@ final class BitgetPositionRecoverer extends AbstractPositionRecoverer
      */
     protected function mapOrderStatus(array $exchangeOrder): string
     {
-        $raw = mb_strtolower((string) ($exchangeOrder['state'] ?? $exchangeOrder['planStatus'] ?? 'new'));
+        $raw = mb_strtolower((string) (
+            $exchangeOrder['state']
+            ?? $exchangeOrder['orderStatus']
+            ?? $exchangeOrder['planStatus']
+            ?? $exchangeOrder['status']
+            ?? 'new'
+        ));
 
         return match ($raw) {
-            'new', 'live', 'not_trigger' => 'NEW',
+            'new', 'live', 'not_trigger', 'pending', 'submitting' => 'NEW',
             'partially_filled', 'partial-fill' => 'PARTIALLY_FILLED',
             'filled', 'full-fill', 'executed', 'triggered' => 'FILLED',
             'cancelled', 'canceled' => 'CANCELLED',
             default => mb_strtoupper($raw),
         };
+    }
+
+    /** @param array<string, mixed> $fill */
+    private function normalizeFill(array $fill): array
+    {
+        $fill['tradeId'] ??= $fill['execId'] ?? '';
+        $fill['price'] ??= $fill['execPrice'] ?? '0';
+        $fill['baseVolume'] ??= $fill['execQty'] ?? '0';
+        $fill['cTime'] ??= $fill['createdTime'] ?? '0';
+        $fill['profit'] ??= $fill['execPnl'] ?? '0';
+
+        return $fill;
+    }
+
+    /** @param array<string, mixed> $fill */
+    private function fillBelongsToPosition(array $fill, Position $position, string $symbol): bool
+    {
+        if (mb_strtoupper((string) ($fill['symbol'] ?? '')) !== mb_strtoupper($symbol)) {
+            return false;
+        }
+
+        if (! $position->account->isHedgeMode()) {
+            return true;
+        }
+
+        $direction = mb_strtolower((string) ($fill['posSide'] ?? ''));
+
+        if ($direction === '') {
+            $side = mb_strtolower((string) ($fill['side'] ?? ''));
+            $tradeSide = mb_strtolower((string) ($fill['tradeSide'] ?? ''));
+            $direction = match ([$tradeSide, $side]) {
+                ['open', 'buy'], ['close', 'sell'] => 'long',
+                ['open', 'sell'], ['close', 'buy'] => 'short',
+                default => '',
+            };
+        }
+
+        return $direction === mb_strtolower((string) $position->direction);
+    }
+
+    /** @param array<string, mixed> $order */
+    private function normalizeRegularOrder(array $order): array
+    {
+        $order['state'] ??= $order['orderStatus'] ?? 'new';
+        $order['size'] ??= $order['qty'] ?? '0';
+        $order['filledQty'] ??= $order['cumExecQty'] ?? '0';
+        $order['priceAvg'] ??= $order['avgPrice'] ?? '0';
+        $order['cTime'] ??= $order['createdTime'] ?? null;
+
+        return $order;
+    }
+
+    /** @param array<string, mixed> $order */
+    private function normalizeStrategyOrder(array $order, string $direction): array
+    {
+        $hasStopLoss = Math::gt((string) ($order['stopLoss'] ?? '0'), '0');
+        $hasTrigger = Math::gt((string) ($order['triggerPrice'] ?? '0'), '0');
+        $order['planType'] ??= $hasTrigger ? 'normal_plan' : ($hasStopLoss ? 'pos_loss' : 'pos_profit');
+        $order['planStatus'] ??= $order['status'] ?? 'live';
+        $order['size'] ??= $order['qty'] ?? '0';
+        $order['stopLossTriggerPrice'] ??= $hasStopLoss ? $order['stopLoss'] : '';
+        $order['stopSurplusTriggerPrice'] ??= ! $hasStopLoss && ! $hasTrigger
+            ? ($order['takeProfit'] ?? '')
+            : '';
+        $order['cTime'] ??= $order['createdTime'] ?? null;
+
+        if (! $hasTrigger && empty($order['side'])) {
+            $order['side'] = mb_strtoupper($direction) === 'LONG' ? 'sell' : 'buy';
+        }
+
+        return $order;
+    }
+
+    /**
+     * @param  array<int, mixed>  $orders
+     * @return array<int, array<string, mixed>>
+     */
+    private function filterOrdersForPosition(array $orders, string $symbol, string $direction): array
+    {
+        $symbol = mb_strtoupper($symbol);
+        $direction = mb_strtoupper($direction);
+
+        return array_values(array_filter($orders, function (mixed $order) use ($symbol, $direction): bool {
+            if (! is_array($order)
+                || mb_strtoupper((string) ($order['symbol'] ?? '')) !== $symbol) {
+                return false;
+            }
+
+            if (! $this->account->isHedgeMode()) {
+                return true;
+            }
+
+            $positionSide = mb_strtoupper((string) (
+                $order['positionSide']
+                ?? $order['posSide']
+                ?? $order['holdSide']
+                ?? ''
+            ));
+
+            return $positionSide === $direction;
+        }));
     }
 }

@@ -32,7 +32,17 @@ final class AccountServerConnectivityService
 
         $step = Step::create([
             'class' => TestExchangeConnectivityStep::class,
-            'queue' => 'cronjobs',
+            // User-facing flow (registration + admin credential tests) —
+            // must never wait behind bulk sync waves. Two levers, both
+            // required (2026-07-20 incident: a registrant's probe sat
+            // Pending 70+ minutes behind a 9K indicators backlog):
+            //   priority='high' — the dispatcher's uncapped fast pass;
+            //     without it the step waits for the 100-row FIFO window
+            //     to reach it, regardless of queue.
+            //   queue='priority' — after dispatch, consume on the
+            //     low-latency Horizon lane instead of cronjobs.
+            'priority' => 'high',
+            'queue' => 'priority',
             'relatable_type' => Account::class,
             'relatable_id' => $account->id,
             'arguments' => ['accountId' => $account->id],
@@ -48,29 +58,27 @@ final class AccountServerConnectivityService
     }
 
     /**
-     * @return array<string, mixed>
-     */
-    /**
      * The Account a connectivity workflow belongs to, resolved from the
      * parent step's `relatable`. Lets the controller authorize a status
      * lookup (keyed only by block_uuid) against account ownership.
      */
     public function ownerAccount(string $blockUuid): Account
     {
-        $account = Step::query()
+        $accountId = Step::query()
             ->where('block_uuid', $blockUuid)
             ->where('class', TestExchangeConnectivityStep::class)
             ->where('relatable_type', Account::class)
             ->firstOrFail()
-            ->relatable;
+            ->relatable_id;
 
-        if (! $account instanceof Account) {
+        if ($accountId === null) {
             abort(404);
         }
 
-        return $account;
+        return Account::query()->findOrFail($accountId);
     }
 
+    /** @return array<string, mixed> */
     public function status(string $blockUuid): array
     {
         $parent = Step::query()
@@ -85,7 +93,17 @@ final class AccountServerConnectivityService
 
         $servers = $this->apiConnectivityServers();
         $children = $parent->child_block_uuid
-            ? Step::query()->where('block_uuid', $parent->child_block_uuid)->get()->keyBy(fn (Step $step): int => (int) ($step->arguments['serverId'] ?? 0))
+            ? Step::query()->where('block_uuid', $parent->child_block_uuid)->get()->keyBy(function (Step $step): int {
+                $serverId = $step->arguments['serverId'] ?? null;
+
+                if (is_int($serverId)) {
+                    return $serverId;
+                }
+
+                return is_string($serverId) && ctype_digit($serverId)
+                    ? (int) $serverId
+                    : 0;
+            })
             : collect();
 
         $rows = $servers->map(function (Server $server) use ($children, $parent, $parentFailed): array {
@@ -120,12 +138,14 @@ final class AccountServerConnectivityService
 
     public function notify(Account $account, Server $server): bool
     {
+        $user = $account->user()->firstOrFail();
+
         return NotificationService::send(
-            user: $account->user,
+            user: $user,
             canonical: 'server_ip_not_whitelisted',
             referenceData: [
                 'type' => 'ip_not_whitelisted',
-                'exchange' => $account->apiSystem?->canonical,
+                'exchange' => $account->apiSystem->canonical,
                 'ip_address' => $server->ip_address,
                 'hostname' => $server->hostname,
                 'server' => $server->hostname,

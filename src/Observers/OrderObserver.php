@@ -308,7 +308,7 @@ final class OrderObserver
 
                 Step::create([
                     'class' => ClosePositionJob::class,
-                    'queue' => 'positions',
+                    'queue' => 'priority',
                     'priority' => 'high',
                     'relatable_type' => $locked->getMorphClass(),
                     'relatable_id' => $locked->getKey(),
@@ -366,7 +366,7 @@ final class OrderObserver
 
                 Step::create([
                     'class' => PreparePositionReplacementJob::class,
-                    'queue' => 'positions',
+                    'queue' => 'priority',
                     'priority' => 'high',
                     'relatable_type' => $locked->getMorphClass(),
                     'relatable_id' => $locked->getKey(),
@@ -431,7 +431,7 @@ final class OrderObserver
 
                 Step::create([
                     'class' => ApplyWapJob::class,
-                    'queue' => 'positions',
+                    'queue' => 'priority',
                     'priority' => 'high',
                     'relatable_type' => $locked->getMorphClass(),
                     'relatable_id' => $locked->getKey(),
@@ -616,7 +616,7 @@ final class OrderObserver
 
                 Step::create([
                     'class' => $resolvedClass,
-                    'queue' => 'positions',
+                    'queue' => 'priority',
                     'priority' => 'high',
                     'relatable_type' => $locked->getMorphClass(),
                     'relatable_id' => $locked->getKey(),

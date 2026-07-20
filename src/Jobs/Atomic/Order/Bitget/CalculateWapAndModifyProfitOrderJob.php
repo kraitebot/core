@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\Order\Bitget;
 
+use Kraite\Core\Enums\BitgetAccountMode;
 use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Jobs\Atomic\Order\CalculateWapAndModifyProfitOrderJob as BaseCalculateWapAndModifyProfitOrderJob;
 use Kraite\Core\Models\Order;
@@ -15,8 +16,8 @@ use Throwable;
 /**
  * CalculateWapAndModifyProfitOrderJob (Atomic) - Bitget
  *
- * Bitget-specific WAP recalculation. Diverges from the Binance base in
- * two ways:
+ * Bitget-specific WAP recalculation. Unified modifies the one v3 take-profit
+ * strategy and its quantity. Classic diverges from the Binance base in two ways:
  *
  *   1. Bitget pos_profit / pos_loss orders are attached to the position
  *      and cannot be modified through any per-order endpoint. The
@@ -41,7 +42,7 @@ use Throwable;
 final class CalculateWapAndModifyProfitOrderJob extends BaseCalculateWapAndModifyProfitOrderJob
 {
     /**
-     * Calculate WAP and rewrite the position's TP via place-pos-tpsl.
+     * Calculate WAP and rewrite the position's TP through the account-mode API.
      *
      * @return array<string, mixed>
      */
@@ -120,6 +121,44 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseCalculateWapAndModif
 
         $this->intendedPrice = $formattedPrice;
         $this->intendedQty = $formattedQty;
+
+        if ($account->resolveBitgetAccountMode() === BitgetAccountMode::Unified) {
+            try {
+                $response = $this->profitOrder->apiModifyTpsl($formattedPrice, $formattedQty);
+
+                if (! ($response->result['success'] ?? false)) {
+                    throw new RuntimeException('Bitget UTA strategy modification was not successful.');
+                }
+            } catch (Throwable $e) {
+                throw new RuntimeException(sprintf(
+                    'UTA modify strategy failed for profit order #%d (price=%s qty=%s). Original: %s',
+                    $this->profitOrder->id,
+                    $formattedPrice,
+                    $formattedQty,
+                    $e->getMessage(),
+                ), 0, $e);
+            }
+
+            $this->profitOrder->updateSaving([
+                'price' => $formattedPrice,
+                'quantity' => $formattedQty,
+            ]);
+            $this->dispatchWapAppliedNotification($oldPrice, $oldQty);
+
+            return [
+                'position_id' => $this->position->id,
+                'order_id' => $this->profitOrder->id,
+                'trading_pair' => $this->position->parsed_trading_pair,
+                'direction' => $this->position->direction,
+                'break_even_price' => $this->breakEvenPrice,
+                'profit_percentage' => $profitPct,
+                'old_price' => $oldPrice,
+                'new_price' => $formattedPrice,
+                'old_quantity' => $oldQty,
+                'new_quantity' => $formattedQty,
+                'message' => 'WAP applied via Bitget UTA strategy modification',
+            ];
+        }
 
         // Sibling SL leg is required: place-pos-tpsl is atomic on both
         // legs, so even when only the TP is changing the SL price must

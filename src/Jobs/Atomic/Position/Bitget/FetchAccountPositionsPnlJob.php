@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Jobs\Atomic\Position\Bitget;
 
 use Carbon\Carbon;
+use Kraite\Core\Enums\BitgetAccountMode;
 use Kraite\Core\Jobs\Atomic\Position\FetchAccountPositionsPnlJob as BaseFetchAccountPositionsPnlJob;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
@@ -17,6 +18,8 @@ use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
  */
 class FetchAccountPositionsPnlJob extends BaseFetchAccountPositionsPnlJob
 {
+    private const int MAX_UNIFIED_HISTORY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
     public function computeApiable(): array
     {
         $positions = Position::where('account_id', $this->account->id)
@@ -86,14 +89,14 @@ class FetchAccountPositionsPnlJob extends BaseFetchAccountPositionsPnlJob
 
         foreach ($exchangePositions as $exPos) {
             $exSymbol = mb_strtoupper((string) ($exPos['symbol'] ?? ''));
-            $exSide = mb_strtolower((string) ($exPos['holdSide'] ?? ''));
+            $exSide = mb_strtolower((string) ($exPos['holdSide'] ?? $exPos['posSide'] ?? ''));
 
             if ($exSymbol !== $symbol || $exSide !== $direction) {
                 continue;
             }
 
-            $exCreatedAt = Carbon::createFromTimestampMs((int) ($exPos['ctime'] ?? 0));
-            $exClosedAt = Carbon::createFromTimestampMs((int) ($exPos['utime'] ?? 0));
+            $exCreatedAt = Carbon::createFromTimestampMs((int) ($exPos['ctime'] ?? $exPos['createdTime'] ?? 0));
+            $exClosedAt = Carbon::createFromTimestampMs((int) ($exPos['utime'] ?? $exPos['updatedTime'] ?? 0));
 
             // Time window overlap: exchange position overlaps with our position's lifetime
             if ($exCreatedAt->lte($position->closed_at) && $exClosedAt->gte($position->opened_at)) {
@@ -110,6 +113,10 @@ class FetchAccountPositionsPnlJob extends BaseFetchAccountPositionsPnlJob
     protected function queryHistoryFromExchange(int $startTime, int $endTime): array
     {
         $context = BitgetProductContext::fromQuote($this->account->trading_quote);
+
+        if ($this->account->resolveBitgetAccountMode() === BitgetAccountMode::Unified) {
+            return $this->queryUnifiedHistory($context->productType, $startTime, $endTime);
+        }
 
         $response = $this->account->apiQueryHistoryPositions(
             productType: $context->productType,
@@ -128,5 +135,49 @@ class FetchAccountPositionsPnlJob extends BaseFetchAccountPositionsPnlJob
         }
 
         return [];
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function queryUnifiedHistory(string $productType, int $startTime, int $endTime): array
+    {
+        $positions = [];
+        $windowStart = $startTime;
+
+        while ($windowStart <= $endTime) {
+            $windowEnd = min($windowStart + self::MAX_UNIFIED_HISTORY_WINDOW_MS, $endTime);
+            $cursor = null;
+
+            do {
+                $response = $this->account->apiQueryHistoryPositions(
+                    productType: $productType,
+                    startTime: $windowStart,
+                    endTime: $windowEnd,
+                    cursor: $cursor,
+                );
+                $result = is_array($response->result) ? $response->result : [];
+                $page = data_get($result, 'data.list', []);
+
+                if (is_array($page)) {
+                    $positions = [...$positions, ...$page];
+                }
+
+                $nextCursor = data_get($result, 'data.cursor');
+                $nextCursor = is_string($nextCursor) && $nextCursor !== '' ? $nextCursor : null;
+
+                if ($page === [] || $nextCursor === $cursor) {
+                    $nextCursor = null;
+                }
+
+                $cursor = $nextCursor;
+            } while ($cursor !== null);
+
+            if ($windowEnd === $endTime) {
+                break;
+            }
+
+            $windowStart = $windowEnd + 1;
+        }
+
+        return $positions;
     }
 }

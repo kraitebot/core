@@ -95,8 +95,7 @@ trait MapsAccountBalanceQuery
     /**
      * Maps a v3 unified `assets` entry for the requested quote onto the
      * shared balance keys. Unified accounts do not report per-coin
-     * unrealized PnL, and unified trading stays gated until the v3 order
-     * surface ships, so PnL maps to zero.
+     * unrealized PnL, so PnL maps to zero.
      *
      * @param  array<string, mixed>  $payload
      * @return array<string, string>

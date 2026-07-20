@@ -38,7 +38,8 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
 {
     protected $signature = 'kraite:cron-refresh-exchange-symbols
                             {--clean : Truncate all operational tables and start fresh}
-                            {--exchange= : Only refresh a specific exchange (binance, bybit, kucoin, bitget)}';
+                            {--exchange= : Only refresh a specific exchange (binance, bybit, kucoin, bitget)}
+                            {--with-brackets : Refresh leverage brackets for every active symbol}';
 
     protected $description = 'Refresh exchange symbols from exchange APIs and discover CMC tokens';
 
@@ -68,6 +69,7 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
         }
 
         $exchangeFilter = $this->option('exchange');
+        $withBrackets = (bool) $this->option('with-brackets');
 
         $exchanges = ApiSystem::where('is_exchange', true)
             ->when($exchangeFilter, static function ($query) use ($exchangeFilter) {
@@ -86,7 +88,7 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
 
         $this->verboseInfo('Dispatching exchange symbol refresh steps...');
 
-        DB::transaction(function () use ($exchanges, $blockUuid) {
+        DB::transaction(function () use ($exchanges, $blockUuid, $withBrackets) {
             $nextIndex = 1;
 
             // Index 1: Binance syncs FIRST (required for overlaps_with_binance detection)
@@ -131,6 +133,7 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
             // - DiscoverCMCTokensForOrphanedSymbolsJob: discovers CMC tokens for orphaned symbols
             // - TouchTaapiDataForExchangeSymbolsJob: touches TAAPI to check data availability (Binance only)
             // - SyncLeverageBracketsJob: syncs leverage brackets for each exchange
+            //   only on the explicit six-hour/manual --with-brackets run
             // All share one index so they execute in parallel.
             //
             // Each orchestrator self-elects to parent mode inside its own compute()
@@ -155,22 +158,24 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
 
             // Sync leverage brackets for each exchange
             // Uses JobProxy to resolve exchange-specific lifecycle implementations:
-            // - Binance, BitGet: batch fetch (default)
-            // - Bybit, KuCoin: per-symbol fetch (override)
-            foreach ($exchanges as $exchange) {
-                $account = Account::admin($exchange->canonical);
-                $resolver = JobProxy::with($account);
-                $lifecycleClass = $resolver->resolve(SyncLeverageBracketsJob::class);
+            // - Binance: batch fetch (default)
+            // - Bitget, Bybit, KuCoin: per-symbol fetch (override)
+            if ($withBrackets) {
+                foreach ($exchanges as $exchange) {
+                    $account = Account::admin($exchange->canonical);
+                    $resolver = JobProxy::with($account);
+                    $lifecycleClass = $resolver->resolve(SyncLeverageBracketsJob::class);
 
-                Step::create([
-                    'class' => $lifecycleClass,
-                    'queue' => 'cronjobs',
-                    'arguments' => ['apiSystemId' => $exchange->id],
-                    'block_uuid' => $blockUuid,
-                    'index' => $postSyncIndex,
-                ]);
+                    Step::create([
+                        'class' => $lifecycleClass,
+                        'queue' => 'cronjobs',
+                        'arguments' => ['apiSystemId' => $exchange->id],
+                        'block_uuid' => $blockUuid,
+                        'index' => $postSyncIndex,
+                    ]);
 
-                $this->verboseLine("  - Created leverage brackets sync step for {$exchange->name} (Index {$postSyncIndex})");
+                    $this->verboseLine("  - Created leverage brackets sync step for {$exchange->name} (Index {$postSyncIndex})");
+                }
             }
 
             $this->verboseLine("  - Created CMC discovery lifecycle step (Index {$postSyncIndex})");

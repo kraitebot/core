@@ -494,9 +494,13 @@ trait InteractsWithApis
      *
      * @param  string  $newTriggerPrice  The new trigger price for this TP or SL order
      */
-    public function apiModifyTpsl(string $newTriggerPrice): ApiResponse
+    public function apiModifyTpsl(string $newTriggerPrice, ?string $quantity = null): ApiResponse
     {
-        $this->apiProperties = $this->apiMapper()->prepareModifyTpslOrderProperties($this, $newTriggerPrice);
+        $this->apiProperties = $this->apiMapper()->prepareModifyTpslOrderProperties(
+            $this,
+            $newTriggerPrice,
+            $quantity,
+        );
         $this->apiProperties->set('account', $this->apiAccount());
         $this->apiResponse = $this->apiAccount()->withApi()->modifyTpslOrder($this->apiProperties);
 

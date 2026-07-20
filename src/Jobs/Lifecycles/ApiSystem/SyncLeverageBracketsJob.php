@@ -30,12 +30,13 @@ final class SyncLeverageBracketsJob extends BaseQueueableJob
         $this->apiSystem = ApiSystem::findOrFail($apiSystemId);
     }
 
-    public function relatable()
+    public function relatable(): ApiSystem
     {
         return $this->apiSystem;
     }
 
-    public function compute()
+    /** @return array{exchange: string, steps_created: int, message: string} */
+    public function compute(): array
     {
         $this->buildChildChainOnce(function (string $childBlockUuid): void {
             Step::create([

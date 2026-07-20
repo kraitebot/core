@@ -7,6 +7,8 @@ namespace Kraite\Core\Support\Apis\REST;
 use InvalidArgumentException;
 use Kraite\Core\Enums\BitgetAccountMode;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Models\Order;
+use Kraite\Core\Models\Position;
 use Kraite\Core\Support\ApiClients\REST\BitgetApiClient;
 use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
@@ -16,10 +18,13 @@ use Kraite\Core\Support\ValueObjects\ApiRequest;
 /**
  * BitgetApi
  *
- * High-level API class for BitGet Futures V2 endpoints.
- * Read-only methods for balance, positions, and open orders.
+ * High-level Bitget futures API.
+ *
+ * Public market data and Classic accounts use v2. Unified Trading Accounts
+ * route private account, position, order, fill, and strategy operations to v3.
  *
  * @see https://www.bitget.com/api-doc/contract/intro
+ * @see https://www.bitget.com/api-doc/uta/intro
  */
 final class BitgetApi
 {
@@ -130,6 +135,18 @@ final class BitgetApi
      */
     public function getSymbolConfig(?ApiProperties $properties = null)
     {
+        $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedAccountSettings($properties);
+
+            return $this->client->signRequest(ApiRequest::make(
+                'GET',
+                '/api/v3/account/settings',
+                $properties
+            ));
+        }
+
         return $this->getPositions($properties);
     }
 
@@ -176,6 +193,17 @@ final class BitgetApi
     public function getSingleAccount(?ApiProperties $properties = null): mixed
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedAccountSettings($properties);
+
+            return $this->client->signRequest(ApiRequest::make(
+                'GET',
+                '/api/v3/account/settings',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -278,6 +306,20 @@ final class BitgetApi
     public function getPlanOrders(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedProductContext($properties);
+            $properties->delete('options.planType');
+            $properties->delete('options.type');
+            $properties->delete('options.symbol');
+
+            return $this->client->signRequest(ApiRequest::make(
+                'GET',
+                '/api/v3/trade/unfilled-strategy-orders',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -297,6 +339,17 @@ final class BitgetApi
     public function placeOrder(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedOrder($properties);
+
+            return $this->client->signRequest(ApiRequest::make(
+                'POST',
+                '/api/v3/trade/place-order',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -316,6 +369,17 @@ final class BitgetApi
     public function getOrderDetail(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedOrderIdentity($properties, includeContext: false);
+
+            return $this->client->signRequest(ApiRequest::make(
+                'GET',
+                '/api/v3/trade/order-info',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -343,6 +407,17 @@ final class BitgetApi
     public function cancelOrder(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedOrderIdentity($properties);
+
+            return $this->client->signRequest(ApiRequest::make(
+                'POST',
+                '/api/v3/trade/cancel-order',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -362,6 +437,21 @@ final class BitgetApi
     public function modifyOrder(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedProductContext($properties);
+            $this->renameOption($properties, 'newSize', 'qty');
+            $this->renameOption($properties, 'newPrice', 'price');
+            $properties->delete('options.marginCoin');
+            $properties->delete('options.newClientOid');
+
+            return $this->client->signRequest(ApiRequest::make(
+                'POST',
+                '/api/v3/trade/modify-order',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -381,6 +471,18 @@ final class BitgetApi
     public function cancelAllOrders(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedProductContext($properties);
+            $properties->delete('options.marginCoin');
+
+            return $this->client->signRequest(ApiRequest::make(
+                'POST',
+                '/api/v3/trade/cancel-symbol-order',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -413,6 +515,18 @@ final class BitgetApi
     public function accountTrades(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedProductContext($properties);
+            $properties->delete('options.symbol');
+
+            return $this->client->signRequest(ApiRequest::make(
+                'GET',
+                '/api/v3/trade/fills',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -464,6 +578,42 @@ final class BitgetApi
     public function setLeverage(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedProductContext($properties);
+            $this->renameOption($properties, 'holdSide', 'posSide');
+            $properties->delete('options.marginCoin');
+            $account = $this->resolveAccount($properties);
+
+            if ($account === null) {
+                throw new InvalidArgumentException('Bitget UTA leverage changes require the related account.');
+            }
+
+            $marginMode = mb_strtolower((string) $account->margin_mode);
+            $properties->set('options.marginMode', $marginMode);
+
+            if ($marginMode === 'isolated' && ! $properties->has('options.posSide')) {
+                $position = $properties->getOr('relatable', null);
+                $direction = $position instanceof Position
+                    ? mb_strtoupper((string) $position->direction)
+                    : '';
+
+                if (! in_array($direction, ['LONG', 'SHORT'], true)) {
+                    throw new InvalidArgumentException(
+                        'Bitget UTA isolated leverage changes require the related LONG or SHORT position side.'
+                    );
+                }
+
+                $properties->set('options.posSide', mb_strtolower($direction));
+            }
+
+            return $this->client->signRequest(ApiRequest::make(
+                'POST',
+                '/api/v3/account/set-leverage',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -491,6 +641,13 @@ final class BitgetApi
     public function setMarginMode(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            throw new InvalidArgumentException(
+                'Bitget UTA has no standalone per-symbol margin-mode endpoint. Margin mode must be applied by set-leverage and order placement.'
+            );
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -537,6 +694,17 @@ final class BitgetApi
     public function placePlanOrder(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedStrategyOrder($properties, triggerOrder: true);
+
+            return $this->client->signRequest(ApiRequest::make(
+                'POST',
+                '/api/v3/trade/place-strategy-order',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -558,6 +726,17 @@ final class BitgetApi
     public function getPlanOrderDetail(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedStrategyQuery($properties);
+
+            return $this->client->signRequest(ApiRequest::make(
+                'GET',
+                '/api/v3/trade/unfilled-strategy-orders',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -577,6 +756,17 @@ final class BitgetApi
     public function getPlanOrderHistory(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedStrategyQuery($properties);
+
+            return $this->client->signRequest(ApiRequest::make(
+                'GET',
+                '/api/v3/trade/history-strategy-orders',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -596,6 +786,17 @@ final class BitgetApi
     public function cancelPlanOrder(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedStrategyIdentity($properties);
+
+            return $this->client->signRequest(ApiRequest::make(
+                'POST',
+                '/api/v3/trade/cancel-strategy-order',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -619,6 +820,17 @@ final class BitgetApi
     public function placePosTpsl(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedStrategyOrder($properties);
+
+            return $this->client->signRequest(ApiRequest::make(
+                'POST',
+                '/api/v3/trade/place-strategy-order',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -644,6 +856,17 @@ final class BitgetApi
     public function placeTpslOrder(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedStrategyOrder($properties);
+
+            return $this->client->signRequest(ApiRequest::make(
+                'POST',
+                '/api/v3/trade/place-strategy-order',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -666,6 +889,17 @@ final class BitgetApi
     public function modifyTpslOrder(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedStrategyModification($properties);
+
+            return $this->client->signRequest(ApiRequest::make(
+                'POST',
+                '/api/v3/trade/modify-strategy-order',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -693,6 +927,18 @@ final class BitgetApi
     public function flashClosePosition(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedProductContext($properties);
+            $this->renameOption($properties, 'holdSide', 'posSide');
+
+            return $this->client->signRequest(ApiRequest::make(
+                'POST',
+                '/api/v3/trade/close-positions',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -711,6 +957,17 @@ final class BitgetApi
     public function historyPosition(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->prepareUnifiedProductContext($properties);
+
+            return $this->client->signRequest(ApiRequest::make(
+                'GET',
+                '/api/v3/position/history-position',
+                $properties
+            ));
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -750,11 +1007,275 @@ final class BitgetApi
         $properties->delete('options.productType');
     }
 
+    private function prepareUnifiedProductContext(ApiProperties $properties): void
+    {
+        $this->swapProductTypeForCategory($properties);
+        $properties->delete('options.marginCoin');
+    }
+
+    private function prepareUnifiedAccountSettings(ApiProperties $properties): void
+    {
+        foreach (['productType', 'marginCoin', 'symbol'] as $option) {
+            $properties->delete("options.{$option}");
+        }
+    }
+
+    private function prepareUnifiedOrder(ApiProperties $properties): void
+    {
+        $this->prepareUnifiedProductContext($properties);
+        $this->renameOption($properties, 'size', 'qty');
+        $this->renameOption($properties, 'force', 'timeInForce');
+
+        $order = $properties->getOr('relatable', null);
+        $account = $this->resolveAccount($properties);
+
+        if (! $order instanceof Order || $account === null) {
+            throw new InvalidArgumentException('Bitget UTA order placement requires the related order and account.');
+        }
+
+        $properties->set('options.side', mb_strtolower((string) $order->side));
+        $isClosing = mb_strtolower((string) $properties->getOr('options.tradeSide', '')) === 'close'
+            || mb_strtoupper((string) $properties->getOr('options.reduceOnly', '')) === 'YES'
+            || (bool) ($order->reduce_only ?? false);
+
+        $properties->delete('options.tradeSide');
+        $properties->delete('options.reduceOnly');
+
+        if ($account->isHedgeMode()) {
+            $properties->set('options.posSide', mb_strtolower((string) $order->position->direction));
+        }
+
+        if ($isClosing) {
+            $properties->set('options.reduceOnly', 'yes');
+        }
+
+        $this->normalizeUnifiedClientOid($properties, $order);
+    }
+
+    private function prepareUnifiedOrderIdentity(ApiProperties $properties, bool $includeContext = true): void
+    {
+        if ($includeContext) {
+            $this->prepareUnifiedProductContext($properties);
+        } else {
+            foreach (['productType', 'marginCoin', 'category'] as $option) {
+                $properties->delete("options.{$option}");
+            }
+        }
+
+        $properties->delete('options.symbol');
+    }
+
+    private function prepareUnifiedStrategyOrder(ApiProperties $properties, bool $triggerOrder = false): void
+    {
+        $this->prepareUnifiedProductContext($properties);
+        $order = $properties->getOr('relatable', null);
+        $account = $this->resolveAccount($properties);
+
+        if (! $order instanceof Order || $account === null) {
+            throw new InvalidArgumentException('Bitget UTA strategy placement requires the related order and account.');
+        }
+
+        $isClosing = ! $triggerOrder
+            || mb_strtolower((string) $properties->getOr('options.tradeSide', '')) === 'close'
+            || mb_strtoupper((string) $properties->getOr('options.reduceOnly', '')) === 'YES'
+            || (bool) ($order->reduce_only ?? false);
+        $properties->set('options.side', mb_strtolower((string) $order->side));
+        $properties->delete('options.reduceOnly');
+        $properties->delete('options.marginMode');
+        $properties->delete('options.planType');
+        $properties->delete('options.tradeSide');
+        $properties->delete('options.holdSide');
+
+        if ($account->isHedgeMode()) {
+            $properties->set('options.posSide', mb_strtolower((string) $order->position->direction));
+        }
+
+        if ($isClosing) {
+            $properties->set('options.reduceOnly', 'yes');
+        }
+
+        if ($triggerOrder) {
+            $properties->set('options.type', 'trigger');
+            $this->renameOption($properties, 'size', 'qty');
+            $properties->set('options.triggerBy', $this->unifiedTriggerType($properties->getOr('options.triggerType', 'market')));
+            $properties->set('options.triggerOrderType', $properties->getOr('options.orderType', 'market'));
+            $properties->delete('options.triggerType');
+            $properties->delete('options.orderType');
+            $this->normalizeUnifiedClientOid($properties, $order);
+
+            return;
+        }
+
+        $properties->set('options.type', 'tpsl');
+        $properties->set('options.tpslMode', 'full');
+        $properties->delete('options.size');
+
+        if ($properties->has('options.stopSurplusTriggerPrice')) {
+            $this->renameOption($properties, 'stopSurplusTriggerPrice', 'takeProfit');
+            $properties->set('options.tpTriggerBy', $this->unifiedTriggerType(
+                $properties->getOr('options.stopSurplusTriggerType', 'market')
+            ));
+            $properties->set('options.tpOrderType', 'market');
+            $this->renameOption($properties, 'stopSurplusClientOid', 'clientOid');
+        }
+
+        if ($properties->has('options.stopLossTriggerPrice')) {
+            $this->renameOption($properties, 'stopLossTriggerPrice', 'stopLoss');
+            $properties->set('options.slTriggerBy', $this->unifiedTriggerType(
+                $properties->getOr('options.stopLossTriggerType', 'market')
+            ));
+            $properties->set('options.slOrderType', 'market');
+            $this->renameOption($properties, 'stopLossClientOid', 'clientOid');
+        }
+
+        foreach ([
+            'stopSurplusTriggerType',
+            'stopLossTriggerType',
+            'stopSurplusExecutePrice',
+            'stopLossExecutePrice',
+        ] as $option) {
+            $properties->delete("options.{$option}");
+        }
+
+        $this->normalizeUnifiedClientOid($properties, $order);
+    }
+
+    private function prepareUnifiedStrategyQuery(ApiProperties $properties): void
+    {
+        $this->prepareUnifiedProductContext($properties);
+        $properties->delete('options.symbol');
+        $properties->delete('options.planType');
+        $properties->delete('options.type');
+    }
+
+    private function prepareUnifiedStrategyIdentity(ApiProperties $properties): void
+    {
+        $orderIdList = $properties->getOr('options.orderIdList', []);
+        $orderId = is_array($orderIdList) ? data_get($orderIdList, '0.orderId') : null;
+
+        foreach (['productType', 'category', 'marginCoin', 'symbol', 'orderIdList'] as $option) {
+            $properties->delete("options.{$option}");
+        }
+
+        if (! is_string($orderId) || $orderId === '') {
+            throw new InvalidArgumentException('Bitget UTA strategy cancellation requires an order ID.');
+        }
+
+        $properties->set('options.orderId', $orderId);
+    }
+
+    private function prepareUnifiedStrategyModification(ApiProperties $properties): void
+    {
+        $order = $properties->getOr('relatable', null);
+
+        if (! $order instanceof Order || ! is_string($order->exchange_order_id) || $order->exchange_order_id === '') {
+            throw new InvalidArgumentException('Bitget UTA strategy modification requires the related exchange order ID.');
+        }
+
+        foreach (['productType', 'category', 'marginCoin', 'symbol', 'holdSide'] as $option) {
+            $properties->delete("options.{$option}");
+        }
+
+        $properties->set('options.orderId', $order->exchange_order_id);
+        $properties->set('options.qty', (string) ($properties->getOr('unifiedQuantity', null) ?? $order->quantity));
+        $properties->delete('unifiedQuantity');
+
+        if ($properties->has('options.stopSurplusTriggerPrice')) {
+            $this->renameOption($properties, 'stopSurplusTriggerPrice', 'takeProfit');
+            $properties->set('options.tpTriggerBy', 'mark');
+            $properties->set('options.tpOrderType', 'market');
+        }
+
+        if ($properties->has('options.stopLossTriggerPrice')) {
+            $this->renameOption($properties, 'stopLossTriggerPrice', 'stopLoss');
+            $properties->set('options.slTriggerBy', 'mark');
+            $properties->set('options.slOrderType', 'market');
+        }
+
+        foreach ([
+            'stopSurplusTriggerType',
+            'stopLossTriggerType',
+            'stopSurplusExecutePrice',
+            'stopLossExecutePrice',
+        ] as $option) {
+            $properties->delete("options.{$option}");
+        }
+    }
+
+    private function renameOption(ApiProperties $properties, string $from, string $to): void
+    {
+        if (! $properties->has("options.{$from}")) {
+            return;
+        }
+
+        $properties->set("options.{$to}", $properties->get("options.{$from}"));
+        $properties->delete("options.{$from}");
+    }
+
+    private function unifiedTriggerType(mixed $triggerType): string
+    {
+        return str_contains(mb_strtolower((string) $triggerType), 'mark') ? 'mark' : 'market';
+    }
+
+    private function normalizeUnifiedClientOid(ApiProperties $properties, Order $order): void
+    {
+        $clientOid = $properties->getOr('options.clientOid', null);
+
+        if (! is_string($clientOid) || $clientOid === '') {
+            return;
+        }
+
+        $normalized = $this->formatUnifiedClientOid($clientOid);
+        $properties->set('options.clientOid', $normalized);
+
+        if ((string) $order->client_order_id === $normalized) {
+            return;
+        }
+
+        $order->setAttribute('client_order_id', $normalized);
+
+        if ($order->exists) {
+            $order->saveQuietly();
+        }
+    }
+
+    private function formatUnifiedClientOid(string $clientOid): string
+    {
+        if (preg_match('/^[.A-Za-z0-9_:\/-]{1,32}$/', $clientOid) === 1) {
+            return $clientOid;
+        }
+
+        $compactUuid = str_replace('-', '', $clientOid);
+        if (preg_match('/^[A-Fa-f0-9]{32}$/', $compactUuid) === 1) {
+            return $compactUuid;
+        }
+
+        return 'kraite-'.mb_substr(hash('sha256', $clientOid), 0, 25);
+    }
+
+    private function resolveAccount(ApiProperties $properties): ?Account
+    {
+        $account = $properties->getOr('account', null);
+
+        if ($account instanceof Account) {
+            return $account;
+        }
+
+        $relatable = $properties->getOr('relatable', null);
+
+        return match (true) {
+            $relatable instanceof Account => $relatable,
+            $relatable instanceof Position => $relatable->account,
+            $relatable instanceof Order => $relatable->position->account,
+            default => null,
+        };
+    }
+
     private function requireProductContext(ApiProperties $properties): void
     {
         $productType = $properties->get('options.productType');
 
-        if (! is_string($productType) || trim($productType) === '') {
+        if (! is_string($productType) || mb_trim($productType) === '') {
             throw new InvalidArgumentException(
                 'Bitget futures productType is required. Resolve it from the account or exchange symbol quote.'
             );

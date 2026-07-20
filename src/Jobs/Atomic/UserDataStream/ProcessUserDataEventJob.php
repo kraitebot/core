@@ -490,7 +490,7 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
 
             Step::create([
                 'class' => $resolvedClass,
-                'queue' => 'positions',
+                'queue' => 'priority',
                 'priority' => 'high',
                 'relatable_type' => $locked->getMorphClass(),
                 'relatable_id' => $locked->getKey(),

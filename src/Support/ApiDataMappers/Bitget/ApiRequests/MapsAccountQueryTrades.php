@@ -68,10 +68,8 @@ trait MapsAccountQueryTrades
      *      `side` on `tradeSide=close` fills so the extractor's
      *      `side === closeSide` check matches. Open fills are left as-is.
      *
-     *      ASSUMPTION: hedge-mode account (the only mode currently used on
-     *      Bitget — `accounts.on_hedge_mode = true`). In one-way mode
-     *      Bitget already flips `side` naturally on close, so this layer
-     *      would over-flip — revisit if/when one-way is supported here.
+     *      This normalization applies only to Classic v2 hedge fills. Classic
+     *      one-way and Unified v3 fills already report the execution side.
      *
      *   2. **Reverse to oldest-first.** Bitget returns NEWEST-first;
      *      Binance returns OLDEST-first. The extractor does its own
@@ -83,18 +81,64 @@ trait MapsAccountQueryTrades
      *
      * Other fields are passed through verbatim.
      */
-    public function resolveQueryTradeResponse(Response $response): array
+    public function resolveQueryTradeResponse(Response $response, ?Position $position = null): array
     {
         $body = json_decode((string) $response->getBody(), associative: true);
-        $fills = $body['data']['fillList'] ?? [];
+        $data = $body['data'] ?? [];
+        $isUnified = is_array($data) && array_key_exists('list', $data);
+        $fills = $isUnified ? ($data['list'] ?? []) : ($data['fillList'] ?? []);
 
         if (! is_array($fills) || $fills === []) {
             return [];
         }
 
-        $normalised = array_map(static function (array $fill): array {
+        if ($isUnified && $position !== null) {
+            $symbol = mb_strtoupper((string) $position->parsed_trading_pair);
+            $direction = mb_strtolower((string) $position->direction);
+            $fills = array_values(array_filter(
+                $fills,
+                static function (array $fill) use ($direction, $position, $symbol): bool {
+                    if (mb_strtoupper((string) ($fill['symbol'] ?? '')) !== $symbol) {
+                        return false;
+                    }
+
+                    if (! $position->account->isHedgeMode()) {
+                        return true;
+                    }
+
+                    $fillDirection = mb_strtolower((string) ($fill['posSide'] ?? ''));
+
+                    if ($fillDirection === '') {
+                        $side = mb_strtolower((string) ($fill['side'] ?? ''));
+                        $tradeSide = mb_strtolower((string) ($fill['tradeSide'] ?? ''));
+                        $fillDirection = match ([$tradeSide, $side]) {
+                            ['open', 'buy'], ['close', 'sell'] => 'long',
+                            ['open', 'sell'], ['close', 'buy'] => 'short',
+                            default => '',
+                        };
+                    }
+
+                    return $fillDirection === $direction;
+                }
+            ));
+        }
+
+        $shouldFlipClassicCloseSide = ! $isUnified
+            && ($position === null || $position->account->isHedgeMode());
+
+        $normalised = array_map(static function (array $fill) use ($isUnified, $shouldFlipClassicCloseSide): array {
+            if ($isUnified) {
+                $fill['tradeId'] ??= $fill['execId'] ?? '';
+                $fill['price'] ??= $fill['execPrice'] ?? '0';
+                $fill['baseVolume'] ??= $fill['execQty'] ?? '0';
+                $fill['cTime'] ??= $fill['createdTime'] ?? '0';
+                $fill['profit'] ??= $fill['execPnl'] ?? '0';
+
+                return $fill;
+            }
+
             $tradeSide = mb_strtolower((string) ($fill['tradeSide'] ?? ''));
-            if ($tradeSide === 'close') {
+            if ($shouldFlipClassicCloseSide && $tradeSide === 'close') {
                 $original = mb_strtolower((string) ($fill['side'] ?? ''));
                 if ($original === 'buy') {
                     $fill['side'] = 'sell';

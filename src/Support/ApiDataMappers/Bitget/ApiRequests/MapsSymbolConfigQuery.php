@@ -42,7 +42,10 @@ trait MapsSymbolConfigQuery
     public function resolveQuerySymbolConfigResponse(Response $response): array
     {
         $body = json_decode((string) $response->getBody(), associative: true);
-        $positions = $body['data'] ?? [];
+        $data = $body['data'] ?? [];
+        $positions = is_array($data)
+            ? ($data['symbolConfigList'] ?? $data)
+            : [];
 
         return collect(is_array($positions) ? $positions : [])
             ->filter(static function ($position) {
@@ -56,7 +59,10 @@ trait MapsSymbolConfigQuery
 
                 return [
                     'symbol' => (string) $position['symbol'],
-                    'leverage' => (int) ($position['leverage'] ?? 0),
+                    'leverage' => (int) ($position['leverage']
+                        ?? $position['longLeverage']
+                        ?? $position['shortLeverage']
+                        ?? 0),
                     'marginType' => $marginMode,
                 ];
             })

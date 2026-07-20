@@ -19,11 +19,9 @@ use UnexpectedValueException;
 /**
  * BitgetThrottler
  *
- * Request-level limiter for Bitget Classic Futures V2:
+ * Request-level limiter for Bitget Classic Futures v2 and Unified v3:
  * - Public endpoints: 20 requests per second per IP
- * - Most private endpoints: 10 requests per second per UID
- * - Positions and account configuration: 5 requests per second per UID
- * - Flash close: 1 request per second per UID
+ * - Private endpoint pacing follows each documented v2/v3 UID limit
  * - All endpoints combined: 6000 requests per minute per server IP
  *
  * Reservations happen immediately before every HTTP attempt. This is
@@ -289,6 +287,29 @@ final class BitgetThrottler extends BaseApiThrottler implements ClientLevelApiTh
         }
 
         return match ($endpoint) {
+            '/api/v3/account/adjust-account-mode' => self::integerConfig(
+                'kraite.throttlers.bitget.uta_account_mode_requests_per_second',
+                1
+            ),
+            '/api/v3/trade/close-positions',
+            '/api/v3/trade/cancel-symbol-order' => self::integerConfig(
+                'kraite.throttlers.bitget.uta_bulk_requests_per_second',
+                5
+            ),
+            '/api/v3/account/assets',
+            '/api/v3/account/info',
+            '/api/v3/account/settings',
+            '/api/v3/position/current-position',
+            '/api/v3/position/history-position',
+            '/api/v3/trade/order-info',
+            '/api/v3/trade/unfilled-orders',
+            '/api/v3/trade/history-orders',
+            '/api/v3/trade/fills',
+            '/api/v3/trade/unfilled-strategy-orders',
+            '/api/v3/trade/history-strategy-orders' => self::integerConfig(
+                'kraite.throttlers.bitget.uta_read_requests_per_second',
+                20
+            ),
             '/api/v2/mix/order/close-positions' => self::integerConfig(
                 'kraite.throttlers.bitget.flash_close_requests_per_second',
                 1

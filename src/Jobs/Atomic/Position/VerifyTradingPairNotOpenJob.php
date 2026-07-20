@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\Position;
 
-use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\Position;
@@ -40,13 +39,13 @@ class VerifyTradingPairNotOpenJob extends BaseQueueableJob
     public function compute()
     {
         $account = $this->position->account;
-        $tradingPair = $this->position->exchangeSymbol->parsed_trading_pair;
-        $direction = $this->position->direction;
+        $tradingPair = mb_strtoupper((string) $this->position->exchangeSymbol->parsed_trading_pair);
+        $direction = mb_strtoupper((string) $this->position->direction);
 
         // 1. Check open positions from api_snapshots
         $openPositions = ApiSnapshot::getFrom($account, 'account-positions') ?? [];
         $openPositionKey = collect(array_keys($openPositions))
-            ->first(static fn (string $key): bool => Str::before($key, ':') === $tradingPair);
+            ->first(static fn (string $key): bool => mb_strtoupper(explode(':', $key)[0]) === $tradingPair);
 
         if ($openPositionKey !== null) {
             $this->tradingPairIsOpen = true;
@@ -65,9 +64,9 @@ class VerifyTradingPairNotOpenJob extends BaseQueueableJob
         $openOrders = ApiSnapshot::getFrom($account, 'account-open-orders') ?? [];
 
         // Use parsed_trading_pair for consistent symbol matching (e.g., 'BTCUSDT')
-        $matchingOrders = collect($openOrders)->filter(static function (array $order) use ($tradingPair): bool {
-            return ($order['symbol'] ?? '') === $tradingPair;
-        });
+        $matchingOrders = collect($openOrders)->filter(
+            static fn (array $order): bool => mb_strtoupper((string) ($order['symbol'] ?? '')) === $tradingPair,
+        );
 
         if ($matchingOrders->isNotEmpty()) {
             $this->tradingPairIsOpen = true;

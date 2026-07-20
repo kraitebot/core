@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Jobs\Models\ExchangeSymbol;
 
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Str;
+use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Contracts\Indicators\DirectionIndicator;
 use Kraite\Core\Contracts\Indicators\ValidationIndicator;
@@ -250,11 +250,7 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
             );
         }
 
-        // No direction change (first-time or same direction) - update symbol
-        $this->updateSymbol($exchangeSymbol, $newDirection, $indicatorData);
-
-        // Create finalization steps (price alignment + copy to other exchanges)
-        $this->createFinalizationSteps($exchangeSymbol->id);
+        $this->persistConclusion($exchangeSymbol, $newDirection, $indicatorData);
 
         $response = [
             'result' => 'concluded',
@@ -423,11 +419,7 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
             return $response;
         }
 
-        // Path valid - update symbol with new direction
-        $this->updateSymbol($exchangeSymbol, $newDirection, $indicatorData);
-
-        // Create finalization steps (price alignment + copy to other exchanges)
-        $this->createFinalizationSteps($exchangeSymbol->id);
+        $this->persistConclusion($exchangeSymbol, $newDirection, $indicatorData);
 
         $response = [
             'result' => 'concluded',
@@ -484,40 +476,52 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
      */
     private function spawnNextTimeframeWorkflow(int $symbolId, string $nextTimeframe, array $conclusions, bool $shouldCleanup): void
     {
-        $childBlockUuid = Str::uuid()->toString();
         $group = $this->step->group;
 
-        // INDEX 1: Query indicator data
-        Step::create([
-            'class' => QuerySymbolIndicatorsJob::class,
-            'queue' => 'indicators',
-            'block_uuid' => $childBlockUuid,
-            'group' => $group,
-            'index' => 1,
-            'arguments' => [
-                'exchangeSymbolId' => $symbolId,
-                'timeframe' => $nextTimeframe,
-                'previousConclusions' => $conclusions,
-            ],
-        ]);
+        $this->buildChildChainOnce(function (string $childBlockUuid) use ($conclusions, $group, $nextTimeframe, $shouldCleanup, $symbolId): void {
+            Step::create([
+                'class' => QuerySymbolIndicatorsJob::class,
+                'queue' => 'indicators',
+                'block_uuid' => $childBlockUuid,
+                'group' => $group,
+                'index' => 1,
+                'arguments' => [
+                    'exchangeSymbolId' => $symbolId,
+                    'timeframe' => $nextTimeframe,
+                    'previousConclusions' => $conclusions,
+                ],
+            ]);
 
-        // INDEX 2: Conclude direction
-        Step::create([
-            'class' => self::class,
-            'queue' => 'indicators',
-            'block_uuid' => $childBlockUuid,
-            'group' => $group,
-            'index' => 2,
-            'arguments' => [
-                'exchangeSymbolId' => $symbolId,
-                'timeframe' => $nextTimeframe,
-                'previousConclusions' => $conclusions,
-                'shouldCleanup' => $shouldCleanup,
-            ],
-        ]);
+            Step::create([
+                'class' => self::class,
+                'queue' => 'indicators',
+                'block_uuid' => $childBlockUuid,
+                'group' => $group,
+                'index' => 2,
+                'arguments' => [
+                    'exchangeSymbolId' => $symbolId,
+                    'timeframe' => $nextTimeframe,
+                    'previousConclusions' => $conclusions,
+                    'shouldCleanup' => $shouldCleanup,
+                ],
+            ]);
+        });
+    }
 
-        // Link child workflow to current step
-        $this->step->update(['child_block_uuid' => $childBlockUuid]);
+    /**
+     * Persist the symbol conclusion and its follow-up work as one unit.
+     */
+    private function persistConclusion(ExchangeSymbol $exchangeSymbol, string $direction, array $indicatorData): void
+    {
+        DB::transaction(function () use ($direction, $exchangeSymbol, $indicatorData): void {
+            $lockedStep = Step::query()
+                ->whereKey($this->step->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $this->updateSymbol($exchangeSymbol, $direction, $indicatorData);
+            $this->createFinalizationSteps($exchangeSymbol->id, $lockedStep);
+        });
     }
 
     /**
@@ -525,87 +529,63 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
      * These steps confirm price alignment, copy direction to other exchanges,
      * and optionally fetch klines + compute BTC correlation when enabled.
      */
-    private function createFinalizationSteps(int $symbolId): void
+    private function createFinalizationSteps(int $symbolId, Step $lockedStep): void
     {
-        $blockUuid = $this->step->block_uuid;
-        $group = $this->step->group;
+        $blockUuid = $lockedStep->block_uuid;
+        $group = $lockedStep->group;
 
-        // INDEX 3: Confirm price alignment
-        Step::create([
-            'class' => ConfirmPriceAlignmentWithDirectionJob::class,
-            'queue' => 'indicators',
-            'block_uuid' => $blockUuid,
-            'group' => $group,
-            'index' => 3,
-            'arguments' => [
-                'exchangeSymbolId' => $symbolId,
+        $definitions = [
+            [
+                'class' => ConfirmPriceAlignmentWithDirectionJob::class,
+                'index' => 3,
+                'arguments' => ['exchangeSymbolId' => $symbolId],
             ],
-        ]);
-
-        // INDEX 4: Copy direction to other exchanges
-        Step::create([
-            'class' => CopyDirectionToOtherExchangesJob::class,
-            'queue' => 'indicators',
-            'block_uuid' => $blockUuid,
-            'group' => $group,
-            'index' => 4,
-            'arguments' => [
-                'sourceExchangeSymbolId' => $symbolId,
+            [
+                'class' => CopyDirectionToOtherExchangesJob::class,
+                'index' => 4,
+                'arguments' => ['sourceExchangeSymbolId' => $symbolId],
             ],
-        ]);
-
-        // INDEX 4 (parallel): Copy pivot levels from indicators_values
-        // JSON into the dedicated pivot_* columns so the selection-phase
-        // S/R gate can read them without touching JSON. Runs only after
-        // a direction has been concluded; the atomic itself no-ops if
-        // direction gets cleared between this step being created and
-        // actually running.
-        Step::create([
-            'class' => QueryAndStoreSupportAndResistanceJob::class,
-            'queue' => 'indicators',
-            'block_uuid' => $blockUuid,
-            'group' => $group,
-            'index' => 4,
-            'arguments' => [
-                'exchangeSymbolId' => $symbolId,
+            [
+                'class' => QueryAndStoreSupportAndResistanceJob::class,
+                'index' => 4,
+                'arguments' => ['exchangeSymbolId' => $symbolId],
             ],
-        ]);
+        ];
 
-        // INDEX 5-6: BTC correlation (only when enabled — singleton flag wins, else config)
         if (Kraite::correlationComputationEnabled()) {
-            // INDEX 5: Check klines, spawn child block to fetch if missing
-            Step::create([
+            $definitions[] = [
                 'class' => CheckKLinesForCorrelationJob::class,
-                'queue' => 'indicators',
-                'block_uuid' => $blockUuid,
-                'group' => $group,
                 'index' => 5,
-                'arguments' => [
-                    'exchangeSymbolId' => $symbolId,
-                ],
-            ]);
-
-            // INDEX 6: Calculate correlation + elasticity (runs after klines are fetched)
-            Step::create([
+                'arguments' => ['exchangeSymbolId' => $symbolId],
+            ];
+            $definitions[] = [
                 'class' => CalculateBtcCorrelationJob::class,
-                'queue' => 'indicators',
-                'block_uuid' => $blockUuid,
-                'group' => $group,
                 'index' => 6,
-                'arguments' => [
-                    'exchangeSymbolId' => $symbolId,
-                ],
-            ]);
+                'arguments' => ['exchangeSymbolId' => $symbolId],
+            ];
+            $definitions[] = [
+                'class' => CalculateBtcElasticityJob::class,
+                'index' => 6,
+                'arguments' => ['exchangeSymbolId' => $symbolId],
+            ];
+        }
+
+        $existingClasses = Step::query()
+            ->where('block_uuid', $blockUuid)
+            ->whereIn('class', array_column($definitions, 'class'))
+            ->pluck('class')
+            ->all();
+
+        foreach ($definitions as $definition) {
+            if (in_array($definition['class'], $existingClasses, true)) {
+                continue;
+            }
 
             Step::create([
-                'class' => CalculateBtcElasticityJob::class,
+                ...$definition,
                 'queue' => 'indicators',
                 'block_uuid' => $blockUuid,
                 'group' => $group,
-                'index' => 6,
-                'arguments' => [
-                    'exchangeSymbolId' => $symbolId,
-                ],
             ]);
         }
     }

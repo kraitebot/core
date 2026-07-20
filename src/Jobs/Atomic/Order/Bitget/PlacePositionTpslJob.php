@@ -8,6 +8,7 @@ use GuzzleHttp\Psr7\Response;
 use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
+use Kraite\Core\Enums\BitgetAccountMode;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ExchangeSymbolPrice;
 use Kraite\Core\Models\Order;
@@ -22,8 +23,8 @@ use Throwable;
 /**
  * PlacePositionTpslJob (Atomic) - Bitget
  *
- * Places combined TP+SL orders on Bitget using the position-level TP/SL endpoint.
- * This endpoint doesn't require size - it applies to the entire position.
+ * Places full-position protection on Bitget. Classic uses one combined
+ * position TP/SL call; Unified creates independent full-position strategies.
  *
  * Flow:
  * 1. startOrFail(): Verify position has required data
@@ -31,7 +32,7 @@ use Throwable;
  *    - Calculate TP price via Kraite::calculateProfitOrder()
  *    - Calculate SL price via Kraite::calculateStopLossOrder()
  *    - Persist durable local TP/SL identities
- *    - Call placePosTpsl() API
+ *    - Place protection through the account-mode-specific API
  *    - Persist returned exchange order IDs, querying position only as fallback
  * 3. doubleCheck(): Query position, verify both IDs present
  * 4. complete(): Set reference_* fields on both orders, set first_profit_price on position
@@ -239,6 +240,13 @@ final class PlacePositionTpslJob extends BaseApiableJob
         // already accepted the protection request.
         $this->persistProtectionOrders($side);
 
+        if ($account->resolveBitgetAccountMode() === BitgetAccountMode::Unified) {
+            return $this->placeUnifiedProtectionOrders(
+                anchorPrice: (string) $anchorPrice,
+                side: $side,
+            );
+        }
+
         // Place combined TP/SL on exchange via position endpoint
         $mapper = new ApiDataMapperProxy($account->apiSystem->canonical);
         $properties = $mapper->preparePlacePosTpslProperties(
@@ -315,9 +323,8 @@ final class PlacePositionTpslJob extends BaseApiableJob
         $response = $account->withApi()->getPositions($properties);
         $positions = $mapper->resolveQueryPositionsResponse($response);
 
-        // Find our position by symbol:positionSide. Hedge mode keys by
-        // LONG/SHORT (independent slots); one-way keys by BOTH (single
-        // slot per symbol). Mirrors the segment logic on
+        // Find our position by symbol:positionSide. Hedge-mode responses
+        // key by LONG/SHORT; one-way responses key by BOTH. Mirrors the segment logic on
         // CalculateWapAndModifyProfitOrderJob::buildPositionKey().
         $symbol = $this->position->exchangeSymbol->parsed_trading_pair;
         $segment = $this->position->account?->isHedgeMode()
@@ -510,5 +517,55 @@ final class PlacePositionTpslJob extends BaseApiableJob
             $step->update(['arguments' => $arguments]);
             $this->step->setAttribute('arguments', $arguments);
         });
+    }
+
+    /**
+     * UTA represents each full-position TP/SL leg as an independent strategy
+     * order. Keeping two exchange IDs preserves independent sync, correction,
+     * cancellation, and recreation semantics in the local order ledger.
+     *
+     * @return array<string, mixed>
+     */
+    private function placeUnifiedProtectionOrders(string $anchorPrice, string $side): array
+    {
+        if ($this->profitOrder === null || $this->stopLossOrder === null) {
+            throw new RuntimeException('Bitget UTA protection orders were not persisted before placement.');
+        }
+
+        if ($this->profitOrder->exchange_order_id === null || $this->profitOrder->exchange_order_id === '') {
+            $profitResponse = $this->profitOrder->apiPlaceTpslOrder();
+            if (! ($profitResponse->result['success'] ?? false)) {
+                throw new RuntimeException('Failed to place Bitget UTA take-profit strategy order.');
+            }
+        }
+
+        if ($this->stopLossOrder->exchange_order_id === null || $this->stopLossOrder->exchange_order_id === '') {
+            $stopLossResponse = $this->stopLossOrder->apiPlaceTpslOrder();
+            if (! ($stopLossResponse->result['success'] ?? false)) {
+                throw new RuntimeException('Failed to place Bitget UTA stop-loss strategy order.');
+            }
+        }
+
+        $takeProfitId = $this->profitOrder->fresh()->exchange_order_id;
+        $stopLossId = $this->stopLossOrder->fresh()->exchange_order_id;
+
+        if ($takeProfitId === null || $stopLossId === null) {
+            throw new RuntimeException('Bitget UTA did not return both protection strategy order IDs.');
+        }
+
+        return [
+            'position_id' => $this->position->id,
+            'profit_order_id' => $this->profitOrder->id,
+            'stop_loss_order_id' => $this->stopLossOrder->id,
+            'trading_pair' => $this->position->exchangeSymbol->parsed_trading_pair,
+            'direction' => $this->position->direction,
+            'side' => $side,
+            'tp_price' => $this->tpPrice,
+            'sl_price' => $this->slPrice,
+            'anchor_price' => $anchorPrice,
+            'take_profit_id' => $takeProfitId,
+            'stop_loss_id' => $stopLossId,
+            'message' => 'Position TP/SL placed as independent Bitget UTA strategy orders',
+        ];
     }
 }

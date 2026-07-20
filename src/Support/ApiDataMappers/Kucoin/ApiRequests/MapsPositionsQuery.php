@@ -101,11 +101,12 @@ trait MapsPositionsQuery
                 return $position;
             })
             ->keyBy(static function ($position) {
-                // Key by symbol:direction to support hedge mode (LONG + SHORT on same symbol)
+                // Preserve exchange-side identity so hedge-mode responses map
+                // correctly. Kraite still permits only one side per symbol.
                 $side = mb_strtoupper($position['side'] ?? 'BOTH');
                 $direction = $side === 'LONG' ? 'LONG' : ($side === 'SHORT' ? 'SHORT' : 'BOTH');
 
-                return $position['symbol'] . ':' . $direction;
+                return $position['symbol'].':'.$direction;
             })
             ->toArray();
     }

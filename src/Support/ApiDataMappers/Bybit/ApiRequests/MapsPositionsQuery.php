@@ -50,7 +50,8 @@ trait MapsPositionsQuery
                 return $position;
             })
             ->keyBy(static function ($position) {
-                // Key by symbol:direction to support hedge mode (LONG + SHORT on same symbol)
+                // Preserve exchange-side identity so hedge-mode responses map
+                // correctly. Kraite still permits only one side per symbol.
                 // Bybit uses 'side' with Buy/Sell values
                 $side = mb_strtoupper($position['side'] ?? 'BOTH');
                 $direction = $side === 'BUY' ? 'LONG' : ($side === 'SELL' ? 'SHORT' : 'BOTH');

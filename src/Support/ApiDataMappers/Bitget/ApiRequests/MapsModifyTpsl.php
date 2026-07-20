@@ -22,24 +22,24 @@ trait MapsModifyTpsl
     /**
      * Prepare properties for modifying a TP/SL order on Bitget.
      *
-     * NOTE: this mapper currently produces requests Bitget rejects with
-     * HTTP 400 across every field-name combination tried (verified live
-     * 2026-04-26 via tinker). It is not used by the drift-correction flow
-     * — `Bitget\ModifyAlgoOrderJob` uses `place-pos-tpsl` (which atomically
-     * overwrites existing TP/SL while preserving the plan-order IDs).
-     * Left in place because `Order::apiModifyTpsl()` is still wired into
-     * the WAP recalc path (`CalculateWapAndModifyProfitOrderJob`); fixing
-     * that path is a separate concern.
+     * Classic position TP/SL orders are not safely modifiable through its
+     * v2 per-order endpoint, so Classic correction uses `place-pos-tpsl`.
+     * Unified accounts translate this canonical shape to v3
+     * `modify-strategy-order`, where each TP/SL leg is independently mutable.
      *
      * @param  Order  $order  The TP or SL order to modify
      * @param  string  $newTriggerPrice  The new trigger price
      *
      * @see https://www.bitget.com/api-doc/contract/position/Modify-Position-Tpsl
      */
-    public function prepareModifyTpslOrderProperties(Order $order, string $newTriggerPrice): ApiProperties
-    {
+    public function prepareModifyTpslOrderProperties(
+        Order $order,
+        string $newTriggerPrice,
+        ?string $quantity = null,
+    ): ApiProperties {
         $properties = new ApiProperties;
         $properties->set('relatable', $order);
+        $properties->set('unifiedQuantity', $quantity);
         $properties->set('options.symbol', (string) $order->position->exchangeSymbol->asset);
         $context = BitgetProductContext::fromQuote($order->position->exchangeSymbol->quote);
         $properties->set('options.productType', $context->productType);
@@ -53,7 +53,8 @@ trait MapsModifyTpsl
         }
 
         // Determine if this is a TP or SL order by type
-        $isStopLoss = in_array($order->type, ['STOP-MARKET', 'STOP_MARKET'], true);
+        $type = mb_strtoupper(str_replace('-', '_', $order->type));
+        $isStopLoss = in_array($type, ['STOP_MARKET', 'STOP_LOSS'], true);
 
         if ($isStopLoss) {
             // Modifying Stop Loss

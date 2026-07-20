@@ -160,31 +160,26 @@ trait HasTokenDiscovery
          * Keys in account-positions are formatted as 'BTCUSDT:LONG'.
          * Orders in account-open-orders have 'symbol' field (e.g., 'BTCUSDT').
          */
-        $openTradingPairs = collect();
-
-        // Check open positions
         $openPositionsOnExchange = ApiSnapshot::getFrom($this, 'account-positions') ?? [];
-        $positionPairs = collect(array_keys($openPositionsOnExchange))
-            ->map(static function (string $key): string {
-                // Extract trading pair from 'BTCUSDT:LONG' -> 'BTCUSDT'
-                return explode(':', $key)[0];
-            });
-        $openTradingPairs = $openTradingPairs->merge($positionPairs);
+        $openPositionPairs = collect(array_keys($openPositionsOnExchange))
+            ->map(static fn (string $key): string => mb_strtoupper(explode(':', $key)[0]));
 
-        // Check open orders
         $openOrdersOnExchange = ApiSnapshot::getFrom($this, 'account-open-orders') ?? [];
-        $orderPairs = collect($openOrdersOnExchange)
+        $openOrderPairs = collect($openOrdersOnExchange)
             ->pluck('symbol')
-            ->filter();
-        $openTradingPairs = $openTradingPairs->merge($orderPairs);
+            ->filter()
+            ->map(static fn (mixed $symbol): string => mb_strtoupper((string) $symbol));
 
-        $openTradingPairs = $openTradingPairs->unique()->values();
+        $openTradingPairs = $openPositionPairs
+            ->merge($openOrderPairs)
+            ->unique()
+            ->values();
 
         if ($openTradingPairs->isNotEmpty()) {
             $this->availableExchangeSymbols = $this->availableExchangeSymbols
-                ->filter(static function (ExchangeSymbol $symbol) use ($openTradingPairs): bool {
-                    return ! $openTradingPairs->contains($symbol->parsed_trading_pair);
-                });
+                ->reject(static fn (ExchangeSymbol $symbol): bool => $openTradingPairs->contains(
+                    mb_strtoupper((string) $symbol->parsed_trading_pair),
+                ));
         }
 
         /*

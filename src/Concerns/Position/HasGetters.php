@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Concerns\Position;
 
 use Kraite\Core\Models\ApiSnapshot;
+use Kraite\Core\Support\PositionSnapshot;
 use RuntimeException;
 
 trait HasGetters
@@ -381,8 +382,12 @@ trait HasGetters
 
         $openPositions = ApiSnapshot::getFrom($this->account, 'account-positions');
 
-        if (is_array($openPositions) && array_key_exists(key: $this->parsed_trading_pair, array: $openPositions)) {
-            return $openPositions[$this->parsed_trading_pair]['notional'];
+        if (is_array($openPositions)) {
+            $position = PositionSnapshot::fromValidatedResult($openPositions)->matchingPosition($this);
+
+            if (is_array($position) && array_key_exists('notional', $position)) {
+                return $position['notional'];
+            }
         }
 
         return 0;

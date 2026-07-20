@@ -42,6 +42,20 @@ trait MapsCancelOrders
     public function resolveCancelOrdersResponse(Response $response): array
     {
         $body = json_decode((string) $response->getBody(), associative: true);
+        $results = $body['data']['list'] ?? null;
+
+        if (is_array($results)) {
+            return [
+                'successList' => array_values(array_filter(
+                    $results,
+                    static fn (array $result): bool => in_array((string) ($result['code'] ?? ''), ['', '00000'], true),
+                )),
+                'failureList' => array_values(array_filter(
+                    $results,
+                    static fn (array $result): bool => ! in_array((string) ($result['code'] ?? ''), ['', '00000'], true),
+                )),
+            ];
+        }
 
         return $body['data'] ?? [];
     }
