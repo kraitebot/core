@@ -9,6 +9,7 @@ use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use Kraite\Core\Support\ValueObjects\ApiRequest;
+use Psr\Http\Message\ResponseInterface;
 
 /**
  * KucoinApiClient
@@ -68,7 +69,7 @@ final class KucoinApiClient extends BaseApiClient
      */
     public function signRequest(ApiRequest $apiRequest)
     {
-        $timestamp = (string) round(microtime(true) * 1000);
+        $timestamp = (string) now()->getTimestampMs();
         $method = strtoupper($apiRequest->method);
         $endpoint = $apiRequest->path;
 
@@ -78,7 +79,7 @@ final class KucoinApiClient extends BaseApiClient
 
         if ($method === 'GET' && ! empty($options)) {
             $queryString = http_build_query($options);
-            $endpoint = $endpoint . '?' . $queryString;
+            $endpoint = $endpoint.'?'.$queryString;
         } elseif (in_array($method, ['POST', 'PUT', 'DELETE']) && ! empty($options)) {
             $body = json_encode($options);
             $apiRequest->properties->set('body', $body);
@@ -86,7 +87,7 @@ final class KucoinApiClient extends BaseApiClient
 
         // KuCoin signature algorithm:
         // 1. Concatenate: timestamp + method + endpoint + body
-        $stringToSign = $timestamp . $method . $endpoint . $body;
+        $stringToSign = $timestamp.$method.$endpoint.$body;
 
         // 2. HMAC-SHA256 with API secret
         $secret = $this->credentials->get('api_secret');
@@ -121,5 +122,30 @@ final class KucoinApiClient extends BaseApiClient
             'Content-Type' => 'application/json',
             'Accept' => 'application/json',
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     */
+    protected function executeHttpRequest(string $method, string $path, array $options): ResponseInterface
+    {
+        $apiKey = data_get($options, 'headers.KC-API-KEY');
+
+        if (is_string($apiKey) && $apiKey !== '') {
+            $timestamp = (string) now()->getTimestampMs();
+            $body = data_get($options, 'body');
+            $body = is_string($body) ? $body : '';
+            $secret = $this->credentials->get('api_secret');
+
+            $options['headers']['KC-API-TIMESTAMP'] = $timestamp;
+            $options['headers']['KC-API-SIGN'] = base64_encode(hash_hmac(
+                'sha256',
+                $timestamp.mb_strtoupper($method).$path.$body,
+                $secret,
+                true
+            ));
+        }
+
+        return parent::executeHttpRequest($method, $path, $options);
     }
 }

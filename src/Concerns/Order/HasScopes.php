@@ -11,13 +11,16 @@ trait HasScopes
     /**
      * Orders that can be synced from the exchange.
      *
-     * Excludes MARKET orders (initial entry orders that execute immediately)
-     * and requires exchange_order_id to exist.
+     * Only working orders can still change exchange state. Terminal orders
+     * are immutable and some exchanges stop returning them after a short
+     * retention window, so repeatedly querying them creates permanent
+     * "order not found" traffic without providing new truth.
      */
     public function scopeSyncable(Builder $query)
     {
         return $query->whereNotNull('orders.exchange_order_id')
-            ->whereNotIn('orders.type', ['MARKET', 'MARKET-CANCEL']);
+            ->whereNotIn('orders.type', ['MARKET', 'MARKET-CANCEL'])
+            ->whereIn('orders.status', ['NEW', 'PARTIALLY_FILLED']);
     }
 
     public function scopeCancellable(Builder $query)

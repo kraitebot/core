@@ -9,6 +9,7 @@ use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use Kraite\Core\Support\ValueObjects\ApiRequest;
+use Psr\Http\Message\ResponseInterface;
 
 final class BybitApiClient extends BaseApiClient
 {
@@ -33,7 +34,7 @@ final class BybitApiClient extends BaseApiClient
 
     public function signRequest(ApiRequest $apiRequest)
     {
-        $timestamp = round(microtime(true) * 1000);
+        $timestamp = now()->getTimestampMs();
         $recvWindow = ApiSystem::firstWhere('canonical', 'bybit')->recvwindow_margin;
 
         // Build query string from options
@@ -66,5 +67,29 @@ final class BybitApiClient extends BaseApiClient
         return [
             'Content-Type' => 'application/json',
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     */
+    protected function executeHttpRequest(string $method, string $path, array $options): ResponseInterface
+    {
+        $apiKey = data_get($options, 'headers.X-BAPI-API-KEY');
+
+        if (is_string($apiKey) && $apiKey !== '') {
+            $timestamp = now()->getTimestampMs();
+            $recvWindow = (string) data_get($options, 'headers.X-BAPI-RECV-WINDOW');
+            $query = $options['query'] ?? [];
+            $queryString = http_build_query(is_array($query) ? $query : []);
+
+            $options['headers']['X-BAPI-TIMESTAMP'] = $timestamp;
+            $options['headers']['X-BAPI-SIGN'] = hash_hmac(
+                'sha256',
+                $timestamp.$apiKey.$recvWindow.$queryString,
+                $this->credentials->get('api_secret')
+            );
+        }
+
+        return parent::executeHttpRequest($method, $path, $options);
     }
 }

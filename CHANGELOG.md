@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.77.2 - 2026-07-20
+
+### Order synchronization
+
+- [FIXED] Polling queries only working exchange orders; terminal local history
+  no longer creates repeated not-found traffic.
+- [FIXED] Binance, Bybit, and KuCoin regenerate signed authentication before
+  every retry attempt, preventing backoff from expiring the original request.
+
 ## 1.77.1 - 2026-07-20
 
 ### Deployment safety
