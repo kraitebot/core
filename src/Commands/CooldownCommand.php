@@ -218,13 +218,13 @@ final class CooldownCommand extends BaseCommand
     private function getActiveStepCount(): int
     {
         try {
-            // Count active rows across BOTH the default `steps` and the
-            // `trading_steps` prefix. A cooldown command that only sees
-            // default could place the app in maintenance with trading
-            // workflows still active — the very signal it's meant to
-            // catch.
+            // A populated parent is orchestration state, not executable work.
+            // Its active descendants are counted independently. Including the
+            // parent deadlocks cooldown after dispatch is paused because its
+            // pending child tree can no longer advance during the drain.
             $count = static fn (): int => (int) Step::query()
                 ->whereIn('state', [Running::class, Dispatched::class])
+                ->whereNull('child_block_uuid')
                 ->count();
 
             return $count() + (int) Steps::usingPrefix('trading', $count);

@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.77.1 - 2026-07-20
+
+### Deployment safety
+
+- [FIXED] Cooldown waits for executable leaf steps across both prefixes while
+  excluding populated workflow parents, preventing a dispatch-pause deadlock
+  without allowing real in-flight trading work to be abandoned.
+
 ## 1.77.0 - 2026-07-20
 
 ### Bitget full trading compatibility
