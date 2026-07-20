@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Kraite\Core\Support;
 
 use Illuminate\Database\Eloquent\Collection;
+use Kraite\Core\Jobs\Atomic\Account\TestServerConnectivityStep;
+use Kraite\Core\Jobs\Lifecycles\Account\TestExchangeConnectivityStep;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ForbiddenHostname;
@@ -37,6 +39,20 @@ use StepDispatcher\Models\Step;
 final class StepRouter
 {
     /**
+     * Diagnostic steps whose whole purpose is discovering whitelist /
+     * key state. They must never be vetoed by the ban set they exist to
+     * diagnose — a stale ban row would otherwise block a registrant's
+     * retry for the ban TTL even after they fixed their whitelist — and
+     * they must never fire the deactivation cascade.
+     *
+     * @var list<class-string>
+     */
+    private const DIAGNOSTIC_STEP_CLASSES = [
+        TestExchangeConnectivityStep::class,
+        TestServerConnectivityStep::class,
+    ];
+
+    /**
      * Hook entry point registered with step-dispatcher.
      *
      * Contract per step-dispatcher v1.13.0:
@@ -56,6 +72,10 @@ final class StepRouter
             // to step-dispatcher's default behaviour (uses step.queue
             // verbatim) so legacy / external-app queues keep working.
             return null;
+        }
+
+        if (in_array($step->class, self::DIAGNOSTIC_STEP_CLASSES, true)) {
+            return $this->buildPhysicalQueue($logical, $this->pickRandom($candidates));
         }
 
         $accountId = $this->extractAccountId($step);

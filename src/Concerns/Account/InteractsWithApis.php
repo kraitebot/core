@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Kraite\Core\Concerns\Account;
 
 use GuzzleHttp\Psr7\Response;
+use Kraite\Core\Enums\BitgetAccountMode;
+use Kraite\Core\Support\Connectivity\BitgetAccountModeDetector;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 use Kraite\Core\Support\Proxies\ApiRESTProxy;
 use Kraite\Core\Support\Security\ExchangeApiKeyPermissions;
@@ -25,18 +27,38 @@ trait InteractsWithApis
     }
 
     /**
+     * The BitGet account mode (classic vs unified) driving which API
+     * generation private calls use. Detected once via a cheap probe and
+     * persisted; non-persisted accounts (Account::admin/temporary) detect
+     * per instance and memoise on the attribute.
+     */
+    public function resolveBitgetAccountMode(): BitgetAccountMode
+    {
+        $stored = $this->bitget_account_mode;
+
+        if (is_string($stored) && $stored !== '') {
+            return BitgetAccountMode::from($stored);
+        }
+
+        $mode = app(BitgetAccountModeDetector::class)->detect($this);
+
+        $this->bitget_account_mode = $mode->value;
+
+        if ($this->exists) {
+            // Quiet save: mode discovery is plumbing, not a product event —
+            // it must not trigger observer side effects mid-API-call.
+            $this->saveQuietly();
+        }
+
+        return $mode;
+    }
+
+    /**
      * Return the right api client object from the ApiRESTProxy given the account
      * connection id. Also, verifies if we should use test account credentials or not.
      */
-    public function withApi()
+    public function withApi(): ApiRESTProxy
     {
-        // Mask values (keep last 6 chars) instead of logging raw secrets
-        $masked = collect($this->all_credentials)->map(static function ($v) {
-            return is_string($v) && $v !== ''
-                ? str_repeat('*', max(0, mb_strlen($v) - 6)).mb_substr($v, -6)
-                : $v;
-        })->all();
-
         return new ApiRESTProxy(
             $this->apiSystem->canonical,
             new ApiCredentials($this->all_credentials)

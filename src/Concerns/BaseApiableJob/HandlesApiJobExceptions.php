@@ -200,6 +200,13 @@ trait HandlesApiJobExceptions
      *   -4061: POSITION_SIDE_NOT_MATCH (the canonical mismatch error)
      *   -4062: REDUCE_ONLY_CONFLICT (reduceOnly set in the wrong mode)
      *   -4067: POSITION_SIDE_CHANGE_EXISTS_OPEN_ORDERS
+     *   -1106: PARAM_NOT_REQUIRED, but ONLY when the offending parameter
+     *     is reduceOnly. Hedge mode rejects the reduceOnly parameter with
+     *     this GENERIC code instead of a -406x one, so a one-way-flagged
+     *     account closing against a real hedge-mode exchange would
+     *     otherwise fail into the cancel cascade instead of self-healing.
+     *     Gated on the parameter name in the message because -1106 also
+     *     fires for unrelated stray params.
      *
      * Bitget (string codes, per V2 docs):
      *   "40774": "The order type for unilateral position must also be the
@@ -231,6 +238,14 @@ trait HandlesApiJobExceptions
         // the int form whether code arrived as int or numeric string.
         if (is_numeric($code) && in_array((int) $code, [-4060, -4061, -4062, -4067], strict: true)) {
             return true;
+        }
+
+        // Binance -1106 is only a mode mismatch when the rejected
+        // parameter is reduceOnly (see docblock above).
+        if (is_numeric($code) && (int) $code === -1106) {
+            $message = mb_strtolower((string) ($payload['msg'] ?? ''));
+
+            return str_contains($message, 'reduceonly');
         }
 
         // Bitget returns string codes. Compared as strings to avoid the

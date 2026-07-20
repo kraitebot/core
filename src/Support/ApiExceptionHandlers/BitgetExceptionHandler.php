@@ -190,6 +190,28 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
     }
 
     /**
+     * Bitget reuses 40014 for both "invalid API key" (classic) and
+     * "incorrect permissions, need UTA manage read or write" (unified),
+     * so the permission classification additionally requires the word
+     * "permission" somewhere in the exception chain. A 40014 without it
+     * stays in the account-blocked bucket.
+     */
+    public function isMissingPermissions(Throwable $exception): bool
+    {
+        if (! $this->containsBitgetVendorCode($exception, ['40014'])) {
+            return false;
+        }
+
+        for ($current = $exception; $current !== null; $current = $current->getPrevious()) {
+            if (str_contains(mb_strtolower($current->getMessage()), 'permission')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Case 4: Account blocked.
      * Specific account's API key is revoked, disabled, or has permission issues.
      * Detected by: HTTP 401 or current Bitget credential/permission codes.

@@ -237,6 +237,13 @@ final class BitgetThrottler extends BaseApiThrottler implements ClientLevelApiTh
                 $nowMs = (int) round(now()->getPreciseTimestamp(3));
                 $cachedNextAvailableAtMs = Cache::get($reservationKey, $nowMs);
 
+                // The framework's Redis store persists numeric values raw
+                // and returns them UNCAST, so a warm reservation key reads
+                // back as a numeric string — normalise before the guard.
+                if (is_string($cachedNextAvailableAtMs) && ctype_digit($cachedNextAvailableAtMs)) {
+                    $cachedNextAvailableAtMs = (int) $cachedNextAvailableAtMs;
+                }
+
                 if (! is_int($cachedNextAvailableAtMs)) {
                     throw new UnexpectedValueException('Bitget throttle reservation cache value must be an integer.');
                 }

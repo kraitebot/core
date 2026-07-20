@@ -21,6 +21,8 @@ use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\Fleet\FleetMetricsRepository;
+use Kraite\Core\Support\Health\AccountActivityFlagSync;
+use Kraite\Core\Support\Health\ForeignActivityDetector;
 use Kraite\Core\Support\Health\OrphanReconciler;
 use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\Math;
@@ -1029,15 +1031,21 @@ final class CheckSystemHealthCommand extends BaseCommand
             60
         );
 
-        $kraiteRecentlyClosedOrderIds = $account->positions()
+        $kraiteRecentlyClosed = $account->positions()
             ->whereIn('status', ['closed', 'cancelled', 'failed'])
             ->where('updated_at', '>=', now()->subMinutes($matchWindow))
             ->with('orders')
-            ->get()
+            ->get();
+
+        $kraiteRecentlyClosedOrderIds = $kraiteRecentlyClosed
             ->flatMap(fn ($p) => $p->orders)
             ->pluck('exchange_order_id')
             ->filter()
             ->map(fn ($id): string => (string) $id)
+            ->all();
+
+        $kraiteRecentlyClosedPositionKeys = $kraiteRecentlyClosed
+            ->map(fn ($p): string => $p->parsed_trading_pair.':'.$p->direction)
             ->all();
 
         // In-flight guard: when any position is in a transitional
@@ -1050,6 +1058,42 @@ final class CheckSystemHealthCommand extends BaseCommand
             ->whereIn('status', ['new', 'opening', 'cancelling', 'syncing'])
             ->isNotEmpty();
 
+        // Keep the protection flags aligned with LIVE evidence before any
+        // cleanup decision: foreign (user) activity present → both flags
+        // ON, nothing of the user's ever reaches the cancel/close lists;
+        // no foreign activity → flags OFF, exclusive-mode cleanup and
+        // total-balance sizing restored. Disabling requires a reliable
+        // tick (no in-flight positions whose order ids lag the exchange).
+        $foreign = ForeignActivityDetector::detect(
+            exchangeOpenOrderIds: $exchangeOpenOrderIds,
+            exchangePositionKeys: $exchangePositionKeys,
+            kraiteOpenOrderIds: $kraiteOpenOrderIds,
+            kraitePositionKeys: $kraitePositionKeys,
+            kraiteRecentlyClosedOrderIds: $kraiteRecentlyClosedOrderIds,
+            kraiteRecentlyClosedPositionKeys: $kraiteRecentlyClosedPositionKeys,
+        );
+
+        $flagChange = AccountActivityFlagSync::sync(
+            account: $account,
+            hasForeign: $foreign->hasAny(),
+            canDisable: ! $hasInflightPositions,
+        );
+
+        if ($flagChange !== null) {
+            $this->emit(
+                signal: "activity_flags_{$flagChange}_account_{$account->id}",
+                severity: 'info',
+                title: "User-activity protection {$flagChange} on {$account->name}",
+                detail: sprintf(
+                    'Foreign exchange activity %s — allow_other_positions/allow_other_orders %s. Foreign positions: %s. Foreign orders: %s.',
+                    $flagChange === 'enabled' ? 'detected' : 'cleared',
+                    $flagChange,
+                    $foreign->foreignPositionKeys === [] ? 'none' : implode(', ', $foreign->foreignPositionKeys),
+                    $foreign->foreignOrderIds === [] ? 'none' : implode(', ', $foreign->foreignOrderIds),
+                ),
+            );
+        }
+
         $report = OrphanReconciler::reconcile(
             exchangeOpenOrderIds: $exchangeOpenOrderIds,
             exchangePositionKeys: $exchangePositionKeys,
@@ -1059,6 +1103,7 @@ final class CheckSystemHealthCommand extends BaseCommand
             allowOtherOrders: $account->allow_other_orders,
             allowOtherPositions: $account->allow_other_positions,
             hasInflightPositions: $hasInflightPositions,
+            kraiteRecentlyClosedPositionKeys: $kraiteRecentlyClosedPositionKeys,
         );
 
         if ($report->isEmpty()) {

@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Kraite\Core\Support\Apis\REST;
 
 use InvalidArgumentException;
+use Kraite\Core\Enums\BitgetAccountMode;
+use Kraite\Core\Models\Account;
 use Kraite\Core\Support\ApiClients\REST\BitgetApiClient;
 use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
@@ -98,6 +100,19 @@ final class BitgetApi
     public function getPositions(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->swapProductTypeForCategory($properties);
+
+            $apiRequest = ApiRequest::make(
+                'GET',
+                '/api/v3/position/current-position',
+                $properties
+            );
+
+            return $this->client->signRequest($apiRequest);
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -126,6 +141,22 @@ final class BitgetApi
     public function getAccountBalance(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            // The v3 asset read is account-wide (all coins in one payload);
+            // the futures productType filter does not apply. Requires the
+            // key to carry the "UTA management (read)" scope.
+            $properties->delete('options.productType');
+
+            $apiRequest = ApiRequest::make(
+                'GET',
+                '/api/v3/account/assets',
+                $properties
+            );
+
+            return $this->client->signRequest($apiRequest);
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -157,9 +188,37 @@ final class BitgetApi
     }
 
     /**
+     * Classic keys expose an `authorities` list on the v2 spot account
+     * info; unified keys expose a `permissions` list on the v3 account
+     * info. Both payloads feed ExchangeApiKeyPermissions, which branches
+     * on the shape it receives.
+     *
      * @see https://www.bitget.com/api-doc/classic/spot/account/Get-Account-Info
+     * @see https://www.bitget.com/api-doc/uta/changelog (/api/v3/account/info)
      */
     public function getApiKeyPermissions(?ApiProperties $properties = null): mixed
+    {
+        $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $apiRequest = ApiRequest::make(
+                'GET',
+                '/api/v3/account/info',
+                $properties
+            );
+
+            return $this->client->signRequest($apiRequest);
+        }
+
+        return $this->getClassicAccountInfo($properties);
+    }
+
+    /**
+     * Raw v2 spot account info call, mode-lookup free. Doubles as the
+     * account-mode detection probe: unified accounts reject it with error
+     * 40085 before credential validation.
+     */
+    public function getClassicAccountInfo(?ApiProperties $properties = null): mixed
     {
         $properties ??= new ApiProperties;
         $apiRequest = ApiRequest::make(
@@ -179,6 +238,19 @@ final class BitgetApi
     public function getCurrentOpenOrders(?ApiProperties $properties = null)
     {
         $properties ??= new ApiProperties;
+
+        if ($this->isUnifiedAccount($properties)) {
+            $this->swapProductTypeForCategory($properties);
+
+            $apiRequest = ApiRequest::make(
+                'GET',
+                '/api/v3/trade/unfilled-orders',
+                $properties
+            );
+
+            return $this->client->signRequest($apiRequest);
+        }
+
         $this->requireProductContext($properties);
 
         $apiRequest = ApiRequest::make(
@@ -648,6 +720,34 @@ final class BitgetApi
         );
 
         return $this->client->signRequest($apiRequest);
+    }
+
+    /**
+     * Whether the calling account runs in BitGet unified (UTA) mode.
+     * Unified accounts must use the v3 API — classic v2 private calls
+     * fail with error 40085. Mode is lazily detected and persisted by
+     * the account model.
+     */
+    private function isUnifiedAccount(ApiProperties $properties): bool
+    {
+        $account = $properties->getOr('account', null) ?? $properties->getOr('relatable', null);
+
+        return $account instanceof Account
+            && $account->apiSystem?->canonical === 'bitget'
+            && $account->resolveBitgetAccountMode() === BitgetAccountMode::Unified;
+    }
+
+    /**
+     * v2 names the futures product filter `productType`; v3 names it
+     * `category`. The values (USDT-FUTURES / COIN-FUTURES / USDC-FUTURES)
+     * are identical across both generations.
+     */
+    private function swapProductTypeForCategory(ApiProperties $properties): void
+    {
+        $this->requireProductContext($properties);
+
+        $properties->set('options.category', $properties->get('options.productType'));
+        $properties->delete('options.productType');
     }
 
     private function requireProductContext(ApiProperties $properties): void

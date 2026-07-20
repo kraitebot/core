@@ -8,6 +8,7 @@ use Carbon\CarbonInterface;
 use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
+use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ForbiddenHostname;
 use Kraite\Core\Models\Kraite;
 use Psr\Http\Message\MessageInterface;
@@ -64,6 +65,18 @@ trait ApiExceptionHelpers
      * Recovery: User adds IP to exchange whitelist.
      */
     public function isIpNotWhitelisted(Throwable $exception): bool
+    {
+        // Default: not detected. Override in exchange-specific handlers.
+        return false;
+    }
+
+    /**
+     * API key exists and authenticates but lacks a permission scope the
+     * call needs (e.g. a Bitget unified key without "UTA management
+     * (read)"). Recovery: user edits the key's permissions on the
+     * exchange.
+     */
+    public function isMissingPermissions(Throwable $exception): bool
     {
         // Default: not detected. Override in exchange-specific handlers.
         return false;
@@ -341,7 +354,7 @@ trait ApiExceptionHelpers
         ?string $errorCode,
         ?string $errorMessage
     ): void {
-        $apiSystem = \Kraite\Core\Models\ApiSystem::where('canonical', $this->getApiSystem())->firstOrFail();
+        $apiSystem = ApiSystem::where('canonical', $this->getApiSystem())->firstOrFail();
         $ipAddress = Kraite::ip();
 
         $record = ForbiddenHostname::updateOrCreate(

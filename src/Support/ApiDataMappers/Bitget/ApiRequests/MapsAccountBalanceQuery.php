@@ -62,6 +62,13 @@ trait MapsAccountBalanceQuery
         $accountsData = $data['data'] ?? [];
         $balanceQuote = $account->balanceQuote();
 
+        // Unified (v3 /account/assets) responds with an object holding an
+        // account-wide `assets` list; classic (v2) responds with a plain
+        // list of per-product accounts. Branch on shape.
+        if (is_array($accountsData) && ! array_is_list($accountsData)) {
+            return $this->resolveUnifiedBalance($accountsData, $balanceQuote);
+        }
+
         $accountData = collect($accountsData)
             ->first(static function ($acc) use ($balanceQuote) {
                 return ($acc['marginCoin'] ?? '') === $balanceQuote;
@@ -82,6 +89,38 @@ trait MapsAccountBalanceQuery
             'available-balance' => $available,
             'cross-wallet-balance' => $accountEquity,
             'cross-unrealized-pnl' => $unrealizedPnl,
+        ];
+    }
+
+    /**
+     * Maps a v3 unified `assets` entry for the requested quote onto the
+     * shared balance keys. Unified accounts do not report per-coin
+     * unrealized PnL, and unified trading stays gated until the v3 order
+     * surface ships, so PnL maps to zero.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, string>
+     */
+    private function resolveUnifiedBalance(array $payload, string $balanceQuote): array
+    {
+        $asset = collect($payload['assets'] ?? [])
+            ->first(static function ($asset) use ($balanceQuote) {
+                return is_array($asset) && ($asset['coin'] ?? '') === $balanceQuote;
+            });
+
+        if ($asset === null) {
+            return $this->emptyAccountBalance();
+        }
+
+        $equity = (string) ($asset['equity'] ?? '0');
+        $available = (string) ($asset['available'] ?? '0');
+
+        return [
+            'total-wallet-balance' => $equity,
+            'wallet-balance' => $equity,
+            'available-balance' => $available,
+            'cross-wallet-balance' => $equity,
+            'cross-unrealized-pnl' => '0',
         ];
     }
 

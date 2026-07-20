@@ -19,6 +19,7 @@ use Kraite\Core\Concerns\Account\HasStatuses;
 use Kraite\Core\Concerns\Account\HasTokenDiscovery;
 use Kraite\Core\Concerns\Account\InteractsWithApis;
 use Kraite\Core\Database\Factories\AccountFactory;
+use Kraite\Core\Enums\BitgetAccountMode;
 
 /**
  * @property int $id
@@ -56,6 +57,7 @@ use Kraite\Core\Database\Factories\AccountFactory;
  * @property string|null $bitget_api_key
  * @property string|null $bitget_api_secret
  * @property string|null $bitget_passphrase
+ * @property string|null $bitget_account_mode
  * @property Carbon $created_at
  * @property Carbon $updated_at
  * @property Carbon|null $deleted_at
@@ -224,6 +226,14 @@ final class Account extends BaseModel
     public function isReadyToTrade(): bool
     {
         if (! $this->is_active || ! $this->can_trade) {
+            return false;
+        }
+
+        // Unified BitGet accounts can register and be read, but the order
+        // lifecycle still speaks the classic v2 API only — trading stays
+        // gated off until the v3 order surface ships (Phase 2).
+        if ($this->apiSystem?->canonical === 'bitget'
+            && $this->bitget_account_mode === BitgetAccountMode::Unified->value) {
             return false;
         }
 

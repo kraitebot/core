@@ -78,17 +78,24 @@ final class AccountServerConnectivityService
             ->where('class', TestExchangeConnectivityStep::class)
             ->firstOrFail();
 
+        // A dead parent never creates (all of) its children, so waiting on
+        // child rows would poll forever. Report the run as complete and
+        // every childless server as failed, carrying the parent's error.
+        $parentFailed = $parent->state instanceof Failed || $parent->state instanceof Stopped;
+
         $servers = $this->apiConnectivityServers();
         $children = $parent->child_block_uuid
             ? Step::query()->where('block_uuid', $parent->child_block_uuid)->get()->keyBy(fn (Step $step): int => (int) ($step->arguments['serverId'] ?? 0))
             : collect();
 
-        $rows = $servers->map(function (Server $server) use ($children): array {
+        $rows = $servers->map(function (Server $server) use ($children, $parent, $parentFailed): array {
             /** @var Step|null $child */
             $child = $children->get($server->id);
 
             if (! $child) {
-                return $this->serverPayload($server, 'testing');
+                return $parentFailed
+                    ? $this->serverPayload($server, 'not_connected', $parent)
+                    : $this->serverPayload($server, 'testing');
             }
 
             return $this->serverPayload(
@@ -99,6 +106,7 @@ final class AccountServerConnectivityService
         })->values();
 
         $isComplete = $rows->isEmpty()
+            || $parentFailed
             || ($children->count() >= $servers->count()
                 && $children->every(fn (Step $step): bool => in_array($step->state::class, Step::terminalStepStates(), true)));
 

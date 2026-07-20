@@ -141,7 +141,12 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
      *
      * A closing fill is the reducing leg of the position: SELL for LONG,
      * BUY for SHORT, optionally tagged with the matching positionSide on
-     * hedge-mode exchanges (Binance). We scan newest-first and return the
+     * hedge-mode exchanges (Binance). One-way accounts tag every fill
+     * positionSide=BOTH — treated as a wildcard so the side check still
+     * verifies the reducing leg (without it, one-way accounts silently
+     * degraded to the side-blind fallback and could record a non-reducing
+     * fill, e.g. the user's own trade on an allow_other_positions
+     * account, as the closing price). We scan newest-first and return the
      * most recent match so partial/multi-step closes resolve to the final
      * reducing fill. If no trade carries side/positionSide metadata (some
      * exchanges omit it), fall back to the last trade in the list — it's
@@ -161,7 +166,7 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
             $positionSide = mb_strtoupper((string) ($trade['positionSide'] ?? ''));
 
             $sideMatches = $side === $closeSide;
-            $positionSideMatches = $positionSide === '' || $positionSide === $direction;
+            $positionSideMatches = $positionSide === '' || $positionSide === 'BOTH' || $positionSide === $direction;
 
             if ($sideMatches && $positionSideMatches) {
                 $price = $trade['price'] ?? $trade['execPrice'] ?? null;

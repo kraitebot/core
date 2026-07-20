@@ -70,7 +70,11 @@ trait MapsOpenOrdersQuery
     public function resolveQueryOpenOrdersResponse(Response $response): array
     {
         $data = json_decode((string) $response->getBody(), associative: true);
-        $orders = $data['data']['entrustedList'] ?? [];
+
+        // Classic (v2) nests orders under `entrustedList`; unified (v3)
+        // nests them under `list`. Field names of each order are close
+        // enough that the shared price/type enrichment applies to both.
+        $orders = $data['data']['entrustedList'] ?? $data['data']['list'] ?? [];
 
         return array_map(callback: function (array $order): array {
             $order['_price'] = $this->computeOrderPrice($order);

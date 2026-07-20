@@ -2,6 +2,50 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.76.0 - 2026-07-20
+
+### Bitget unified accounts (Phase 1 — onboarding + reads)
+
+- [ADDED] Automatic Bitget account-mode detection (classic vs unified/UTA)
+  via a pre-auth classic probe (error 40085), cached on
+  `accounts.bitget_account_mode`.
+- [ADDED] Mode-aware private reads: balance, positions, open orders, and
+  API-key permissions route to the Bitget v3 API for unified accounts.
+- [ADDED] Unified withdrawal-safety check on the v3 key-permission scopes
+  (`uta_trade` / `uta_mgt` safe list, fail-closed on anything else).
+- [ADDED] Trading-readiness gate refuses unified Bitget accounts until the
+  v3 order surface ships.
+
+### Own-activity protection
+
+- [ADDED] `ForeignActivityDetector` + `AccountActivityFlagSync`: the
+  `allow_other_positions` / `allow_other_orders` flags now track live
+  exchange evidence in the system-health watchdog (before any orphan
+  cleanup) and in the position-opening chain (`SyncAccountActivityFlagsJob`,
+  before sizing). Protection tightens on any evidence; loosens only on
+  reliable ticks.
+- [CHANGED] `OrphanReconciler`: shared accounts now flat-close provable
+  Kraite leftovers (recently-closed position keys) while ignoring
+  everything else as the user's.
+- [CHANGED] Binance ghost-algo scrub is skipped on accounts that allow user
+  orders.
+
+### Registration connectivity UX
+
+- [ADDED] Probe failures translate to plain user-facing messages (named
+  missing permission, IP not whitelisted, key rejected; Binance combined).
+- [CHANGED] `StepRouter` exempts diagnostic connectivity steps from the
+  clean-worker ban veto; a dead connectivity parent now reports the run
+  complete + failed instead of hanging pollers.
+
+### Fixes
+
+- [FIXED] `BitgetThrottler` crashed on warm Redis reservation keys — the
+  framework returns cached integers as numeric strings; now normalised.
+- [FIXED] The engine credentials accessor never exposed Bitget/KuCoin admin
+  keys, so system-level private calls on those exchanges could not
+  authenticate.
+
 ## 1.75.0 - 2026-07-19
 
 ### Mobile API authentication

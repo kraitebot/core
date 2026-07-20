@@ -64,7 +64,24 @@ trait MapsPositionsQuery
     {
         $body = json_decode((string) $response->getBody(), associative: true);
 
-        $positionsList = $body['data'] ?? [];
+        $rawData = $body['data'] ?? [];
+
+        // Classic (v2) responds with a plain list; unified (v3) wraps the
+        // list in an object and renames holdSide→posSide / posMode→holdMode.
+        // Normalize v3 entries back to the v2 names so the shared pipeline
+        // below applies to both generations.
+        if (is_array($rawData) && ! array_is_list($rawData)) {
+            $positionsList = collect($rawData['list'] ?? [])
+                ->map(static function ($position) {
+                    $position['holdSide'] ??= $position['posSide'] ?? 'long';
+                    $position['posMode'] ??= $position['holdMode'] ?? '';
+
+                    return $position;
+                })
+                ->all();
+        } else {
+            $positionsList = $rawData;
+        }
 
         return collect($positionsList)
             ->filter(static function ($position) {

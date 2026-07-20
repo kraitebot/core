@@ -36,6 +36,23 @@ final class CancelOrphanAlgoOrdersJob extends BaseCancelOrphanAlgoOrdersJob
         $account = $this->position->account;
         $symbol = mb_strtoupper((string) $this->position->parsed_trading_pair);
 
+        // On an account shared with the user (allow_other_orders=true) an
+        // unknown algo order on this symbol may be the USER's own stop or
+        // take-profit — never scrub it. The cost is tolerating a possible
+        // ghost of our own next to the user's orders; protection of the
+        // user's orders outranks tidiness.
+        if ($account->allow_other_orders) {
+            return [
+                'position_id' => $this->position->id,
+                'symbol' => $symbol,
+                'cancelled_count' => 0,
+                'failed_count' => 0,
+                'cancelled' => [],
+                'failed' => [],
+                'message' => 'Scrub skipped — account allows user orders (allow_other_orders=true)',
+            ];
+        }
+
         $response = $account->apiQueryAlgoOrders();
         $allOpenAlgoOrders = is_array($response->result) ? $response->result : [];
 
