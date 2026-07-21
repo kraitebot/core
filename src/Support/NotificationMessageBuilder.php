@@ -1554,6 +1554,54 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'registration_welcome' => (static function () use ($context, $exchangeTitle, $user) {
+                $dashboardUrl = is_string($context['dashboard_url'] ?? null)
+                    ? $context['dashboard_url']
+                    : rtrim((string) config('kraite.admin_url'), '/');
+                $hasExistingActivity = ($context['has_existing_activity'] ?? false) === true;
+                $greeting = $user !== null && filled($user->name)
+                    ? "Welcome to Kraite, {$user->name}!"
+                    : 'Welcome to Kraite!';
+
+                $exchangeState = $hasExistingActivity
+                    ? [
+                        'type' => 'callout',
+                        'variant' => 'warning',
+                        'label' => 'Existing trades detected',
+                        'body' => "We detected open positions or limit orders in your {$exchangeTitle} futures account. Kraite will not touch them and will use only your available balance. The bot works best when it starts with no existing positions or limit orders. Close or cancel them when appropriate; Kraite will detect when your account is clear.",
+                    ]
+                    : [
+                        'type' => 'callout',
+                        'variant' => 'success',
+                        'label' => 'Exchange ready',
+                        'body' => "We did not detect existing positions or limit orders in your {$exchangeTitle} futures account. Kraite can work with your available futures balance immediately.",
+                    ];
+
+                return [
+                    'severity' => null,
+                    'title' => 'Welcome to Kraite',
+                    'emailMessage' => 'Your Kraite trading account is active. Review how trading starts and the important risk information in this email.',
+                    'pushoverMessage' => 'Your Kraite trading account is active.',
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'emailBlocks' => [
+                        ['type' => 'heading', 'text' => $greeting, 'size' => 'md'],
+                        ['type' => 'paragraph', 'text' => 'We are genuinely happy to have you trading with us. Your setup is complete and your Kraite automation is ready.'],
+                        ['type' => 'heading', 'text' => 'How trading starts', 'size' => 'sm'],
+                        ['type' => 'paragraph', 'text' => 'Kraite starts on the next trading cycle. It scans for opportunities when prices rise or fall, builds trades in stages, manages profit and loss limits, and puts closed-trade profits back to work automatically. Your funds remain in your exchange account.'],
+                        $exchangeState,
+                        [
+                            'type' => 'callout',
+                            'variant' => 'danger',
+                            'label' => 'Trading risk',
+                            'body' => "Crypto trading carries a high risk of loss. No strategy is perfect. You can lose some or all of the money allocated to trading. Kraite's signals, automated actions, notifications, and results are not financial advice.",
+                        ],
+                        ['type' => 'button', 'href' => $dashboardUrl, 'label' => 'Open your dashboard', 'variant' => 'primary'],
+                        ['type' => 'fineprint', 'text' => 'Trade responsibly and use only money you can afford to lose.'],
+                    ],
+                ];
+            })(),
+
             'private_beta_email_verification' => (static function () use ($context) {
                 $verificationUrl = is_string($context['verification_url'] ?? null)
                     ? $context['verification_url']

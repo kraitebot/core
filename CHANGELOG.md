@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.78.0 - 2026-07-21
+
+### Registration welcome
+
+- [ADDED] Successful public registration sends one mail-only welcome per
+  trader with start-cycle guidance, existing-activity context, and explicit
+  trading-risk disclosure.
+- [FIXED] Welcome delivery and after-commit scheduling failures cannot roll
+  back registration, and re-enabling an existing account does not send a
+  misleading onboarding message.
+
+### Indicator pacing
+
+- [CHANGED] The default TAAPI Expert profile runs at 68 requests per 15
+  seconds with 221 ms pacing, approximately 10% below the provider ceiling.
+
 ## 1.77.3 - 2026-07-21
 
 ### Bitget lifecycle reliability

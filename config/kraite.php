@@ -521,7 +521,7 @@ return [
     |
     | PROFILE GUIDE (Expert Plan examples):
     | Conservative (80% capacity): 60 req/15s, 250ms delay
-    | Balanced (90% capacity): 68 req/15s, 225ms delay
+    | Balanced (about 90% capacity): 68 req/15s, 221ms delay
     | Aggressive (95% capacity): 71 req/15s, 200ms delay
     |
     | CoinMarketCap Throttler:
@@ -542,19 +542,18 @@ return [
     'throttlers' => [
         'taapi' => [
             // Maximum requests allowed per window (based on your TAAPI plan)
-            'requests_per_window' => (int) env('TAAPI_THROTTLER_REQUESTS_PER_WINDOW', 75),
+            'requests_per_window' => (int) env('TAAPI_THROTTLER_REQUESTS_PER_WINDOW', 68),
 
             // Window size in seconds (TAAPI uses 15-second windows)
             'window_seconds' => (int) env('TAAPI_THROTTLER_WINDOW_SECONDS', 15),
 
             // Minimum delay between consecutive requests in milliseconds
-            'min_delay_between_requests_ms' => (int) env('TAAPI_THROTTLER_MIN_DELAY_MS', 50),
+            'min_delay_between_requests_ms' => (int) env('TAAPI_THROTTLER_MIN_DELAY_MS', 221),
 
             // Safety threshold: stop at this percentage of limit (0.0-1.0)
-            // 1.0 = match TAAPI's actual window cap exactly. Relies on our
-            // throttler being sub-window accurate — verified under 1000-step
-            // stress to hit 92% of TAAPI's real cap with only ~200 probe 429s,
-            // all cleanly handled by the is_throttled reschedule path.
+            // 1.0 applies the configured 68-request profile exactly. The
+            // profile itself supplies the headroom below TAAPI's 75-request
+            // Expert ceiling, so no second percentage reduction is needed.
             'safety_threshold' => (float) env('TAAPI_THROTTLER_SAFETY_THRESHOLD', 1.0),
 
             // Bulk API construct limit (number of constructs per /bulk request)
