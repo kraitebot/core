@@ -11,7 +11,7 @@ use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
-use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
+use Kraite\Core\Trading\Exchange\Exchange;
 use Kraite\Core\Trading\Kraite;
 use RuntimeException;
 use Throwable;
@@ -87,7 +87,7 @@ final class VerifyOrderNotionalForMarketOrderJob extends BaseApiableJob
         $canonical = $this->position->account->apiSystem->canonical;
 
         // 1. Fetch mark price from exchange (using admin account for public API)
-        $mapper = new ApiDataMapperProxy($canonical);
+        $mapper = Exchange::forCanonical($canonical)->mapper();
         $properties = $mapper->prepareQueryMarkPriceProperties($exchangeSymbol);
 
         $response = Account::admin($canonical)->withApi()->getMarkPrice($properties);

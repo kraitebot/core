@@ -9,7 +9,7 @@ use Illuminate\Support\Carbon;
 use Kraite\Core\Enums\PositionPresence;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Support\PositionSnapshot;
-use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
+use Kraite\Core\Trading\Exchange\Exchange;
 
 trait HasTradingActions
 {
@@ -21,7 +21,7 @@ trait HasTradingActions
 
         $apiSystem = $this->account->apiSystem;
 
-        $dataMapper = new ApiDataMapperProxy($apiSystem->canonical);
+        $dataMapper = Exchange::forCanonical($apiSystem->canonical)->mapper();
 
         // Token and quote are stored directly on exchange_symbols
         return $dataMapper->baseWithQuote($this->exchangeSymbol->token, $this->exchangeSymbol->quote);

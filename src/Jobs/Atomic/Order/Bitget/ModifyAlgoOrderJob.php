@@ -10,7 +10,7 @@ use Kraite\Core\Enums\BitgetAccountMode;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
-use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
+use Kraite\Core\Trading\Exchange\Exchange;
 use RuntimeException;
 use Throwable;
 
@@ -133,7 +133,7 @@ final class ModifyAlgoOrderJob extends BaseApiableJob
         $tpPrice = $thisIsStopLoss ? (string) $sibling->price : $referencePrice;
         $slPrice = $thisIsStopLoss ? $referencePrice : (string) $sibling->price;
 
-        $mapper = new ApiDataMapperProxy($account->apiSystem->canonical);
+        $mapper = Exchange::forCanonical($account->apiSystem->canonical)->mapper();
         $properties = $mapper->preparePlacePosTpslProperties($this->position, $tpPrice, $slPrice);
         $properties->set('account', $account);
 

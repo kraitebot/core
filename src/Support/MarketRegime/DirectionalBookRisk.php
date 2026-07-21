@@ -14,7 +14,7 @@ use Kraite\Core\Support\Math;
  *
  * Two consumers:
  *
- *   - `BlackSwanIndex::portfolioRisk()` returns this for dashboard
+ *   - `BscsState::portfolioRisk()` returns this for dashboard
  *     rendering ("LONG crowded — 8/10 positions, 73% of margin").
  *
  *   - Phase 2.1C's directional crowding multiplier in
@@ -50,7 +50,11 @@ final class DirectionalBookRisk
         $rows = Position::query()
             ->opened()
             ->whereNotNull('direction')
-            ->get(['direction', 'margin', 'leverage']);
+            ->selectRaw('direction, COUNT(*) as open_count')
+            ->selectRaw('COALESCE(SUM(COALESCE(margin, 0) * COALESCE(leverage, 0)), 0) as margin_at_risk')
+            ->groupBy('direction')
+            ->toBase()
+            ->get();
 
         $longCount = 0;
         $shortCount = 0;
@@ -58,21 +62,23 @@ final class DirectionalBookRisk
         $shortMargin = '0';
 
         foreach ($rows as $row) {
-            $notional = Math::mul(
-                (string) ($row->margin ?? '0'),
-                (string) ($row->leverage ?? '0'),
-            );
+            $openCount = $row->open_count ?? null;
+            $marginAtRisk = $row->margin_at_risk ?? null;
+
+            if (! is_numeric($openCount) || ! is_numeric($marginAtRisk)) {
+                continue;
+            }
 
             if ($row->direction === 'LONG') {
-                $longCount++;
-                $longMargin = Math::add($longMargin, $notional);
+                $longCount = (int) $openCount;
+                $longMargin = (string) $marginAtRisk;
 
                 continue;
             }
 
             if ($row->direction === 'SHORT') {
-                $shortCount++;
-                $shortMargin = Math::add($shortMargin, $notional);
+                $shortCount = (int) $openCount;
+                $shortMargin = (string) $marginAtRisk;
             }
         }
 
@@ -158,7 +164,7 @@ final class DirectionalBookRisk
     }
 
     /**
-     * Lossless dashboard payload. Composes into BlackSwanIndex::toArray()
+     * Lossless dashboard payload. Composes into BscsState::toArray()
      * under the `portfolio_risk` key.
      *
      * @return array<string, mixed>

@@ -12,7 +12,7 @@ use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\NotificationService;
-use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
+use Kraite\Core\Trading\Exchange\Exchange;
 
 /**
  * VerifyPriceAlignmentJob
@@ -86,7 +86,7 @@ final class VerifyPriceAlignmentJob extends BaseApiableJob
 
         // This symbol's own live price, straight from its exchange (public
         // endpoint via the admin account, same path the order jobs use).
-        $mapper = new ApiDataMapperProxy($canonical);
+        $mapper = Exchange::forCanonical($canonical)->mapper();
         $properties = $mapper->prepareQueryMarkPriceProperties($this->exchangeSymbol);
         $response = Account::admin($canonical)->withApi()->getMarkPrice($properties);
         $livePrice = $mapper->resolveQueryMarkPriceResponse($response);

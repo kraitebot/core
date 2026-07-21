@@ -8,7 +8,7 @@ use Exception;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Indicator;
-use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
+use Kraite\Core\Trading\Exchange\Exchange;
 
 /*
  * BaseIndicator
@@ -120,7 +120,7 @@ abstract class BaseIndicator
             throw new Exception('No exchange symbol defined for the indicator query');
         }
 
-        $apiDataMapper = new ApiDataMapperProxy('taapi');
+        $apiDataMapper = Exchange::forCanonical('taapi')->mapper();
 
         $this->parameters['endpoint'] = $this->endpoint;
 

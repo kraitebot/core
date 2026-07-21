@@ -15,9 +15,9 @@ use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\PositionSafety;
-use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 use Kraite\Core\Support\Proxies\JobProxy;
 use Kraite\Core\Support\ValueObjects\UserDataStreamEvent;
+use Kraite\Core\Trading\Exchange\Exchange;
 use StepDispatcher\Models\Step;
 
 /**
@@ -73,7 +73,7 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
 
     public function compute(): array
     {
-        $mapper = new ApiDataMapperProxy($this->apiSystemCanonical);
+        $mapper = Exchange::forCanonical($this->apiSystemCanonical)->mapper();
 
         /** @var UserDataStreamEvent $event */
         $event = $mapper->resolveUserDataStreamEvent($this->payload);

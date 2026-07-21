@@ -13,8 +13,8 @@ use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ExchangeSymbolPrice;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
-use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 use Kraite\Core\Support\TpSlResolver;
+use Kraite\Core\Trading\Exchange\Exchange;
 use Kraite\Core\Trading\Kraite;
 use RuntimeException;
 use StepDispatcher\Models\Step;
@@ -191,7 +191,7 @@ final class PlacePositionTpslJob extends BaseApiableJob
 
         // Fetch fresh mark price so TP re-anchors if price already passed
         $canonical = $account->apiSystem->canonical;
-        $markMapper = new ApiDataMapperProxy($canonical);
+        $markMapper = Exchange::forCanonical($canonical)->mapper();
         $markProperties = $markMapper->prepareQueryMarkPriceProperties($exchangeSymbol);
         $markResponse = Account::admin($canonical)->withApi()->getMarkPrice($markProperties);
         $markPrice = $markMapper->resolveQueryMarkPriceResponse($markResponse);
@@ -254,7 +254,7 @@ final class PlacePositionTpslJob extends BaseApiableJob
         }
 
         // Place combined TP/SL on exchange via position endpoint
-        $mapper = new ApiDataMapperProxy($account->apiSystem->canonical);
+        $mapper = Exchange::forCanonical($account->apiSystem->canonical)->mapper();
         $properties = $mapper->preparePlacePosTpslProperties(
             $this->position,
             $this->tpPrice,
@@ -320,7 +320,7 @@ final class PlacePositionTpslJob extends BaseApiableJob
     public function queryPositionForTpslIds(): array
     {
         $account = $this->position->account;
-        $mapper = new ApiDataMapperProxy($account->apiSystem->canonical);
+        $mapper = Exchange::forCanonical($account->apiSystem->canonical)->mapper();
 
         $properties = $mapper->prepareQueryPositionsProperties($account);
         $properties->set('account', $account);
@@ -580,7 +580,7 @@ final class PlacePositionTpslJob extends BaseApiableJob
 
         if ($strategyId === null) {
             $account = $this->position->account;
-            $mapper = new ApiDataMapperProxy($account->apiSystem->canonical);
+            $mapper = Exchange::forCanonical($account->apiSystem->canonical)->mapper();
             $properties = $mapper->preparePlacePosTpslProperties(
                 $this->position,
                 (string) $this->tpPrice,

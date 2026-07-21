@@ -8,7 +8,7 @@ use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Position;
-use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
+use Kraite\Core\Trading\Exchange\Exchange;
 
 /** Align the local Bitget position-mode flag with the selected futures product. */
 final class SyncPositionModeJob extends BaseApiableJob
@@ -34,7 +34,7 @@ final class SyncPositionModeJob extends BaseApiableJob
     public function computeApiable(): array
     {
         $account = $this->position->account;
-        $mapper = new ApiDataMapperProxy('bitget');
+        $mapper = Exchange::forCanonical('bitget')->mapper();
         $properties = $mapper->prepareQueryPositionModeProperties($this->position);
         $properties->set('account', $account);
 

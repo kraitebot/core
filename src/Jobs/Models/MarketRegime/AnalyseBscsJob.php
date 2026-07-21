@@ -9,7 +9,8 @@ use Illuminate\Support\Facades\Log;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Enums\BscsStaleness;
 use Kraite\Core\Models\Kraite;
-use Kraite\Core\Support\MarketRegime\BlackSwanIndex;
+use Kraite\Core\Support\MarketRegime\Bscs;
+use Kraite\Core\Support\MarketRegime\BscsState;
 use Kraite\Core\Support\NotificationService;
 use Throwable;
 
@@ -35,7 +36,7 @@ use Throwable;
  *   4. cooldown still in the future
  *      → no-op (already armed, nothing to do).
  *
- * @see BlackSwanIndex
+ * @see BscsState
  * @see ~/docs/kraite/black-swan-logic.md
  */
 final class AnalyseBscsJob extends BaseQueueableJob
@@ -50,7 +51,7 @@ final class AnalyseBscsJob extends BaseQueueableJob
      */
     public function compute(): array
     {
-        $index = BlackSwanIndex::current();
+        $index = Bscs::current();
         $kraite = Kraite::find(1);
 
         if ($kraite === null) {
@@ -60,7 +61,7 @@ final class AnalyseBscsJob extends BaseQueueableJob
         // Stale-hard: the compute pipeline has been silent for >6h.
         // Fire the operator-investigation notification (cache_duration
         // throttles repeat firings) and bail. The gate already
-        // fail-opens via BlackSwanIndex::shouldBlockOpens() so we
+        // fail-opens via the BSCS opening policy so we
         // don't need to touch the cooldown column here.
         if ($index->staleness() === BscsStaleness::StaleHard) {
             $this->notifyComputeStale($index);
@@ -144,7 +145,7 @@ final class AnalyseBscsJob extends BaseQueueableJob
         }
     }
 
-    private function notifyComputeStale(BlackSwanIndex $index): void
+    private function notifyComputeStale(BscsState $index): void
     {
         try {
             $age = $index->ageSeconds();

@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.78.1 - 2026-07-21
+
+### Improvements
+
+- [IMPROVED] Exchange access now enters through typed account, system, symbol,
+  order, and position boundaries while legacy model methods remain compatible.
+- [IMPROVED] BSCS opening, position-cap, leverage, margin, and dashboard state
+  share one account-scoped facade and one loaded market-regime snapshot.
+- [IMPROVED] Token selection and health/drift remediation now live in dedicated
+  domains instead of model traits and console commands.
+
+### Registration inspection
+
+- [NEW FEATURE] Balance discovery and existing-position/order inspection can
+  run on the high-priority trading worker lane during public registration.
+
 ## 1.78.0 - 2026-07-21
 
 ### Registration welcome

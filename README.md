@@ -15,13 +15,13 @@
 Kraite Core is the foundational package powering the Kraite trading system. It provides:
 
 - **Eloquent models** for exchanges, symbols, positions, orders, accounts, and market data
-- **Trading algorithms** — direction detection, indicator analysis, ladder-based position management
-- **Exchange integrations** — Binance, Bitget, KuCoin, Bybit via unified API abstraction
+- **Trading algorithms** — direction detection, indicator analysis, account-scoped token selection, and ladder-based position management
+- **Exchange integrations** — Binance, Bitget, KuCoin, and Bybit through typed `Exchange::for...` operation boundaries
 - **Step Dispatcher orchestration** — async job pipelines with parent-child relationships
 - **WebSocket streams** — real-time mark price and user data processing
-- **Market regime detection** — BTC correlation, elasticity, and cascade analysis
+- **Market regime detection** — account-scoped `Bscs::forAccount(...)` policies for opening, position caps, leverage, margin, and dashboard state
 - **Artisan commands** — cooldown/warmup, dispatch daemon, kline fetching, symbol discovery
-- **Shared onboarding infrastructure** — private-beta notification canonicals, Resend/ZeptoMail config sync, and public/admin URL configuration for cross-app links
+- **Shared onboarding infrastructure** — private-beta notifications, priority-worker exchange inspection, Resend/ZeptoMail config sync, and cross-app URL configuration
 
 ## Requirements
 

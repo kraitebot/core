@@ -6,7 +6,8 @@ namespace Kraite\Core\Trading\Concerns;
 
 use Kraite\Core\Models\Kraite as KraiteModel;
 use Kraite\Core\Models\Position;
-use Kraite\Core\Support\MarketRegime\BlackSwanIndex;
+use Kraite\Core\Support\MarketRegime\Bscs;
+use Kraite\Core\Support\MarketRegime\BscsAccountContext;
 
 trait HasTradingGuards
 {
@@ -16,7 +17,7 @@ trait HasTradingGuards
      *   1. `kraite.allow_opening_positions` — operator-controlled hard
      *      switch. False = opens off everywhere, no exceptions.
      *
-     *   2. `BlackSwanIndex::shouldBlockOpens()` — system cooldown driven
+     *   2. `Bscs::forAccount()->opening()` — system cooldown driven
      *      by `AnalyseBscsJob`. Returns true while `bscs_cooldown_until`
      *      is in the future. Critical is ABSOLUTE — there is no
      *      per-account opt-out and no operator override (both removed in
@@ -26,7 +27,7 @@ trait HasTradingGuards
      * `kraite:cron-create-positions` cycles. WAP, sync, close, lifecycle
      * observers run normally regardless of regime.
      */
-    public function canOpenPositions(): bool
+    public function canOpenPositions(?BscsAccountContext $bscs = null): bool
     {
         $engine = KraiteModel::first();
 
@@ -55,7 +56,9 @@ trait HasTradingGuards
         // per-account opt-out and no operator override (both removed in
         // Phase 3). The master kill and allow_opening_positions above
         // still bind first.
-        if (BlackSwanIndex::current()->shouldBlockOpens()) {
+        $bscs ??= Bscs::forAccount($this->account);
+
+        if (! $bscs->opening()->allowsNewPositions()) {
             return false;
         }
 
@@ -66,9 +69,9 @@ trait HasTradingGuards
      * Directional guard for opening more SHORT positions.
      * Policy: if any OPEN SHORT already has all its limit orders filled, block new SHORTs.
      */
-    public function canOpenShorts(): bool
+    public function canOpenShorts(?BscsAccountContext $bscs = null): bool
     {
-        if (! $this->canOpenPositions()) {
+        if (! $this->canOpenPositions($bscs)) {
             return false;
         }
 
@@ -90,9 +93,9 @@ trait HasTradingGuards
      * Directional guard for opening more LONG positions.
      * Policy: if any OPEN LONG already has all its limit orders filled, block new LONGs.
      */
-    public function canOpenLongs(): bool
+    public function canOpenLongs(?BscsAccountContext $bscs = null): bool
     {
-        if (! $this->canOpenPositions()) {
+        if (! $this->canOpenPositions($bscs)) {
             return false;
         }
 

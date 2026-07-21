@@ -6,11 +6,11 @@ namespace Kraite\Core\Jobs\Atomic\Order;
 
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
-use Kraite\Core\Trading\Kraite;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
-use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
+use Kraite\Core\Trading\Exchange\Exchange;
+use Kraite\Core\Trading\Kraite;
 use RuntimeException;
 use Throwable;
 
@@ -32,7 +32,7 @@ use Throwable;
  * 4. doubleCheck() verifies order was accepted
  * 5. complete() sets reference_* fields
  */
-class PlaceProfitOrderJob extends BaseApiableJob
+final class PlaceProfitOrderJob extends BaseApiableJob
 {
     public Position $position;
 
@@ -132,7 +132,7 @@ class PlaceProfitOrderJob extends BaseApiableJob
         $side = $direction === 'LONG' ? 'SELL' : 'BUY';
 
         // Fetch fresh mark price so TP re-anchors if price already passed
-        $mapper = new ApiDataMapperProxy($canonical);
+        $mapper = Exchange::forCanonical($canonical)->mapper();
         $properties = $mapper->prepareQueryMarkPriceProperties($exchangeSymbol);
         $response = Account::admin($canonical)->withApi()->getMarkPrice($properties);
         $markPrice = $mapper->resolveQueryMarkPriceResponse($response);
@@ -234,7 +234,7 @@ class PlaceProfitOrderJob extends BaseApiableJob
     public function resolveException(Throwable $e): void
     {
         $this->position->updateSaving([
-            'error_message' => 'Profit order failed: ' . $e->getMessage(),
+            'error_message' => 'Profit order failed: '.$e->getMessage(),
         ]);
     }
 }

@@ -302,6 +302,10 @@ final class CoreServiceProvider extends ServiceProvider
             ProductionDatabaseCloneGateway::class,
             SshProductionDatabaseCloneGateway::class,
         );
+
+        $this->app->singleton(Support\MarketRegime\BscsManager::class);
+        $this->app->singleton(Trading\Exchange\ExchangeManager::class);
+        $this->app->singleton(Trading\TokenSelection\TokenSelectionManager::class);
     }
 
     protected function loadSharedEnvironment(): void

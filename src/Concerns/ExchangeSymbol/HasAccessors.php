@@ -8,7 +8,7 @@ use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Collection;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
-use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
+use Kraite\Core\Trading\Exchange\Exchange;
 
 trait HasAccessors
 {
@@ -71,7 +71,7 @@ trait HasAccessors
             return null;
         }
 
-        $dataMapper = new ApiDataMapperProxy($apiSystem->canonical);
+        $dataMapper = Exchange::forCanonical($apiSystem->canonical)->mapper();
 
         return $dataMapper->baseWithQuote($this->token, $this->quote);
     }

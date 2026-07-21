@@ -4,18 +4,16 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Concerns\ExchangeSymbol;
 
-use GuzzleHttp\Psr7\Response;
 use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
-use Kraite\Core\Support\ValueObjects\ApiProperties;
+use Kraite\Core\Trading\Exchange\Exchange;
 
+/**
+ * Backward-compatible model surface for legacy consumers.
+ */
 trait InteractsWithApis
 {
-    public ApiProperties $apiProperties;
-
-    public Response $apiResponse;
-
-    public function apiMapper($canonical)
+    public function apiMapper(string $canonical): ApiDataMapperProxy
     {
-        return new ApiDataMapperProxy($canonical);
+        return Exchange::forExchangeSymbol($this)->apiMapper($canonical);
     }
 }

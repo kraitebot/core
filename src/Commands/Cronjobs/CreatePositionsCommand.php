@@ -10,6 +10,7 @@ use Kraite\Core\Jobs\Lifecycles\Account\PreparePositionsOpeningJob;
 use Kraite\Core\Jobs\Lifecycles\Position\DispatchPositionJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\MarketRegime\Bscs;
 use Kraite\Core\Support\Proxies\JobProxy;
 use Kraite\Core\Trading\Kraite;
 use StepDispatcher\Models\Step;
@@ -223,16 +224,36 @@ final class CreatePositionsCommand extends BaseCommand
      */
     private function attemptOpeningPositionsForAccount(Account $account): void
     {
-        $maxSlots = $account->maxPositionSlots();
-        /** @var int $openPositions */
-        $openPositions = $account->positions()->opened()->count();
+        $bscs = Bscs::forAccount($account);
+        $openByDirection = $account->positions()
+            ->opened()
+            ->selectRaw('direction, COUNT(*) as aggregate')
+            ->groupBy('direction')
+            ->toBase()
+            ->pluck('aggregate', 'direction');
+        $databaseLongs = $openByDirection->get('LONG');
+        $databaseShorts = $openByDirection->get('SHORT');
+        $availability = $bscs->positions()->available(
+            exchangeLongs: 0,
+            exchangeShorts: 0,
+            databaseLongs: is_numeric($databaseLongs) ? (int) $databaseLongs : 0,
+            databaseShorts: is_numeric($databaseShorts) ? (int) $databaseShorts : 0,
+        );
 
-        $this->verboseInfo("  Account #{$account->id} ({$account->name}): {$openPositions}/{$maxSlots} positions open");
+        $this->verboseInfo(sprintf(
+            '  Account #%d (%s): LONG %d/%d, SHORT %d/%d positions open',
+            $account->id,
+            $account->name,
+            $availability->currentLongs(),
+            $availability->maximumLongs(),
+            $availability->currentShorts(),
+            $availability->maximumShorts(),
+        ));
 
         $engine = Kraite::withAccount($account);
 
         // Global guard with circuit breaker
-        if (! $engine->canOpenPositions()) {
+        if (! $engine->canOpenPositions($bscs)) {
             $this->verboseComment('    → Global guard prevents opening, skipping');
 
             return;
@@ -245,15 +266,16 @@ final class CreatePositionsCommand extends BaseCommand
             return;
         }
 
-        // Check if there's at least one slot available (DB check only - cheap)
-        if ($openPositions >= $maxSlots) {
+        // Skip the API preparation workflow when both account directions
+        // have already reached their current BSCS-adjusted caps.
+        if ($availability->availableLongs() === 0 && $availability->availableShorts() === 0) {
             $this->verboseComment('    → No available slots, skipping');
 
             return;
         }
 
         // Check directional guards
-        if (! $engine->canOpenLongs() && ! $engine->canOpenShorts()) {
+        if (! $engine->canOpenLongs($bscs) && ! $engine->canOpenShorts($bscs)) {
             $this->verboseComment('    → Directional guards prevent opening, skipping');
 
             return;

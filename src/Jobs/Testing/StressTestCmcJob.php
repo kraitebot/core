@@ -7,7 +7,7 @@ namespace Kraite\Core\Jobs\Testing;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Account;
-use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
+use Kraite\Core\Trading\Exchange\Exchange;
 
 /**
  * Isolated throttler stress test job for CoinMarketCap.
@@ -34,7 +34,7 @@ final class StressTestCmcJob extends BaseApiableJob
 
     public function computeApiable()
     {
-        $mapper = new ApiDataMapperProxy('coinmarketcap');
+        $mapper = Exchange::forCanonical('coinmarketcap')->mapper();
         $properties = $mapper->prepareSearchSymbolByTokenProperties('BTC');
 
         Account::admin('coinmarketcap')->withApi()->getSymbols($properties);

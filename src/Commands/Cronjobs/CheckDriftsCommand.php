@@ -8,9 +8,7 @@ use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Kraite\Core\Jobs\Lifecycles\Position\ApplyWapJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Order;
@@ -18,12 +16,14 @@ use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Drift\DriftChecker;
 use Kraite\Core\Support\Drift\OrderDriftReport;
 use Kraite\Core\Support\Drift\PositionDriftReport;
+use Kraite\Core\Support\Health\CallbackHealthCheck;
+use Kraite\Core\Support\Health\HealthCheckRunner;
+use Kraite\Core\Support\Health\Remediation\TradingCooldown;
+use Kraite\Core\Support\Health\Remediation\WapRemediator;
 use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\PositionSafety;
-use StepDispatcher\Models\Step;
 use StepDispatcher\Support\BaseCommand;
-use StepDispatcher\Support\Steps;
 use Throwable;
 
 /**
@@ -141,8 +141,12 @@ final class CheckDriftsCommand extends BaseCommand
 
     protected $description = '5-minute drift spotter — audits active positions and orphan orders, notifies admin. Alert-only except Scope 2b: a stuck WAP (TP under-covering the filled DCA ladder) self-heals via ApplyWapJob.';
 
-    public function __construct(private readonly DriftChecker $driftService)
-    {
+    public function __construct(
+        private readonly DriftChecker $driftService,
+        private readonly HealthCheckRunner $healthCheckRunner,
+        private readonly WapRemediator $wapRemediator,
+        private readonly TradingCooldown $tradingCooldown,
+    ) {
         parent::__construct();
     }
 
@@ -173,14 +177,34 @@ final class CheckDriftsCommand extends BaseCommand
         $accountId = $this->option('account_id');
         $accountFilter = $accountId ? (int) $accountId : null;
 
-        $this->auditActivePositionDrift($cutoff, $accountFilter);
-        $this->auditOrphanOrders($cutoff, $accountFilter);
+        $this->healthCheckRunner->run(
+            checks: [
+                new CallbackHealthCheck('active_position_drift', function () use ($cutoff, $accountFilter): int {
+                    $this->auditActivePositionDrift($cutoff, $accountFilter);
+
+                    return 0;
+                }),
+                new CallbackHealthCheck('orphan_orders', function () use ($cutoff, $accountFilter): int {
+                    $this->auditOrphanOrders($cutoff, $accountFilter);
+
+                    return 0;
+                }),
+            ],
+            continueAfterFailure: false,
+        );
 
         // Scope 2b runs BEFORE the cooled latch on purpose: like Scopes
         // 1 + 2 it maintains EXISTING positions, which keep trading and
         // must stay correctly protected even while opening is halted.
         if (! $this->option('skip-wap-heal')) {
-            $this->auditWapUnderApplication($accountFilter);
+            $this->healthCheckRunner->run(
+                checks: [new CallbackHealthCheck('wap_under_application', function () use ($accountFilter): int {
+                    $this->auditWapUnderApplication($accountFilter);
+
+                    return 0;
+                })],
+                continueAfterFailure: false,
+            );
         }
 
         // Scopes 3 + 4 are the cooling detectors. Once the bot is already
@@ -195,13 +219,28 @@ final class CheckDriftsCommand extends BaseCommand
             return self::SUCCESS;
         }
 
+        $coolingChecks = [];
+
         if (! $this->option('skip-structure-audit')) {
-            $this->auditPositionStructureIntegrity($accountFilter);
+            $coolingChecks[] = new CallbackHealthCheck('position_structure_integrity', function () use ($accountFilter): int {
+                $this->auditPositionStructureIntegrity($accountFilter);
+
+                return 0;
+            });
         }
 
         if (config('kraite.guard.engine_health_enabled') && ! $this->option('skip-engine-health')) {
-            $this->auditTradingEngineHealth();
+            $coolingChecks[] = new CallbackHealthCheck('trading_engine_health', function (): int {
+                $this->auditTradingEngineHealth();
+
+                return 0;
+            });
         }
+
+        $this->healthCheckRunner->run(
+            checks: $coolingChecks,
+            continueAfterFailure: false,
+        );
 
         return self::SUCCESS;
     }
@@ -489,53 +528,10 @@ final class CheckDriftsCommand extends BaseCommand
                 "TP covers {$profitOrder->quantity}, fills total {$expectedQty} — dispatching WAP heal."
             );
 
-            if ($this->dispatchWapHeal($position)) {
+            if ($this->wapRemediator->heal($position)) {
                 $this->notifyWapSelfHealed($position, (string) $profitOrder->quantity, $expectedQty);
             }
         }
-    }
-
-    /**
-     * Dispatch the ApplyWapJob heal for one under-covered position.
-     *
-     * Exact mirror of OrderObserver::dispatchApplyWap's concurrency
-     * discipline: position-row lock inside a transaction serialises us
-     * against the observer and against a concurrent spotter run; the
-     * pending-step dedupe makes the dispatch idempotent. Terminal states
-     * (Completed / Failed / Skipped) intentionally do NOT block — a
-     * previously FAILED ApplyWapJob is precisely the wound being healed.
-     *
-     * @return bool true when a fresh heal step was created
-     */
-    private function dispatchWapHeal(Position $position): bool
-    {
-        return (bool) Steps::usingPrefix('trading', function () use ($position): bool {
-            return DB::transaction(function () use ($position): bool {
-                $locked = Position::query()->whereKey($position->id)->lockForUpdate()->first();
-
-                if ($locked === null || $locked->status !== 'active') {
-                    return false;
-                }
-
-                if (Step::hasLiveWorkflow($locked, ApplyWapJob::class)) {
-                    return false;
-                }
-
-                Step::create([
-                    'class' => ApplyWapJob::class,
-                    'queue' => 'priority',
-                    'priority' => 'high',
-                    'relatable_type' => $locked->getMorphClass(),
-                    'relatable_id' => $locked->getKey(),
-                    'arguments' => [
-                        'positionId' => $locked->id,
-                        'message' => 'Drift spotter self-heal: TP quantity under-covers the filled DCA ladder — re-applying WAP',
-                    ],
-                ]);
-
-                return true;
-            });
-        });
     }
 
     /**
@@ -952,9 +948,7 @@ final class CheckDriftsCommand extends BaseCommand
      */
     private function isCooled(): bool
     {
-        $value = Kraite::query()->value('allow_opening_positions');
-
-        return $value !== null && (bool) $value === false;
+        return $this->tradingCooldown->isActive();
     }
 
     /**
@@ -969,98 +963,8 @@ final class CheckDriftsCommand extends BaseCommand
      */
     private function enterCooldown(string $reason, array $evidence): void
     {
-        $engine = Kraite::query()->first();
-        if ($engine === null) {
-            return;
-        }
-
-        // Latch — already cooled. Never re-cool, never re-write an incident.
-        if ((bool) $engine->allow_opening_positions === false) {
-            return;
-        }
-
-        $engine->update(['allow_opening_positions' => false]);
-
-        $this->verboseComment("  Cooldown entered ({$reason}) — allow_opening_positions=false (global open halt).");
-
-        $this->writeIncident($reason, $evidence);
-        $this->sendGuardPushover($reason, $evidence);
-    }
-
-    /**
-     * The money-guard's own one-shot Pushover. Sent direct (not through the
-     * notification-template system) so a money-critical alarm never depends
-     * on template/DB state being healthy. Fires once per incident (called
-     * only on the true→false cooldown transition). Never throws.
-     *
-     * @param  array<string, mixed>  $evidence
-     */
-    private function sendGuardPushover(string $reason, array $evidence): void
-    {
-        try {
-            $token = (string) config('kraite.admin_user_pushover_application_key');
-            $user = (string) config('kraite.admin_user_pushover_user_key');
-            if ($token === '' || $user === '') {
-                return;
-            }
-
-            $summary = collect($evidence)
-                ->map(fn ($v, $k) => is_scalar($v) ? "{$k}={$v}" : $k)
-                ->implode(', ');
-
-            Http::asForm()->timeout(10)->post('https://api.pushover.net/1/messages.json', [
-                'token' => $token,
-                'user' => $user,
-                'priority' => 1,
-                'title' => 'KRAITE COOLED — opens halted',
-                'message' => "Trigger: {$reason}\n{$summary}\n\nBot stopped opening new positions. Existing positions safe. Incident file written for review.",
-            ]);
-        } catch (Throwable $e) {
-            Log::error('[monitor-guard] guard pushover failed (cooldown still applied)', [
-                'reason' => $reason,
-                'message' => $e->getMessage(),
-            ]);
-        }
-    }
-
-    /**
-     * Write the deterministic incident stub to `monitoring/<ts>.md` and
-     * point the `monitoring/OPEN-INCIDENT` marker at it. The stub stands
-     * alone if the Haiku narrator never runs; the narrator later expands
-     * it in place. Never throws — a documentation failure must not break
-     * the safety cron (the cooldown itself already happened).
-     */
-    private function writeIncident(string $reason, array $evidence): void
-    {
-        try {
-            $dir = base_path('monitoring');
-            File::ensureDirectoryExists($dir);
-
-            $now = Carbon::now();
-            $stamp = $now->format('Ymd_His');
-            $file = $dir.'/'.$stamp.'.md';
-
-            $body = "# Kraite trading incident — {$stamp}\n\n";
-            $body .= "- detected_at: {$now->toDateTimeString()} (server time)\n";
-            $body .= "- trigger: **{$reason}**\n";
-            $body .= "- action_taken: cooled the bot (allow_opening_positions=false)\n";
-            $body .= "- narrated: NO  <!-- the Haiku narrator flips this to YES -->\n\n";
-            $body .= "## Evidence (deterministic)\n\n```json\n".json_encode($evidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n```\n\n";
-            $body .= "## For the operator / terminal LLM\n\n";
-            $body .= "The bot has stopped opening new positions. Existing positions keep trading and stay protected.\n";
-            $body .= "Diagnose the trigger above, fix the root cause, then clear the cooldown:\n";
-            $body .= "`allow_opening_positions=true` on the kraite singleton, and delete `monitoring/OPEN-INCIDENT`.\n\n";
-            $body .= "## Narration (Haiku fills this in)\n\n_pending_\n";
-
-            File::put($file, $body);
-            File::put($dir.'/OPEN-INCIDENT', $stamp.'.md');
-
-            $this->verboseComment("  Incident written: monitoring/{$stamp}.md");
-        } catch (Throwable $e) {
-            Log::error('[monitor-guard] failed to write incident file (cooldown still applied)', [
-                'reason' => $reason,
-                'message' => $e->getMessage(),
-            ]);
+        if ($this->tradingCooldown->enter($reason, $evidence)) {
+            $this->verboseComment("  Cooldown entered ({$reason}) — allow_opening_positions=false (global open halt).");
         }
     }
 

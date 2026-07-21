@@ -10,7 +10,7 @@ use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Symbol;
-use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
+use Kraite\Core\Trading\Exchange\Exchange;
 use SensitiveParameter;
 
 /**
@@ -282,7 +282,7 @@ final class DiscoverCMCTokenForExchangeSymbolJob extends BaseApiableJob
      */
     private function queryCmcForToken(#[SensitiveParameter] string $token): array
     {
-        $mapper = new ApiDataMapperProxy('coinmarketcap');
+        $mapper = Exchange::forCanonical('coinmarketcap')->mapper();
         $properties = $mapper->prepareSearchSymbolByTokenProperties($token);
         $properties->set('relatable', $this->exchangeSymbol);
 

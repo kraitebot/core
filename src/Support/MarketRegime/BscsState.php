@@ -12,10 +12,9 @@ use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\MarketRegimeSnapshot;
 
 /**
- * Read-side façade over the kraite singleton's BSCS columns + the most
- * recent `market_regime_snapshots` row. Single static factory for
- * convenience, immutable instance values, lossless `toArray()` for
- * dashboard consumption.
+ * Read-side state over the kraite singleton's BSCS columns. The most
+ * recent `market_regime_snapshots` row is loaded lazily only when detailed
+ * dashboard data requests it.
  *
  * Two consumer types:
  *
@@ -37,8 +36,12 @@ use Kraite\Core\Models\MarketRegimeSnapshot;
  *
  * @see ~/docs/kraite/black-swan-logic.md
  */
-final class BlackSwanIndex
+final class BscsState
 {
+    private bool $latestSnapshotLoaded = false;
+
+    private ?MarketRegimeSnapshot $latestSnapshot = null;
+
     private function __construct(
         private readonly ?int $score,
         private readonly ?RegimeBand $band,
@@ -48,18 +51,15 @@ final class BlackSwanIndex
         private readonly int $freshnessMaxSeconds,
         private readonly ?int $cooldownThreshold,
         private readonly ?int $cooldownHours,
-        private readonly ?MarketRegimeSnapshot $latestSnapshot,
     ) {}
 
     /**
-     * Build the index from the live kraite singleton + the most recent
-     * snapshot row. Reads everything it needs in one place — callers
-     * never need to know which column lives where.
+     * Build the state from the live kraite singleton. Forensic snapshot
+     * details remain lazy so trading decisions do not pay for them.
      */
     public static function current(): self
     {
         $kraite = Kraite::find(1);
-        $latest = MarketRegimeSnapshot::query()->orderByDesc('id')->first();
         $config = (array) (config('kraite.market_regime.cooldown') ?? []);
 
         return new self(
@@ -71,7 +71,6 @@ final class BlackSwanIndex
             freshnessMaxSeconds: (int) ($kraite?->bscs_freshness_max_seconds ?? 6900),
             cooldownThreshold: isset($config['threshold']) ? (int) $config['threshold'] : null,
             cooldownHours: isset($config['hours']) ? (int) $config['hours'] : null,
-            latestSnapshot: $latest,
         );
     }
 
@@ -186,6 +185,11 @@ final class BlackSwanIndex
 
     public function latestSnapshot(): ?MarketRegimeSnapshot
     {
+        if (! $this->latestSnapshotLoaded) {
+            $this->latestSnapshot = MarketRegimeSnapshot::query()->orderByDesc('id')->first();
+            $this->latestSnapshotLoaded = true;
+        }
+
         return $this->latestSnapshot;
     }
 
@@ -212,6 +216,8 @@ final class BlackSwanIndex
      */
     public function toArray(): array
     {
+        $latestSnapshot = $this->latestSnapshot();
+
         return [
             'score' => $this->score,
             'band' => $this->band?->value,
@@ -227,26 +233,26 @@ final class BlackSwanIndex
             'cooldown_hours' => $this->cooldownHours,
             'staleness' => $this->staleness()->value,
             'portfolio_risk' => $this->portfolioRisk()->toArray(),
-            'sub_signals' => $this->latestSnapshot === null ? null : [
+            'sub_signals' => $latestSnapshot === null ? null : [
                 'vol_expansion' => [
-                    'value' => $this->latestSnapshot->vol_expansion_value,
-                    'fired' => (bool) $this->latestSnapshot->vol_expansion_fired,
+                    'value' => $latestSnapshot->vol_expansion_value,
+                    'fired' => (bool) $latestSnapshot->vol_expansion_fired,
                 ],
                 'range_blowout' => [
-                    'value' => $this->latestSnapshot->range_blowout_value,
-                    'fired' => (bool) $this->latestSnapshot->range_blowout_fired,
+                    'value' => $latestSnapshot->range_blowout_value,
+                    'fired' => (bool) $latestSnapshot->range_blowout_fired,
                 ],
                 'corr_regime' => [
-                    'value' => $this->latestSnapshot->corr_regime_value,
-                    'fired' => (bool) $this->latestSnapshot->corr_regime_fired,
+                    'value' => $latestSnapshot->corr_regime_value,
+                    'fired' => (bool) $latestSnapshot->corr_regime_fired,
                 ],
                 'rejection_pct' => [
-                    'value' => $this->latestSnapshot->rejection_pct_value,
-                    'fired' => (bool) $this->latestSnapshot->rejection_pct_fired,
+                    'value' => $latestSnapshot->rejection_pct_value,
+                    'fired' => (bool) $latestSnapshot->rejection_pct_fired,
                 ],
                 'fut_vol' => [
-                    'value' => $this->latestSnapshot->fut_vol_value,
-                    'fired' => (bool) $this->latestSnapshot->fut_vol_fired,
+                    'value' => $latestSnapshot->fut_vol_value,
+                    'fired' => (bool) $latestSnapshot->fut_vol_fired,
                 ],
             ],
         ];

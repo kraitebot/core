@@ -8,8 +8,8 @@ use GuzzleHttp\Psr7\Response;
 use Illuminate\Database\Eloquent\Collection;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Indicator;
-use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
+use Kraite\Core\Trading\Exchange\Exchange;
 
 trait MapsGroupedQueryIndicators
 {
@@ -18,7 +18,7 @@ trait MapsGroupedQueryIndicators
         $properties = new ApiProperties;
         $properties->set('relatable', $exchangeSymbol);
 
-        $apiDataMapper = new ApiDataMapperProxy('taapi');
+        $apiDataMapper = Exchange::forCanonical('taapi')->mapper();
 
         // Token and quote are stored directly on exchange_symbols
         $symbol = $apiDataMapper->baseWithQuote(

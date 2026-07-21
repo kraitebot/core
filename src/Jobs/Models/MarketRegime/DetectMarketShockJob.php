@@ -13,7 +13,8 @@ use Kraite\Core\Models\Candle;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\MarketPriceSample;
-use Kraite\Core\Support\MarketRegime\BlackSwanIndex;
+use Kraite\Core\Support\MarketRegime\Bscs;
+use Kraite\Core\Support\MarketRegime\BscsState;
 use Kraite\Core\Support\MarketRegime\MarketShockCircuitBreaker;
 use Kraite\Core\Support\NotificationService;
 use Throwable;
@@ -95,7 +96,7 @@ final class DetectMarketShockJob extends BaseQueueableJob
      */
     public function compute(): array
     {
-        $index = BlackSwanIndex::current();
+        $index = Bscs::current();
         $liveStatus = 'disabled';
 
         if ($this->liveWindowEnabled()) {
@@ -233,7 +234,7 @@ final class DetectMarketShockJob extends BaseQueueableJob
      *
      * @return array{status: string, armed: bool, result: array<string, mixed>}
      */
-    public function evaluateLiveWindow(BlackSwanIndex $index): array
+    public function evaluateLiveWindow(BscsState $index): array
     {
         $btcSeries = $this->loadLiveSeries('BTC');
 

@@ -6,8 +6,7 @@ namespace Kraite\Core\Jobs\Atomic\Position;
 
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\Position;
-use Kraite\Core\Support\MarketRegime\BlackSwanIndex;
-use Kraite\Core\Support\MarketRegime\RegimeLeverageMultiplier;
+use Kraite\Core\Support\MarketRegime\Bscs;
 use Kraite\Core\Support\Math;
 
 /**
@@ -25,7 +24,7 @@ use Kraite\Core\Support\Math;
  * - leverage <= account's max leverage setting
  *
  * The bracket/account result is then scaled DOWN by the Phase 3 regime
- * leverage ramp (`RegimeLeverageMultiplier`) so the liquidation cliff
+ * BSCS leverage policy so the liquidation cliff
  * moves further from entry as the BSCS regime worsens — floored and
  * clamped to a minimum of 1x.
  *
@@ -123,15 +122,15 @@ final class DetermineLeverageJob extends BaseQueueableJob
      */
     public function applyRegimeLeverageRamp(int $baseLeverage): array
     {
-        $score = BlackSwanIndex::current()->score();
-        $ratio = RegimeLeverageMultiplier::for($score);
-        $scaledLeverage = max(1, (int) floor($baseLeverage * $ratio));
+        $adjustment = Bscs::forAccount($this->position->account)
+            ->leverage()
+            ->adjust($baseLeverage);
 
         return [
             'base' => $baseLeverage,
-            'ratio' => $ratio,
-            'leverage' => $scaledLeverage,
-            'bscs_score' => $score,
+            'ratio' => $adjustment->ratio(),
+            'leverage' => $adjustment->effective(),
+            'bscs_score' => $adjustment->score(),
         ];
     }
 

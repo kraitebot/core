@@ -9,7 +9,7 @@ use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Jobs\Atomic\Order\CalculateWapAndModifyProfitOrderJob as BaseCalculateWapAndModifyProfitOrderJob;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Support\Math;
-use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
+use Kraite\Core\Trading\Exchange\Exchange;
 use RuntimeException;
 use Throwable;
 
@@ -174,7 +174,7 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseCalculateWapAndModif
 
         $slPrice = (string) $sibling->price;
 
-        $mapper = new ApiDataMapperProxy($account->apiSystem->canonical);
+        $mapper = Exchange::forCanonical($account->apiSystem->canonical)->mapper();
         $properties = $mapper->preparePlacePosTpslProperties(
             $this->position,
             $formattedPrice,

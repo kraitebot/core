@@ -14,9 +14,8 @@ use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Candle;
 use Kraite\Core\Models\ExchangeSymbol;
-use Kraite\Core\Support\Proxies\ApiDataMapperProxy;
-use Kraite\Core\Support\Proxies\ApiRESTProxy;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
+use Kraite\Core\Trading\Exchange\Exchange;
 use Throwable;
 
 /**
@@ -72,7 +71,7 @@ final class FetchKlinesJob extends BaseApiableJob
         Sleep::for(random_int(50, 300))->milliseconds();
 
         // Get the data mapper for this exchange
-        $mapper = new ApiDataMapperProxy($canonical);
+        $mapper = Exchange::forCanonical($canonical)->mapper();
 
         // Prepare API properties using the DataMapper
         $properties = $mapper->prepareQueryKlinesProperties(
@@ -84,7 +83,7 @@ final class FetchKlinesJob extends BaseApiableJob
         );
 
         // Get REST API client (empty credentials for public endpoint)
-        $api = new ApiRESTProxy($canonical, new ApiCredentials([]));
+        $api = Exchange::forCanonical($canonical)->client(new ApiCredentials([]));
 
         try {
             // Call the exchange API

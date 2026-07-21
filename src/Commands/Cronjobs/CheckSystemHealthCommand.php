@@ -20,17 +20,17 @@ use Kraite\Core\Models\BinanceListenKey;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
-use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\Fleet\FleetMetricsRepository;
 use Kraite\Core\Support\Health\AccountActivityFlagSync;
+use Kraite\Core\Support\Health\CallbackHealthCheck;
 use Kraite\Core\Support\Health\ForeignActivityDetector;
+use Kraite\Core\Support\Health\HealthCheckRunner;
 use Kraite\Core\Support\Health\OrphanReconciler;
+use Kraite\Core\Support\Health\Remediation\OrphanExchangeRemediator;
 use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\StepRouter;
-use Kraite\Core\Support\ValueObjects\ApiProperties;
-use RuntimeException;
 use StepDispatcher\Models\Step;
 use StepDispatcher\Support\BaseCommand;
 use Throwable;
@@ -201,8 +201,11 @@ final class CheckSystemHealthCommand extends BaseCommand
 
     protected $description = 'Run ten staleness / connectivity checks across the bot\'s critical data paths and alert per failed signal.';
 
-    public function __construct(private readonly StepRouter $stepRouter)
-    {
+    public function __construct(
+        private readonly StepRouter $stepRouter,
+        private readonly HealthCheckRunner $healthCheckRunner,
+        private readonly OrphanExchangeRemediator $orphanExchangeRemediator,
+    ) {
         parent::__construct();
     }
 
@@ -306,20 +309,17 @@ final class CheckSystemHealthCommand extends BaseCommand
         $dispatcherDataRecovering = MaintenanceMode::isStepsDispatchPaused('')
             || MaintenanceMode::isPostWarmupRecoveryActive();
 
-        $alertCount = 0;
+        $activeChecks = collect($checks)
+            ->reject(fn (string $check): bool => $dispatcherDataRecovering
+                && in_array($check, self::DISPATCHER_DEPENDENT_CHECKS, true))
+            ->map(fn (string $check): CallbackHealthCheck => new CallbackHealthCheck(
+                $check,
+                fn (): int => $this->{$check}(),
+            ));
 
-        foreach ($checks as $check) {
-            if ($dispatcherDataRecovering && in_array($check, self::DISPATCHER_DEPENDENT_CHECKS, true)) {
-                continue;
-            }
-
-            try {
-                $alertCount += $this->{$check}();
-            } catch (Throwable $exception) {
-                // A check that itself crashes is worth knowing about —
-                // surface as an alert with a distinct signal so we can
-                // tell "the check broke" from "the check found a stale
-                // thing." Doesn't abort the rest of the run.
+        $run = $this->healthCheckRunner->run(
+            checks: $activeChecks,
+            onFailure: function (string $check, Throwable $exception): int {
                 Log::channel('jobs')->error('[SYSTEM-HEALTH] check threw', [
                     'check' => $check,
                     'error' => $exception->getMessage(),
@@ -332,9 +332,11 @@ final class CheckSystemHealthCommand extends BaseCommand
                     detail: "{$check}: {$exception->getMessage()}",
                 );
 
-                $alertCount++;
-            }
-        }
+                return 1;
+            },
+        );
+
+        $alertCount = $run->alertCount();
 
         $this->verboseInfo("System health pass complete. Alerts emitted: {$alertCount}");
 
@@ -1278,40 +1280,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      */
     private function cancelOrphanOrder(Account $account, string $orderId, string $symbol, bool $isAlgo): void
     {
-        $properties = new ApiProperties;
-        $properties->set('account', $account);
-        $properties->set('options.symbol', $symbol);
-
-        if ($account->apiSystem->canonical === 'bitget') {
-            $context = BitgetProductContext::fromQuote($account->trading_quote);
-            $properties->set('options.productType', $context->productType);
-            $properties->set('options.marginCoin', $context->marginCoin);
-
-            if ($isAlgo) {
-                $properties->set('options.orderIdList', [[
-                    'orderId' => $orderId,
-                    'clientOid' => '',
-                ]]);
-                $account->withApi()->cancelPlanOrder($properties);
-
-                return;
-            }
-
-            $properties->set('options.orderId', $orderId);
-            $account->withApi()->cancelOrder($properties);
-
-            return;
-        }
-
-        if ($isAlgo) {
-            $properties->set('options.algoId', $orderId);
-            $account->withApi()->cancelAlgoOrder($properties);
-
-            return;
-        }
-
-        $properties->set('options.orderId', $orderId);
-        $account->withApi()->cancelOrder($properties);
+        $this->orphanExchangeRemediator->cancelOrder($account, $orderId, $symbol, $isAlgo);
     }
 
     /**
@@ -1323,68 +1292,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      */
     private function closeOrphanPosition(Account $account, string $symbol, ?string $direction, string $quantity): void
     {
-        if ($direction === null) {
-            throw new RuntimeException("Orphan position key missing direction: {$symbol}");
-        }
-
-        if ($quantity === '0' || $quantity === '') {
-            // Race against snapshot: position dissolved between read
-            // and close. Treat as already-closed.
-            return;
-        }
-
-        // Binance's `closePosition=true` is a STOP/TP-algo-only flag
-        // (`-4136 Target strategy invalid for orderType MARKET`). The
-        // correct primitive for a flat-close MARKET is the explicit
-        // quantity + side reversal:
-        //   - LONG flat → side=SELL, quantity=|positionAmt|
-        //   - SHORT flat → side=BUY,  quantity=|positionAmt|
-        // Hedge mode encodes intent via `positionSide`; one-way mode
-        // needs `reduceOnly=true` so the order doesn't accidentally
-        // open a reverse position when the slot is already flat.
-        $properties = new ApiProperties;
-        $properties->set('account', $account);
-        $properties->set('options.symbol', $symbol);
-
-        if ($account->apiSystem->canonical === 'bitget') {
-            $context = BitgetProductContext::fromQuote($account->trading_quote);
-            $properties->set('options.productType', $context->productType);
-
-            if ($account->isHedgeMode()) {
-                $properties->set('options.holdSide', mb_strtolower($direction));
-            }
-
-            try {
-                $account->withApi()->flashClosePosition($properties);
-            } catch (Throwable $exception) {
-                $message = $exception->getMessage();
-
-                // The orphan may disappear after the positions snapshot
-                // but before the close request reaches Bitget. UTA reports
-                // that successfully-settled race as 25227; cleanup is
-                // already complete and must not page an operator as failed.
-                if (str_contains($message, '(code 25227)')
-                    || str_contains($message, 'No position available to close')) {
-                    return;
-                }
-
-                throw $exception;
-            }
-
-            return;
-        }
-
-        $properties->set('options.type', 'MARKET');
-        $properties->set('options.side', $direction === 'LONG' ? 'SELL' : 'BUY');
-        $properties->set('options.quantity', $quantity);
-
-        if ($account->isHedgeMode()) {
-            $properties->set('options.positionSide', $direction);
-        } else {
-            $properties->set('options.reduceOnly', 'true');
-        }
-
-        $account->withApi()->placeOrder($properties);
+        $this->orphanExchangeRemediator->closePosition($account, $symbol, $direction, $quantity);
     }
 
     /**

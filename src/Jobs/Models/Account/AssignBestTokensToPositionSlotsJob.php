@@ -12,17 +12,17 @@ use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Models\Symbol;
-use Kraite\Core\Support\MarketRegime\BlackSwanIndex;
-use Kraite\Core\Support\MarketRegime\RegimeCountMultiplier;
+use Kraite\Core\Support\MarketRegime\Bscs;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Trading\Kraite;
+use Kraite\Core\Trading\TokenSelection\TokenSelection;
 
 /**
  * AssignBestTokensToPositionSlotsJob
  *
  * Creates position slots based on available capacity (exchange vs DB positions).
  * Assigns the optimal ExchangeSymbol to each "new" position slot for an account.
- * Uses the HasTokenDiscovery trait's algorithm:
+ * Uses the account-scoped TokenSelection domain:
  *   - Priority 1: Fast-tracked tokens (recently profitable quick trades)
  *   - Priority 2: Elasticity-based scoring (correlation × elasticity metrics)
  * Runs as a single job per account to prevent race conditions.
@@ -69,8 +69,7 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
         $btcContext = $this->getBtcDirectionContext();
 
         // Step 3: Assign Best Tokens to Position Slots
-        // Use HasTokenDiscovery trait to assign optimal tokens.
-        $assignedTokens = $this->account->assignBestTokenToNewPositions();
+        $assignedTokens = TokenSelection::forAccount($this->account)->assign();
 
         // Count how many positions were successfully assigned
         $this->assignedCount = $this->account->positions()
@@ -140,17 +139,17 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
         $exchangeShorts = $this->countPositionsByDirection($exchangePositions, 'SHORT');
 
         // Engine guards — read OUTSIDE the lock, depend on Kraite singleton.
+        $bscs = Bscs::forAccount($this->account);
         $engine = Kraite::withAccount($this->account);
-        $canOpenLongs = $engine->canOpenLongs();
-        $canOpenShorts = $engine->canOpenShorts();
+        $canOpenLongs = $engine->canOpenLongs($bscs);
+        $canOpenShorts = $engine->canOpenShorts($bscs);
 
         // Phase 3 — regime risk snapshot, read OUTSIDE the lock. The score
-        // drives the per-direction count cap (RegimeCountMultiplier) and is
+        // drives the per-direction position policy and is
         // stamped on each opened position (band + direction, e.g.
         // "elevated-long") for later analysis of how regime-born positions
         // perform.
-        $bscsScore = BlackSwanIndex::current()->score();
-        $countRatio = RegimeCountMultiplier::for($bscsScore);
+        $bscsScore = $bscs->state()->score();
         $bscsBand = $bscsScore !== null ? RegimeBand::fromScore($bscsScore)->value : null;
 
         return DB::transaction(function () use (
@@ -158,7 +157,7 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
             $exchangeShorts,
             $canOpenLongs,
             $canOpenShorts,
-            $countRatio,
+            $bscs,
             $bscsScore,
             $bscsBand
         ): array {
@@ -171,20 +170,23 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
             $dbLongs = $lockedAccount->positions()->opened()->onlyLongs()->count();
             $dbShorts = $lockedAccount->positions()->opened()->onlyShorts()->count();
 
-            $currentLongs = max($exchangeLongs, $dbLongs);
-            $currentShorts = max($exchangeShorts, $dbShorts);
-
-            // Phase 3 count ramp — scale the per-direction cap down by the
-            // current BSCS regime, floored. Gate only: availableSlots clamps
-            // at 0, so an over-cap account (regime tightened while positions
-            // were already open) simply opens nothing new and lets attrition
-            // bring the count under the cap — existing positions are never
-            // force-closed.
-            $maxLongs = (int) floor($lockedAccount->total_positions_long * $countRatio);
-            $maxShorts = (int) floor($lockedAccount->total_positions_short * $countRatio);
-
-            $availableLongSlots = max(0, $maxLongs - $currentLongs);
-            $availableShortSlots = max(0, $maxShorts - $currentShorts);
+            // Existing positions are never force-closed when the effective
+            // BSCS cap contracts. Availability simply clamps at zero until
+            // normal attrition brings the direction below its current cap.
+            $availability = Bscs::forAccount($lockedAccount, $bscs->state())
+                ->positions()
+                ->available(
+                    exchangeLongs: $exchangeLongs,
+                    exchangeShorts: $exchangeShorts,
+                    databaseLongs: $dbLongs,
+                    databaseShorts: $dbShorts,
+                );
+            $currentLongs = $availability->currentLongs();
+            $currentShorts = $availability->currentShorts();
+            $maxLongs = $availability->maximumLongs();
+            $maxShorts = $availability->maximumShorts();
+            $availableLongSlots = $availability->availableLongs();
+            $availableShortSlots = $availability->availableShorts();
 
             $createdPositions = [];
 
