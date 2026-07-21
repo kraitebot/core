@@ -277,7 +277,15 @@ final readonly class PositionSnapshot
             return $data;
         }
 
-        $rows = $data['list'] ?? null;
+        if (! array_key_exists('list', $data)) {
+            return null;
+        }
+
+        $rows = $data['list'];
+
+        if ($rows === null) {
+            return [];
+        }
 
         return is_array($rows) && array_is_list($rows) ? $rows : null;
     }

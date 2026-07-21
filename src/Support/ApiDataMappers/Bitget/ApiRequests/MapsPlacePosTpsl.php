@@ -120,6 +120,12 @@ trait MapsPlacePosTpsl
 
         return [
             'success' => $success,
+            'orderId' => is_array($responseData) && ! array_is_list($responseData)
+                ? ($responseData['orderId'] ?? null)
+                : null,
+            'clientOrderId' => is_array($responseData) && ! array_is_list($responseData)
+                ? ($responseData['clientOid'] ?? null)
+                : null,
             'ordersByClientOid' => $ordersByClientOid,
             'symbol' => is_array($responseData) && ! array_is_list($responseData)
                 ? ($responseData['symbol'] ?? null)

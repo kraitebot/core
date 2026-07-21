@@ -138,14 +138,17 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
             // no-op confirmation.
             //
             //   Binance: -2022     "ReduceOnly Order is rejected"
-            //   Bitget:   22002    "No position to close"  (flash close)
+            //   Bitget:   22002    "No position to close"  (classic flash close)
+            //   Bitget:   25227    "No position available to close" (UTA)
             //   Bybit:   110043 / 110017 (variants — not yet observed in prod)
             //   Kucoin:  330005    (variant — not yet observed in prod)
             $message = $e->getMessage();
             $alreadyClosed = str_contains($message, '-2022')
                 || str_contains($message, 'ReduceOnly Order is rejected')
                 || str_contains($message, '(code 22002)')
-                || str_contains($message, 'No position to close');
+                || str_contains($message, 'No position to close')
+                || str_contains($message, '(code 25227)')
+                || str_contains($message, 'No position available to close');
 
             if ($alreadyClosed) {
                 return [

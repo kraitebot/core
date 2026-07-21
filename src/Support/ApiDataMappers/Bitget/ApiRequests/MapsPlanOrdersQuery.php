@@ -77,19 +77,57 @@ trait MapsPlanOrdersQuery
             ? ($responseData['entrustedList'] ?? $responseData['list'] ?? (array_is_list($responseData) ? $responseData : []))
             : [];
 
-        return array_map(callback: function (array $order): array {
-            $order = $this->normalizeUnifiedStrategyOrder($order);
-            $order['clientOrderId'] ??= $order['clientOid'] ?? null;
-            $order['status'] ??= $this->normalizePlanSnapshotStatus((string) ($order['planStatus'] ?? ''));
-            // Add _price using triggerPrice for plan orders
-            $order['_price'] = $this->computePlanOrderPrice($order);
-            $order['_orderType'] = $this->canonicalOrderType($order);
+        $snapshots = [];
 
-            // Mark as plan order for frontend distinction
-            $order['order_source'] = 'plan';
+        foreach ($orders as $order) {
+            foreach ($this->normalizePlanOrderSnapshots($order) as $snapshot) {
+                $snapshot['clientOrderId'] ??= $snapshot['clientOid'] ?? null;
+                $snapshot['status'] = $this->normalizePlanSnapshotStatus((string) (
+                    $snapshot['planStatus'] ?? $snapshot['status'] ?? ''
+                ));
+                $snapshot['_price'] = $this->computePlanOrderPrice($snapshot);
+                $snapshot['_orderType'] = $this->canonicalOrderType($snapshot);
+                $snapshot['order_source'] = 'plan';
+                $snapshots[] = $snapshot;
+            }
+        }
 
-            return $order;
-        }, array: $orders);
+        return $snapshots;
+    }
+
+    /**
+     * Expand Bitget UTA's one full-position TP/SL strategy into the two
+     * logical protection legs Kraite maintains locally.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function normalizePlanOrderSnapshots(array $order): array
+    {
+        $order = $this->normalizeUnifiedStrategyOrder($order);
+        $hasStopLoss = Math::gt((string) ($order['stopLoss'] ?? '0'), '0');
+        $hasTakeProfit = Math::gt((string) ($order['takeProfit'] ?? '0'), '0');
+        $hasTrigger = Math::gt((string) ($order['triggerPrice'] ?? '0'), '0');
+
+        if (! $hasTrigger && $hasStopLoss && $hasTakeProfit) {
+            $profit = $order;
+            $profit['planType'] = 'pos_profit';
+            $profit['stopSurplusTriggerPrice'] = (string) $order['takeProfit'];
+            unset($profit['stopLoss'], $profit['stopLossTriggerPrice']);
+
+            $stopLoss = $order;
+            $stopLoss['planType'] = 'pos_loss';
+            $stopLoss['stopLossTriggerPrice'] = (string) $order['stopLoss'];
+            unset(
+                $stopLoss['takeProfit'],
+                $stopLoss['stopSurplusTriggerPrice'],
+                $stopLoss['clientOid'],
+                $stopLoss['clientOrderId'],
+            );
+
+            return [$profit, $stopLoss];
+        }
+
+        return [$order];
     }
 
     private function normalizePlanSnapshotStatus(string $status): string
@@ -112,12 +150,13 @@ trait MapsPlanOrdersQuery
         }
 
         $hasStopLoss = Math::gt((string) ($order['stopLoss'] ?? '0'), '0');
+        $hasTakeProfit = Math::gt((string) ($order['takeProfit'] ?? '0'), '0');
         $hasTrigger = Math::gt((string) ($order['triggerPrice'] ?? '0'), '0');
         $order['planStatus'] ??= $order['status'] ?? '';
         $order['size'] ??= $order['qty'] ?? '0';
         $order['planType'] ??= $hasTrigger ? 'normal_plan' : ($hasStopLoss ? 'pos_loss' : 'pos_profit');
         $order['stopLossTriggerPrice'] ??= $hasStopLoss ? (string) $order['stopLoss'] : '';
-        $order['stopSurplusTriggerPrice'] ??= ! $hasStopLoss && ! $hasTrigger
+        $order['stopSurplusTriggerPrice'] ??= $hasTakeProfit && ! $hasTrigger
             ? (string) ($order['takeProfit'] ?? '')
             : '';
         $order['positionSide'] ??= isset($order['posSide'])

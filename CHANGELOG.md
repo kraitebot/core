@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.77.3 - 2026-07-21
+
+### Bitget lifecycle reliability
+
+- [FIXED] Unified full-position TP and SL now mirror Bitget's single remote
+  strategy while preserving two logical local protection rows through sync,
+  drift, recovery, replacement, and cancellation.
+- [FIXED] Two confirmed-flat snapshots complete manual-close reconciliation
+  without sending a redundant Unified flash-close request.
+- [FIXED] Already-absent Unified orders and positions reconcile idempotently,
+  and rejected protection or ladder orders enter the normal replacement path.
+- [FIXED] Unchanged polling responses no longer refresh order timestamps and
+  prevent stable orders from reaching drift inspection.
+
 ## 1.77.2 - 2026-07-20
 
 ### Order synchronization

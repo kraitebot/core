@@ -6,6 +6,7 @@ namespace Kraite\Core\Jobs\Atomic\Position;
 
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
+use Kraite\Core\Enums\BitgetAccountMode;
 use Kraite\Core\Models\Position;
 use Throwable;
 
@@ -28,7 +29,7 @@ final class CancelAlgoOpenOrdersJob extends BaseApiableJob
     // CANCELLED-shaped response that the mapper then writes back over the
     // local TRIGGERED truth — destroying the audit trail. Skipping
     // TRIGGERED rows here is the single cleanest guard.
-    private const array INACTIVE_STATUSES = ['FILLED', 'CANCELLED', 'EXPIRED', 'TRIGGERED'];
+    private const array INACTIVE_STATUSES = ['FILLED', 'CANCELLED', 'EXPIRED', 'REJECTED', 'TRIGGERED'];
 
     public Position $position;
 
@@ -77,12 +78,25 @@ final class CancelAlgoOpenOrdersJob extends BaseApiableJob
 
         $cancelled = [];
         $idempotent = [];
+        $isUnifiedBitget = $this->position->account->apiSystem->canonical === 'bitget'
+            && $this->position->account->resolveBitgetAccountMode() === BitgetAccountMode::Unified;
+        $ordersToCancel = $isUnifiedBitget
+            ? $algoOrders->unique('exchange_order_id')->values()
+            : $algoOrders;
 
-        foreach ($algoOrders as $order) {
+        foreach ($ordersToCancel as $order) {
+            $sharedOrders = $isUnifiedBitget
+                ? $algoOrders->where('exchange_order_id', $order->exchange_order_id)
+                : collect([$order]);
+
             try {
                 $apiResponse = $order->apiCancel();
+                if ($isUnifiedBitget) {
+                    $sharedOrders->each(fn ($sharedOrder) => $sharedOrder->updateSaving(['status' => 'CANCELLED']));
+                }
                 $cancelled[] = [
                     'order_id' => $order->id,
+                    'order_ids' => $sharedOrders->pluck('id')->all(),
                     'type' => $order->type,
                     'result' => $apiResponse->result,
                 ];
@@ -96,9 +110,10 @@ final class CancelAlgoOpenOrdersJob extends BaseApiableJob
                 // the batch. Anything non-ignorable bubbles up so the
                 // framework's normal retry / fail path runs.
                 if ($this->exceptionHandler->ignoreException($e)) {
-                    $order->updateSaving(['status' => 'CANCELLED']);
+                    $sharedOrders->each(fn ($sharedOrder) => $sharedOrder->updateSaving(['status' => 'CANCELLED']));
                     $idempotent[] = [
                         'order_id' => $order->id,
+                        'order_ids' => $sharedOrders->pluck('id')->all(),
                         'type' => $order->type,
                         'reason' => 'Order already gone on exchange; DB reconciled.',
                     ];

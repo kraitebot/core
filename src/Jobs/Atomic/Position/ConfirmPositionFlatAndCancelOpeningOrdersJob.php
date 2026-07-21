@@ -50,12 +50,15 @@ final class ConfirmPositionFlatAndCancelOpeningOrdersJob extends BaseApiableJob
         $confirmedFlat = $snapshot->presenceOf($this->position) === PositionPresence::Flat;
         $cancellationDispatched = $confirmedFlat
             && PositionSafety::dispatchOpeningOrderCancellation($this->position, $this->source);
+        $closeLifecycleDispatched = $confirmedFlat
+            && PositionSafety::dispatchConfirmedFlatClose($this->position, $this->source);
 
         return [
             'position_id' => $this->position->id,
             'source' => $this->source,
             'confirmed_flat' => $confirmedFlat,
             'opening_orders_cancel_dispatched' => $cancellationDispatched,
+            'close_lifecycle_dispatched' => $closeLifecycleDispatched,
         ];
     }
 }

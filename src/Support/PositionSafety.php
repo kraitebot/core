@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Kraite\Core\Jobs\Atomic\Position\CancelPositionOpenOrdersJob;
 use Kraite\Core\Jobs\Atomic\Position\ConfirmPositionFlatAndCancelOpeningOrdersJob;
+use Kraite\Core\Jobs\Lifecycles\Position\ClosePositionJob;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Proxies\JobProxy;
 use StepDispatcher\Models\Step;
@@ -20,7 +21,7 @@ final class PositionSafety
         return Steps::usingPrefix('trading', fn (): bool => DB::transaction(function () use ($position, $source): bool {
             $locked = Position::query()->whereKey($position->id)->lockForUpdate()->firstOrFail();
 
-            if (! self::hasLiveOpeningOrders($locked)) {
+            if (! in_array($locked->status, $locked->activeStatuses(), true)) {
                 return false;
             }
 
@@ -93,6 +94,46 @@ final class PositionSafety
             ]);
 
             Log::channel('jobs')->info('[POSITION-SAFETY] opening-order cancellation dispatched', [
+                'position_id' => $locked->id,
+                'source' => $source,
+            ]);
+
+            return true;
+        }));
+    }
+
+    public static function dispatchConfirmedFlatClose(Position $position, string $source): bool
+    {
+        return Steps::usingPrefix('trading', fn (): bool => DB::transaction(function () use ($position, $source): bool {
+            $locked = Position::query()->whereKey($position->id)->lockForUpdate()->firstOrFail();
+
+            if (! in_array($locked->status, $locked->activeStatuses(), true)) {
+                return false;
+            }
+
+            $closePositionClass = JobProxy::with($locked->account)
+                ->resolve(ClosePositionJob::class);
+
+            if (Step::hasLiveWorkflow($locked, $closePositionClass)) {
+                return false;
+            }
+
+            $locked->updateToClosing();
+
+            Step::create([
+                'class' => $closePositionClass,
+                'queue' => 'positions',
+                'priority' => 'high',
+                'relatable_type' => $locked->getMorphClass(),
+                'relatable_id' => $locked->getKey(),
+                'arguments' => [
+                    'positionId' => $locked->id,
+                    'message' => "Position confirmed flat ({$source})",
+                    'positionConfirmedFlat' => true,
+                ],
+            ]);
+
+            Log::channel('jobs')->info('[POSITION-SAFETY] confirmed-flat close dispatched', [
                 'position_id' => $locked->id,
                 'source' => $source,
             ]);

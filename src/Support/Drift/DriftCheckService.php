@@ -237,11 +237,14 @@ final class DriftCheckService implements DriftChecker
         foreach ($exchangeOrders as $idx => $order) {
             $cid = $order['clientOrderId'] ?? $order['orderLinkId'] ?? $order['clientAlgoId'] ?? null;
             $xid = $order['orderId'] ?? $order['id'] ?? $order['algoId'] ?? null;
+            $functionalType = $this->functionalOrderType((string) ($order['_orderType'] ?? $order['type'] ?? $order['orderType'] ?? ''));
             if ($cid !== null && $cid !== '') {
                 $exchOrdersByCid[(string) $cid] = $idx;
+                $exchOrdersByCid[(string) $cid.'|'.$functionalType] = $idx;
             }
             if ($xid !== null && $xid !== '') {
                 $exchOrdersByXid[(string) $xid] = $idx;
+                $exchOrdersByXid[(string) $xid.'|'.$functionalType] = $idx;
             }
         }
 
@@ -344,9 +347,14 @@ final class DriftCheckService implements DriftChecker
             foreach ($dbPos->orders as $dbOrder) {
                 $cid = $dbOrder->client_order_id;
                 $xid = $dbOrder->exchange_order_id;
+                $functionalType = $this->functionalOrderType((string) $dbOrder->type);
 
                 $exchIdx = null;
-                if ($cid && isset($exchOrdersByCid[(string) $cid])) {
+                if ($cid && isset($exchOrdersByCid[(string) $cid.'|'.$functionalType])) {
+                    $exchIdx = $exchOrdersByCid[(string) $cid.'|'.$functionalType];
+                } elseif ($xid && isset($exchOrdersByXid[(string) $xid.'|'.$functionalType])) {
+                    $exchIdx = $exchOrdersByXid[(string) $xid.'|'.$functionalType];
+                } elseif ($cid && isset($exchOrdersByCid[(string) $cid])) {
                     $exchIdx = $exchOrdersByCid[(string) $cid];
                 } elseif ($xid && isset($exchOrdersByXid[(string) $xid])) {
                     $exchIdx = $exchOrdersByXid[(string) $xid];
@@ -717,6 +725,21 @@ final class DriftCheckService implements DriftChecker
         }
 
         return false;
+    }
+
+    private function functionalOrderType(string $type): string
+    {
+        $type = mb_strtoupper($type);
+
+        if (in_array($type, ['PROFIT-LIMIT', 'PROFIT-MARKET'], true) || str_starts_with($type, 'TAKE_PROFIT')) {
+            return 'PROFIT';
+        }
+
+        if ($type === 'STOP-LIMIT' || $type === 'STOP-MARKET' || str_starts_with($type, 'STOP_')) {
+            return 'STOP';
+        }
+
+        return $type;
     }
 
     /**

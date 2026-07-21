@@ -153,56 +153,6 @@ abstract class AbstractPositionRecoverer
     }
 
     /**
-     * Reject an externally-created hedged symbol as one invalid unit. This
-     * prevents array order from deciding which side is partially recovered.
-     * Valid hedge-mode accounts still recover normally when only one side of
-     * each symbol is open.
-     *
-     * @param  array<int, array<string, mixed>>  $positions
-     * @return array<int, array<string, mixed>>
-     */
-    private function withoutConflictingSymbolSides(array $positions): array
-    {
-        $directionsBySymbol = [];
-        $rowsBySymbol = [];
-
-        foreach ($positions as $position) {
-            $symbol = mb_strtoupper(trim((string) ($position['symbol'] ?? '')));
-            if ($symbol === '') {
-                continue;
-            }
-
-            $directionsBySymbol[$symbol][$this->normaliseDirection($position)] = true;
-            $rowsBySymbol[$symbol] = ($rowsBySymbol[$symbol] ?? 0) + 1;
-        }
-
-        $conflictingSymbols = [];
-
-        foreach ($directionsBySymbol as $symbol => $directions) {
-            if (count($directions) < 2) {
-                continue;
-            }
-
-            $conflictingSymbols[$symbol] = true;
-            $skipped = $rowsBySymbol[$symbol];
-            $this->report->positionsSkipped += $skipped;
-            $this->report->warning(
-                "Account #{$this->account->id} — symbol {$symbol} has simultaneous LONG and SHORT exchange positions; Kraite does not hedge symbols, so neither side was recovered."
-            );
-            $this->report->line("    ✗ {$symbol}: simultaneous LONG and SHORT exchange positions rejected ({$skipped} sides skipped)");
-        }
-
-        if ($conflictingSymbols === []) {
-            return array_values($positions);
-        }
-
-        return array_values(array_filter(
-            $positions,
-            static fn (array $position): bool => ! isset($conflictingSymbols[mb_strtoupper(trim((string) ($position['symbol'] ?? '')))]),
-        ));
-    }
-
-    /**
      * Absolute delta between two numeric strings — `|a - b|` — kept here
      * because Math has no abs() helper and we need a single negation-free
      * difference for the percentage calc above.
@@ -235,7 +185,7 @@ abstract class AbstractPositionRecoverer
 
         $exchangeSymbol ??= ExchangeSymbol::query()
             ->where('api_system_id', $this->account->api_system_id)
-            ->whereHas('symbol', fn ($q) => $q->where(function ($q2) use ($tradingPair) {
+            ->whereHas('symbol', fn ($q) => $q->where(function ($q2) use ($tradingPair): void {
                 // Match by parsed pair (BTCUSDT / BTC-USDT) — the
                 // accessor on ExchangeSymbol composes token+quote.
                 $q2->whereRaw('CONCAT(token, quote) = ?', [$tradingPair])
@@ -413,10 +363,13 @@ abstract class AbstractPositionRecoverer
         // are not guaranteed unique across accounts, exchanges, or
         // algo-vs-regular id spaces. Recovery for account B previously
         // could skip a real order because account A already had the
-        // same id. Within one position the id space is unambiguous.
+        // same id. Bitget UTA is the exception within one position: its
+        // combined full-position TP/SL strategy has one exchange ID but two
+        // local logical rows, distinguished by type.
         $exists = Order::query()
             ->where('position_id', $position->id)
             ->where('exchange_order_id', $exchangeOrderId)
+            ->where('type', $attributes['type'])
             ->exists();
 
         if ($exists) {
@@ -679,5 +632,55 @@ abstract class AbstractPositionRecoverer
         $raw = (string) ($exchangePosition['positionAmt'] ?? '0');
 
         return Math::lt($raw, '0') ? 'SHORT' : 'LONG';
+    }
+
+    /**
+     * Reject an externally-created hedged symbol as one invalid unit. This
+     * prevents array order from deciding which side is partially recovered.
+     * Valid hedge-mode accounts still recover normally when only one side of
+     * each symbol is open.
+     *
+     * @param  array<int, array<string, mixed>>  $positions
+     * @return array<int, array<string, mixed>>
+     */
+    private function withoutConflictingSymbolSides(array $positions): array
+    {
+        $directionsBySymbol = [];
+        $rowsBySymbol = [];
+
+        foreach ($positions as $position) {
+            $symbol = mb_strtoupper(mb_trim((string) ($position['symbol'] ?? '')));
+            if ($symbol === '') {
+                continue;
+            }
+
+            $directionsBySymbol[$symbol][$this->normaliseDirection($position)] = true;
+            $rowsBySymbol[$symbol] = ($rowsBySymbol[$symbol] ?? 0) + 1;
+        }
+
+        $conflictingSymbols = [];
+
+        foreach ($directionsBySymbol as $symbol => $directions) {
+            if (count($directions) < 2) {
+                continue;
+            }
+
+            $conflictingSymbols[$symbol] = true;
+            $skipped = $rowsBySymbol[$symbol];
+            $this->report->positionsSkipped += $skipped;
+            $this->report->warning(
+                "Account #{$this->account->id} — symbol {$symbol} has simultaneous LONG and SHORT exchange positions; Kraite does not hedge symbols, so neither side was recovered."
+            );
+            $this->report->line("    ✗ {$symbol}: simultaneous LONG and SHORT exchange positions rejected ({$skipped} sides skipped)");
+        }
+
+        if ($conflictingSymbols === []) {
+            return array_values($positions);
+        }
+
+        return array_values(array_filter(
+            $positions,
+            static fn (array $position): bool => ! isset($conflictingSymbols[mb_strtoupper(mb_trim((string) ($position['symbol'] ?? '')))]),
+        ));
     }
 }

@@ -72,8 +72,8 @@ final class RecreateCancelledOrderJob extends BaseApiableJob
             return false;
         }
 
-        // Order must be cancelled or expired
-        if (! in_array($this->cancelledOrder->status, ['CANCELLED', 'EXPIRED'], true)) {
+        // Order must be in a terminal non-fill state.
+        if (! in_array($this->cancelledOrder->status, ['CANCELLED', 'EXPIRED', 'REJECTED'], true)) {
             return false;
         }
 

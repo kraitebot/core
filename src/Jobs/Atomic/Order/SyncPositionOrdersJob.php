@@ -55,7 +55,7 @@ final class SyncPositionOrdersJob extends BaseApiableJob
             return false;
         }
 
-        if ($this->position->status === 'cancelling') {
+        if (in_array($this->position->status, ['cancelling', 'closing'], true)) {
             return true;
         }
 
@@ -67,7 +67,7 @@ final class SyncPositionOrdersJob extends BaseApiableJob
      */
     public function startOrSkip(): bool
     {
-        if ($this->position->status !== 'cancelling') {
+        if (! in_array($this->position->status, ['cancelling', 'closing'], true)) {
             return true;
         }
 

@@ -36,6 +36,8 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
 
     private const array IP_NOT_WHITELISTED_CODES = ['40018', '40038'];
 
+    private const array IGNORABLE_ORDER_CODES = ['22001', '43001', '25204', '25575'];
+
     /**
      * Server instability — exchange is having infrastructure problems.
      * Triggers exchange-level cooldown to prevent opening new positions.
@@ -61,9 +63,15 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
      *   ignorable so a stale orphan cancel completes cleanly.
      * 200 / "43001": "Order does not exist" — sibling code returned by
      *   certain plan-order cancel paths.
+     * 400 / "25204": UTA regular order no longer exists. A concurrent
+     *   cancellation already satisfied the requested outcome.
+     * 400 / "25575": UTA strategy order no longer exists. Cancellation is
+     *   already satisfied and local state can be reconciled safely. Bitget
+     *   returns this vendor code with HTTP 400 on the UTA endpoint.
      */
     public array $ignorableHttpCodes = [
-        200 => ['22001', '43001'],
+        200 => ['22001', '43001', '25575'],
+        400 => ['25204', '25575'],
     ];
 
     /**
@@ -296,7 +304,8 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
      */
     public function ignoreException(Throwable $exception): bool
     {
-        return $this->containsHttpExceptionIn($exception, $this->ignorableHttpCodes);
+        return $this->containsHttpExceptionIn($exception, $this->ignorableHttpCodes)
+            || $this->containsBitgetVendorCode($exception, self::IGNORABLE_ORDER_CODES);
     }
 
     /**
@@ -467,9 +476,9 @@ final class BitgetExceptionHandler extends BaseExceptionHandler
 
         do {
             $error = $this->extractHttpErrorCodes($current);
-            $vendorCode = $error['status_code'] ?? null;
+            $vendorCode = $error['api_code'] ?? $error['status_code'] ?? null;
 
-            if (is_string($vendorCode) && in_array($vendorCode, $codes, strict: true)) {
+            if ($vendorCode !== null && in_array((string) $vendorCode, $codes, strict: true)) {
                 return true;
             }
 

@@ -6,6 +6,7 @@ namespace Kraite\Core\Support\Recovery;
 
 use Illuminate\Support\Str;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetApiDataMapper;
 use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
@@ -403,9 +404,19 @@ final class BitgetPositionRecoverer extends AbstractPositionRecoverer
             return [];
         }
 
+        $mapper = new BitgetApiDataMapper;
+        $snapshots = [];
+        foreach ($list as $order) {
+            if (! is_array($order)) {
+                continue;
+            }
+
+            array_push($snapshots, ...$mapper->normalizePlanOrderSnapshots($order));
+        }
+
         return array_map(
             fn (array $order): array => $this->normalizeStrategyOrder($order, $direction),
-            $this->filterOrdersForPosition($list, $symbol, $direction),
+            $this->filterOrdersForPosition($snapshots, $symbol, $direction),
         );
     }
 

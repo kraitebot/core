@@ -124,6 +124,7 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
                     'arguments' => [
                         'positionId' => $locked->id,
                         'message' => $this->message ?? "Position closed externally ({$this->triggerStatus})",
+                        'positionConfirmedFlat' => true,
                     ],
                 ]);
 

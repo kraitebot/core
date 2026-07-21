@@ -6,6 +6,7 @@ namespace Kraite\Core\Jobs\Atomic\Order;
 
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
+use Kraite\Core\Enums\BitgetAccountMode;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Throwable;
@@ -130,7 +131,7 @@ final class CancelSingleAlgoOrderJob extends BaseApiableJob
             // success: nothing left on the exchange to cancel, just
             // reconcile our DB to match reality.
             if ($this->exceptionHandler->ignoreException($e)) {
-                $this->order->updateSaving(['status' => 'CANCELLED']);
+                $this->reconcileCancelledOrder();
                 $this->idempotentlyResolved = true;
 
                 return [
@@ -147,7 +148,7 @@ final class CancelSingleAlgoOrderJob extends BaseApiableJob
         }
 
         // Update local status
-        $this->order->updateSaving(['status' => 'CANCELLED']);
+        $this->reconcileCancelledOrder();
 
         return [
             'position_id' => $this->position->id,
@@ -185,7 +186,9 @@ final class CancelSingleAlgoOrderJob extends BaseApiableJob
         // BitGet position-level TPSL cannot be cancelled via cancel-plan-order.
         // Detect this by checking the _isPositionTpsl flag in the sync response.
         // If so, revert local status since the order is still active on exchange.
-        if (($apiResponse->result['_isPositionTpsl'] ?? false) && $this->order->status === 'NEW') {
+        if (! $this->isBitgetUnified()
+            && ($apiResponse->result['_isPositionTpsl'] ?? false)
+            && $this->order->status === 'NEW') {
             // Order is still active - this is expected for position TPSL
             // Revert reference_status to match actual status to prevent further drift
             $this->order->updateSaving([
@@ -209,5 +212,31 @@ final class CancelSingleAlgoOrderJob extends BaseApiableJob
         $this->position->updateSaving([
             'error_message' => 'Algo order cancel failed: '.$e->getMessage(),
         ]);
+    }
+
+    private function reconcileCancelledOrder(): void
+    {
+        if (! $this->isBitgetUnified()
+            || ! in_array($this->order->type, ['PROFIT-LIMIT', 'STOP-MARKET'], true)) {
+            $this->order->updateSaving(['status' => 'CANCELLED']);
+
+            return;
+        }
+
+        Order::query()
+            ->where('position_id', $this->position->id)
+            ->where('exchange_order_id', $this->order->exchange_order_id)
+            ->whereIn('type', ['PROFIT-LIMIT', 'STOP-MARKET'])
+            ->update(['status' => 'CANCELLED']);
+
+        $this->order->refresh();
+    }
+
+    private function isBitgetUnified(): bool
+    {
+        $account = $this->position->account;
+
+        return $account->apiSystem->canonical === 'bitget'
+            && $account->resolveBitgetAccountMode() === BitgetAccountMode::Unified;
     }
 }

@@ -6,6 +6,8 @@ namespace Kraite\Core\Jobs\Lifecycles\Position;
 
 use Illuminate\Support\Collection;
 use Kraite\Core\Abstracts\BaseQueueableJob;
+use Kraite\Core\Enums\BitgetAccountMode;
+use Kraite\Core\Jobs\Atomic\Order\Bitget\PlacePositionTpslJob;
 use Kraite\Core\Jobs\Atomic\Order\CancelOrphanAlgoOrdersJob;
 use Kraite\Core\Jobs\Atomic\Order\RecreateCancelledOrderJob;
 use Kraite\Core\Jobs\Atomic\Order\SyncPositionOrdersJob;
@@ -68,8 +70,16 @@ final class SmartReplaceOrdersJob extends BaseQueueableJob
     public function compute()
     {
         $resolver = JobProxy::with($this->position->account);
+        $unifiedProtectionOrders = $this->unifiedProtectionOrdersToReplace();
+        $ordersToRecreateIndividually = $this->ordersToRecreate->except(
+            $unifiedProtectionOrders->pluck('id')->all(),
+        );
 
-        $this->buildChildChainOnce(function (string $blockUuid) use ($resolver): void {
+        $this->buildChildChainOnce(function (string $blockUuid) use (
+            $ordersToRecreateIndividually,
+            $resolver,
+            $unifiedProtectionOrders,
+        ): void {
             $index = 1;
 
             // Step 1: Scrub orphan algo orders on the exchange for this
@@ -90,13 +100,30 @@ final class SmartReplaceOrdersJob extends BaseQueueableJob
             ]);
 
             // Recreate each cancelled order
-            foreach ($this->ordersToRecreate as $order) {
+            foreach ($ordersToRecreateIndividually as $order) {
                 Step::create([
                     'class' => $resolver->resolve(RecreateCancelledOrderJob::class),
                     'queue' => 'positions',
                     'arguments' => [
                         'positionId' => $this->position->id,
                         'orderId' => $order->id,
+                    ],
+                    'block_uuid' => $blockUuid,
+                    'index' => $index++,
+                ]);
+            }
+
+            // Bitget Unified represents full-position TP and SL as one remote
+            // strategy. Recreating either local leg independently would split
+            // that strategy and can leave the position partly protected. One
+            // combined placement replaces both local projections instead.
+            if ($unifiedProtectionOrders->isNotEmpty()) {
+                Step::create([
+                    'class' => PlacePositionTpslJob::class,
+                    'queue' => 'positions',
+                    'arguments' => [
+                        'positionId' => $this->position->id,
+                        'replacedOrderIds' => $unifiedProtectionOrders->pluck('id')->all(),
                     ],
                     'block_uuid' => $blockUuid,
                     'index' => $index++,
@@ -127,7 +154,7 @@ final class SmartReplaceOrdersJob extends BaseQueueableJob
      * Find orders that need recreation.
      *
      * An order needs recreation if:
-     * - Status is CANCELLED or EXPIRED
+     * - Status is CANCELLED, EXPIRED, or REJECTED
      * - reference_status differs from status (hasn't been handled yet)
      * - Type is LIMIT, PROFIT-LIMIT, or STOP-MARKET
      *
@@ -136,7 +163,7 @@ final class SmartReplaceOrdersJob extends BaseQueueableJob
     public function findOrdersNeedingRecreation(): Collection
     {
         return $this->position->orders()
-            ->whereIn('status', ['CANCELLED', 'EXPIRED'])
+            ->whereIn('status', ['CANCELLED', 'EXPIRED', 'REJECTED'])
             ->where(function ($query): void {
                 // reference_status differs from status OR is NULL (never set)
                 $query->whereColumn('reference_status', '!=', 'status')
@@ -144,5 +171,45 @@ final class SmartReplaceOrdersJob extends BaseQueueableJob
             })
             ->whereIn('type', ['LIMIT', 'PROFIT-LIMIT', 'STOP-MARKET'])
             ->get();
+    }
+
+    /** @return Collection<int, Order> */
+    private function unifiedProtectionOrdersToReplace(): Collection
+    {
+        if (! $this->isBitgetUnified()) {
+            return collect();
+        }
+
+        $triggeringOrders = $this->ordersToRecreate
+            ->whereIn('type', ['PROFIT-LIMIT', 'STOP-MARKET']);
+
+        if ($triggeringOrders->isEmpty()) {
+            return collect();
+        }
+
+        $exchangeOrderIds = $triggeringOrders
+            ->pluck('exchange_order_id')
+            ->filter(static fn (mixed $orderId): bool => is_string($orderId) && $orderId !== '')
+            ->unique()
+            ->values();
+
+        return $this->position->orders()
+            ->whereIn('type', ['PROFIT-LIMIT', 'STOP-MARKET'])
+            ->where(function ($query) use ($exchangeOrderIds, $triggeringOrders): void {
+                $query->whereIn('id', $triggeringOrders->pluck('id')->all());
+
+                if ($exchangeOrderIds->isNotEmpty()) {
+                    $query->orWhereIn('exchange_order_id', $exchangeOrderIds->all());
+                }
+            })
+            ->get();
+    }
+
+    private function isBitgetUnified(): bool
+    {
+        $account = $this->position->account;
+
+        return $account->apiSystem->canonical === 'bitget'
+            && $account->resolveBitgetAccountMode() === BitgetAccountMode::Unified;
     }
 }

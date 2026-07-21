@@ -53,9 +53,11 @@ use StepDispatcher\Support\Steps;
  */
 final class OrderObserver
 {
-    private const array INACTIVE_STATUSES = ['CANCELLED', 'EXPIRED'];
+    private const array INACTIVE_STATUSES = ['CANCELLED', 'EXPIRED', 'REJECTED'];
 
     private const array CLOSE_TRIGGER_TYPES = ['PROFIT-LIMIT', 'PROFIT-MARKET', 'STOP-MARKET'];
+
+    private const array REPLACEMENT_TRIGGER_STATUSES = ['EXPIRED', 'CANCELLED', 'REJECTED'];
 
     public function creating(Order $model): bool
     {
@@ -173,7 +175,8 @@ final class OrderObserver
             return;
         }
 
-        // PROFIT/STOP orders: FILLED or TRIGGERED triggers close, CANCELLED/EXPIRED triggers replacement.
+        // PROFIT/STOP orders: FILLED or TRIGGERED triggers close;
+        // cancelled, expired, or rejected orders trigger replacement.
         //
         // TRIGGERED is added alongside FILLED here because Binance's algo SL
         // surfaces an SL-fire event with `algoStatus=TRIGGERED` (mapped
@@ -184,16 +187,16 @@ final class OrderObserver
         if (in_array($model->type, self::CLOSE_TRIGGER_TYPES, true)) {
             match ($model->status) {
                 'FILLED', 'TRIGGERED' => $this->dispatchClosePosition($model, $position),
-                'EXPIRED', 'CANCELLED' => $this->dispatchPositionReplacement($model, $position),
+                'EXPIRED', 'CANCELLED', 'REJECTED' => $this->dispatchPositionReplacement($model, $position),
                 default => null,
             };
 
             return;
         }
 
-        // LIMIT orders: CANCELLED/EXPIRED triggers replacement (recreate missing DCA orders)
+        // LIMIT orders: terminal non-fill states trigger replacement (recreate missing DCA orders)
         // Position existence is verified by PreparePositionReplacementJob before recreating
-        if ($model->type === 'LIMIT' && in_array($model->status, ['EXPIRED', 'CANCELLED'], true)) {
+        if ($model->type === 'LIMIT' && in_array($model->status, self::REPLACEMENT_TRIGGER_STATUSES, true)) {
             $this->dispatchPositionReplacement($model, $position);
 
             return;
@@ -362,7 +365,11 @@ final class OrderObserver
                     return;
                 }
 
-                $action = $model->status === 'EXPIRED' ? 'expired' : 'cancelled';
+                $action = match ($model->status) {
+                    'EXPIRED' => 'expired',
+                    'REJECTED' => 'rejected',
+                    default => 'cancelled',
+                };
 
                 Step::create([
                     'class' => PreparePositionReplacementJob::class,

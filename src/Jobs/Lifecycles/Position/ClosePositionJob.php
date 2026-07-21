@@ -41,10 +41,16 @@ final class ClosePositionJob extends BaseApiableJob
 
     public ?string $message;
 
-    public function __construct(int $positionId, ?string $message = null)
-    {
+    public bool $positionConfirmedFlat;
+
+    public function __construct(
+        int $positionId,
+        ?string $message = null,
+        bool $positionConfirmedFlat = false,
+    ) {
         $this->position = Position::findOrFail($positionId);
         $this->message = $message;
+        $this->positionConfirmedFlat = $positionConfirmedFlat;
     }
 
     public function assignExceptionHandler(): void
@@ -106,14 +112,18 @@ final class ClosePositionJob extends BaseApiableJob
                 workflowId: null
             );
 
-            // Step 3: Close position on exchange
-            $closeLifecycleClass = $resolver->resolve(ClosePositionAtomicallyJob::class);
-            $closeLifecycle = new $closeLifecycleClass($this->position);
-            $nextIndex = $closeLifecycle->dispatch(
-                blockUuid: $blockUuid,
-                startIndex: $nextIndex,
-                workflowId: null
-            );
+            // Step 3: Close position on exchange unless two independent reads
+            // already confirmed it flat. A redundant Bitget UTA flash-close can
+            // return the ambiguous 25239 failure even though no exposure exists.
+            if (! $this->positionConfirmedFlat) {
+                $closeLifecycleClass = $resolver->resolve(ClosePositionAtomicallyJob::class);
+                $closeLifecycle = new $closeLifecycleClass($this->position);
+                $nextIndex = $closeLifecycle->dispatch(
+                    blockUuid: $blockUuid,
+                    startIndex: $nextIndex,
+                    workflowId: null
+                );
+            }
 
             // Step 4: Sync orders from exchange
             $syncOrdersLifecycleClass = $resolver->resolve(SyncPositionOrdersLifecycle::class);

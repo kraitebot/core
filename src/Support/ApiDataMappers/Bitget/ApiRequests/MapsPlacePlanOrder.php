@@ -144,8 +144,11 @@ trait MapsPlacePlanOrder
      *     }
      * }
      */
-    public function resolvePlanOrderQueryResponse(Response $response, ?string $targetOrderId = null): array
-    {
+    public function resolvePlanOrderQueryResponse(
+        Response $response,
+        ?string $targetOrderId = null,
+        ?string $targetOrderType = null,
+    ): array {
         $data = json_decode((string) $response->getBody(), associative: true);
         $responseData = $data['data'] ?? [];
         $orders = is_array($responseData)
@@ -173,6 +176,9 @@ trait MapsPlacePlanOrder
                 '_raw' => $data,
             ];
         }
+
+        $snapshots = $this->normalizePlanOrderSnapshots($order);
+        $order = $this->selectPlanOrderSnapshot($snapshots, $targetOrderType);
 
         $isUnified = array_key_exists('status', $order)
             || array_key_exists('takeProfit', $order)
@@ -260,6 +266,29 @@ trait MapsPlacePlanOrder
             '_isPlanOrder' => true,
             '_raw' => $data,
         ];
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $snapshots
+     * @return array<string, mixed>
+     */
+    private function selectPlanOrderSnapshot(array $snapshots, ?string $targetOrderType): array
+    {
+        $targetPlanType = match ($targetOrderType) {
+            'PROFIT-LIMIT', 'PROFIT-MARKET' => 'pos_profit',
+            'STOP-MARKET', 'STOP-LIMIT' => 'pos_loss',
+            default => null,
+        };
+
+        if ($targetPlanType !== null) {
+            foreach ($snapshots as $snapshot) {
+                if (($snapshot['planType'] ?? null) === $targetPlanType) {
+                    return $snapshot;
+                }
+            }
+        }
+
+        return $snapshots[0] ?? [];
     }
 
     /**

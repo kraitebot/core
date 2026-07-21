@@ -1354,7 +1354,22 @@ final class CheckSystemHealthCommand extends BaseCommand
                 $properties->set('options.holdSide', mb_strtolower($direction));
             }
 
-            $account->withApi()->flashClosePosition($properties);
+            try {
+                $account->withApi()->flashClosePosition($properties);
+            } catch (Throwable $exception) {
+                $message = $exception->getMessage();
+
+                // The orphan may disappear after the positions snapshot
+                // but before the close request reaches Bitget. UTA reports
+                // that successfully-settled race as 25227; cleanup is
+                // already complete and must not page an operator as failed.
+                if (str_contains($message, '(code 25227)')
+                    || str_contains($message, 'No position available to close')) {
+                    return;
+                }
+
+                throw $exception;
+            }
 
             return;
         }

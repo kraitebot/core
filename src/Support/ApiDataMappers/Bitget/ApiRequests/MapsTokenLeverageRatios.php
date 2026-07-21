@@ -56,7 +56,12 @@ trait MapsTokenLeverageRatios
     public function resolveUpdateLeverageRatioResponse(Response $response): array
     {
         $body = json_decode((string) $response->getBody(), associative: true);
+        $data = $body['data'] ?? null;
 
-        return $body['data'] ?? [];
+        if (is_array($data)) {
+            return $data;
+        }
+
+        return $data === null ? [] : ['result' => $data];
     }
 }

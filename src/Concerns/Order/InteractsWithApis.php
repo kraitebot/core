@@ -188,7 +188,7 @@ trait InteractsWithApis
             ?? $apiResponse->result['original_quantity']
             ?? null;
 
-        $this->updateSaving([
+        $this->updateSyncedAttributes([
             'status' => $apiResponse->result['status'],
             'quantity' => $this->resolveSyncedQuantity($incomingQuantity),
             'price' => $this->resolveSyncedPrice($apiResponse->result['price'] ?? null),
@@ -284,7 +284,7 @@ trait InteractsWithApis
     {
         $apiResponse = $this->apiQueryAlgo();
 
-        $this->updateSaving([
+        $this->updateSyncedAttributes([
             'status' => $apiResponse->result['status'],
             'quantity' => $this->resolveSyncedQuantity($apiResponse->result['quantity'] ?? null),
             'price' => $this->resolveSyncedPrice($apiResponse->result['price'] ?? null),
@@ -319,7 +319,7 @@ trait InteractsWithApis
     {
         $apiResponse = $this->apiQueryStopOrder();
 
-        $this->updateSaving([
+        $this->updateSyncedAttributes([
             'status' => $apiResponse->result['status'],
             'quantity' => $this->resolveSyncedQuantity($apiResponse->result['original_quantity'] ?? null),
             'price' => $this->resolveSyncedPrice($apiResponse->result['price'] ?? null),
@@ -425,7 +425,8 @@ trait InteractsWithApis
             response: $this->apiResponse,
             result: $this->apiMapper()->resolvePlanOrderQueryResponse(
                 $this->apiResponse,
-                (string) $this->exchange_order_id
+                (string) $this->exchange_order_id,
+                (string) $this->type,
             )
         );
     }
@@ -444,7 +445,7 @@ trait InteractsWithApis
             $apiResponse = $this->apiQueryPlanOrderHistory();
         }
 
-        $this->updateSaving([
+        $this->updateSyncedAttributes([
             'status' => $apiResponse->result['status'],
             'quantity' => $this->resolveSyncedQuantity($apiResponse->result['quantity'] ?? null),
             'price' => $this->resolveSyncedPrice($apiResponse->result['price'] ?? null),
@@ -466,7 +467,8 @@ trait InteractsWithApis
             response: $this->apiResponse,
             result: $this->apiMapper()->resolvePlanOrderQueryResponse(
                 $this->apiResponse,
-                (string) $this->exchange_order_id
+                (string) $this->exchange_order_id,
+                (string) $this->type,
             )
         );
     }
@@ -561,6 +563,33 @@ trait InteractsWithApis
         }
 
         return api_format_quantity((string) $incoming, $this->position->exchangeSymbol);
+    }
+
+    /**
+     * Persist only meaningful exchange-state changes.
+     *
+     * Routine syncs run every five minutes. Saving an unchanged model would
+     * refresh updated_at and make the drift checker's ten-minute quiet window
+     * impossible to reach. Changed values still use the normal save path so
+     * OrderObserver continues to dispatch correction and lifecycle work.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    private function updateSyncedAttributes(array $attributes): void
+    {
+        $changedAttributes = [];
+
+        foreach ($attributes as $attribute => $value) {
+            if ($this->getAttribute($attribute) !== $value) {
+                $changedAttributes[$attribute] = $value;
+            }
+        }
+
+        if ($changedAttributes === []) {
+            return;
+        }
+
+        $this->fill($changedAttributes)->save();
     }
 
     /**

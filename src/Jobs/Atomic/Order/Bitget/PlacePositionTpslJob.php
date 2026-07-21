@@ -23,8 +23,9 @@ use Throwable;
 /**
  * PlacePositionTpslJob (Atomic) - Bitget
  *
- * Places full-position protection on Bitget. Classic uses one combined
- * position TP/SL call; Unified creates independent full-position strategies.
+ * Places full-position protection on Bitget. Both account modes use one
+ * combined exchange request. Classic returns one ID per leg; Unified returns
+ * one strategy ID shared by the two local protection rows.
  *
  * Flow:
  * 1. startOrFail(): Verify position has required data
@@ -49,16 +50,21 @@ final class PlacePositionTpslJob extends BaseApiableJob
 
     public ?string $slPrice = null;
 
+    /** @var list<int> */
+    public array $replacedOrderIds = [];
+
     public function __construct(
         int $positionId,
         ?int $profitOrderId = null,
         ?int $stopLossOrderId = null,
+        array $replacedOrderIds = [],
     ) {
         $this->position = Position::findOrFail($positionId);
         $this->profitOrder = $this->findProtectionOrder($profitOrderId, 'PROFIT-LIMIT');
         $this->stopLossOrder = $this->findProtectionOrder($stopLossOrderId, 'STOP-MARKET');
         $this->tpPrice = $this->profitOrder?->price;
         $this->slPrice = $this->stopLossOrder?->price;
+        $this->replacedOrderIds = array_values(array_unique(array_map('intval', $replacedOrderIds)));
     }
 
     public function assignExceptionHandler(): void
@@ -361,6 +367,23 @@ final class PlacePositionTpslJob extends BaseApiableJob
             return false;
         }
 
+        if ($this->position->account->resolveBitgetAccountMode() === BitgetAccountMode::Unified) {
+            $strategyIds = array_values(array_unique(array_filter([
+                $this->profitOrder->exchange_order_id,
+                $this->stopLossOrder->exchange_order_id,
+            ], static fn (mixed $orderId): bool => is_string($orderId) && $orderId !== '')));
+
+            if (count($strategyIds) > 1) {
+                return false;
+            }
+
+            if ($strategyIds !== []) {
+                $this->persistUnifiedStrategyId($strategyIds[0]);
+
+                return true;
+            }
+        }
+
         if ($this->profitOrder->exchange_order_id !== null
             && $this->stopLossOrder->exchange_order_id !== null) {
             return true;
@@ -469,6 +492,24 @@ final class PlacePositionTpslJob extends BaseApiableJob
     private function persistProtectionOrders(string $side): void
     {
         DB::transaction(function () use ($side): void {
+            if ($this->replacedOrderIds !== []) {
+                Order::query()
+                    ->where('position_id', $this->position->id)
+                    ->whereIn('id', $this->replacedOrderIds)
+                    ->whereIn('type', ['PROFIT-LIMIT', 'STOP-MARKET'])
+                    ->lockForUpdate()
+                    ->get();
+
+                Order::query()
+                    ->where('position_id', $this->position->id)
+                    ->whereIn('id', $this->replacedOrderIds)
+                    ->whereIn('type', ['PROFIT-LIMIT', 'STOP-MARKET'])
+                    ->update([
+                        'status' => 'CANCELLED',
+                        'reference_status' => 'CANCELLED',
+                    ]);
+            }
+
             $attributes = [
                 'status' => 'NEW',
                 'side' => $side,
@@ -519,39 +560,58 @@ final class PlacePositionTpslJob extends BaseApiableJob
         });
     }
 
-    /**
-     * UTA represents each full-position TP/SL leg as an independent strategy
-     * order. Keeping two exchange IDs preserves independent sync, correction,
-     * cancellation, and recreation semantics in the local order ledger.
-     *
-     * @return array<string, mixed>
-     */
+    /** @return array<string, mixed> */
     private function placeUnifiedProtectionOrders(string $anchorPrice, string $side): array
     {
         if ($this->profitOrder === null || $this->stopLossOrder === null) {
             throw new RuntimeException('Bitget UTA protection orders were not persisted before placement.');
         }
 
-        if ($this->profitOrder->exchange_order_id === null || $this->profitOrder->exchange_order_id === '') {
-            $profitResponse = $this->profitOrder->apiPlaceTpslOrder();
-            if (! ($profitResponse->result['success'] ?? false)) {
-                throw new RuntimeException('Failed to place Bitget UTA take-profit strategy order.');
+        $strategyIds = array_values(array_unique(array_filter([
+            $this->profitOrder->exchange_order_id,
+            $this->stopLossOrder->exchange_order_id,
+        ], static fn (mixed $orderId): bool => is_string($orderId) && $orderId !== '')));
+
+        if (count($strategyIds) > 1) {
+            throw new RuntimeException('Bitget UTA protection rows contain conflicting strategy order IDs.');
+        }
+
+        $strategyId = $strategyIds[0] ?? null;
+
+        if ($strategyId === null) {
+            $account = $this->position->account;
+            $mapper = new ApiDataMapperProxy($account->apiSystem->canonical);
+            $properties = $mapper->preparePlacePosTpslProperties(
+                $this->position,
+                (string) $this->tpPrice,
+                (string) $this->slPrice,
+                $this->profitOrder->client_order_id,
+            );
+            $properties->set('relatable', $this->profitOrder);
+            $properties->set('account', $account);
+
+            $response = $account->withApi()->placePosTpsl($properties);
+            $result = $mapper->resolvePlacePosTpslResponse($response);
+
+            if (! ($result['success'] ?? false)) {
+                throw new RuntimeException('Failed to place Bitget UTA combined TP/SL strategy order.');
+            }
+
+            $strategyId = $result['orderId'] ?? null;
+            if (! is_string($strategyId) || $strategyId === '') {
+                throw new RuntimeException('Bitget UTA did not return the combined protection strategy order ID.');
+            }
+
+            $this->profitOrder->refresh();
+            $returnedClientOrderId = $result['clientOrderId'] ?? null;
+            if (is_string($returnedClientOrderId)
+                && $returnedClientOrderId !== ''
+                && $returnedClientOrderId !== $this->profitOrder->client_order_id) {
+                throw new RuntimeException('Bitget UTA returned an unexpected protection client order ID.');
             }
         }
 
-        if ($this->stopLossOrder->exchange_order_id === null || $this->stopLossOrder->exchange_order_id === '') {
-            $stopLossResponse = $this->stopLossOrder->apiPlaceTpslOrder();
-            if (! ($stopLossResponse->result['success'] ?? false)) {
-                throw new RuntimeException('Failed to place Bitget UTA stop-loss strategy order.');
-            }
-        }
-
-        $takeProfitId = $this->profitOrder->fresh()->exchange_order_id;
-        $stopLossId = $this->stopLossOrder->fresh()->exchange_order_id;
-
-        if ($takeProfitId === null || $stopLossId === null) {
-            throw new RuntimeException('Bitget UTA did not return both protection strategy order IDs.');
-        }
+        $this->persistUnifiedStrategyId($strategyId);
 
         return [
             'position_id' => $this->position->id,
@@ -563,9 +623,25 @@ final class PlacePositionTpslJob extends BaseApiableJob
             'tp_price' => $this->tpPrice,
             'sl_price' => $this->slPrice,
             'anchor_price' => $anchorPrice,
-            'take_profit_id' => $takeProfitId,
-            'stop_loss_id' => $stopLossId,
-            'message' => 'Position TP/SL placed as independent Bitget UTA strategy orders',
+            'take_profit_id' => $strategyId,
+            'stop_loss_id' => $strategyId,
+            'message' => 'Position TP/SL placed as one combined Bitget UTA strategy order',
         ];
+    }
+
+    private function persistUnifiedStrategyId(string $strategyId): void
+    {
+        if ($this->profitOrder === null || $this->stopLossOrder === null) {
+            throw new RuntimeException('Bitget UTA protection orders are unavailable for identity persistence.');
+        }
+
+        DB::transaction(function () use ($strategyId): void {
+            foreach ([$this->profitOrder, $this->stopLossOrder] as $order) {
+                $order->updateSaving([
+                    'exchange_order_id' => $strategyId,
+                    'opened_at' => $order->opened_at ?? now(),
+                ]);
+            }
+        });
     }
 }
