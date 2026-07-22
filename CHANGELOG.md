@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.79.2 - 2026-07-23
+
+### Immediate backtesting approval queue
+
+- [ADDED] Binance symbols can be selected when backtesting approval is the
+  final operator action before they become tradeable.
+- [SAFETY] The queue reuses every live new-position gate and excludes only the
+  approval and manual-enablement changes performed by Approve.
+
 ## 1.79.1 - 2026-07-23
 
 ### Immediate trading stop

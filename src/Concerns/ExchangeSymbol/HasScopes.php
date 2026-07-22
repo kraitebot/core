@@ -48,6 +48,34 @@ trait HasScopes
     }
 
     /**
+     * Binance symbols where approval is the only remaining operator action
+     * before the complete new-position tradability policy passes. Approval
+     * also enables the selected symbol manually.
+     */
+    public function scopeAwaitingBacktestingApproval(Builder $query): Builder
+    {
+        $correlationColumn = 'btc_correlation_'.Kraite::correlationType();
+
+        $query
+            ->onActiveApiSystem()
+            ->whereHas(
+                'apiSystem',
+                static fn (Builder $apiSystems): Builder => $apiSystems->where('api_systems.canonical', 'binance'),
+            )
+            ->where('exchange_symbols.was_backtesting_approved', false);
+
+        $this->applyTradeableConditions(
+            $query,
+            'exchange_symbols',
+            $correlationColumn,
+            requireManualEnablement: false,
+            requireBacktestingApproval: false,
+        );
+
+        return $query;
+    }
+
+    /**
      * Symbols that should receive price updates via WebSocket.
      */
     public function scopeNeedsPriceUpdates(Builder $query): Builder
@@ -110,8 +138,13 @@ trait HasScopes
     /**
      * Apply tradeable conditions to an Eloquent Builder.
      */
-    private function applyTradeableConditions(Builder $query, string $table, string $correlationColumn): void
-    {
+    private function applyTradeableConditions(
+        Builder $query,
+        string $table,
+        string $correlationColumn,
+        bool $requireManualEnablement = true,
+        bool $requireBacktestingApproval = true,
+    ): void {
         $query->where("{$table}.api_statuses->has_taapi_data", true)
             ->where("{$table}.has_no_indicator_data", false)
             ->where("{$table}.is_marked_for_delisting", false)
@@ -125,12 +158,20 @@ trait HasScopes
             ->where("{$table}.has_early_direction_change", false)
             ->where("{$table}.has_invalid_indicator_direction", false)
             ->whereNotNull("{$table}.symbol_id")
-            ->whereNotNull("{$table}.leverage_brackets")
-            ->where(static function ($q) use ($table) {
+            ->whereNotNull("{$table}.leverage_brackets");
+
+        if ($requireManualEnablement) {
+            $query->where(static function ($q) use ($table) {
                 $q->whereNull("{$table}.is_manually_enabled")
                     ->orWhere("{$table}.is_manually_enabled", true);
-            })
-            ->where("{$table}.was_backtesting_approved", true)
+            });
+        }
+
+        if ($requireBacktestingApproval) {
+            $query->where("{$table}.was_backtesting_approved", true);
+        }
+
+        $query
             ->whereNotNull("{$table}.direction")
             ->where(static function ($q) use ($table) {
                 $q->whereNull("{$table}.tradeable_at")
