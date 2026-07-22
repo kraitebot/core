@@ -350,6 +350,7 @@ final class KraiteSeeder extends Seeder
             [
                 'name' => 'Binance',
                 'logo_url' => 'https://public.bnbstatic.com/static/images/common/favicon.ico',
+                'is_active' => true,
                 'is_exchange' => true,
             ]
         );
@@ -359,6 +360,7 @@ final class KraiteSeeder extends Seeder
             [
                 'name' => 'Bybit',
                 'logo_url' => 'https://www.bybit.com/favicon.ico',
+                'is_active' => false,
                 'is_exchange' => true,
             ]
         );
@@ -368,6 +370,7 @@ final class KraiteSeeder extends Seeder
             [
                 'name' => 'KuCoin',
                 'logo_url' => 'https://www.kucoin.com/favicon.ico',
+                'is_active' => false,
                 'is_exchange' => true,
             ]
         );
@@ -377,6 +380,7 @@ final class KraiteSeeder extends Seeder
             [
                 'name' => 'BitGet',
                 'logo_url' => 'https://www.bitget.com/favicon.ico',
+                'is_active' => false,
                 'is_exchange' => true,
             ]
         );
@@ -385,6 +389,7 @@ final class KraiteSeeder extends Seeder
             ['canonical' => 'coinmarketcap'],
             [
                 'name' => 'CoinmarketCap',
+                'is_active' => true,
                 'is_exchange' => false,
             ]
         );
@@ -393,6 +398,7 @@ final class KraiteSeeder extends Seeder
             ['canonical' => 'alternativeme'],
             [
                 'name' => 'AlternativeMe',
+                'is_active' => true,
                 'is_exchange' => false,
             ]
         );
@@ -401,6 +407,7 @@ final class KraiteSeeder extends Seeder
             ['canonical' => 'taapi'],
             [
                 'name' => 'Taapi',
+                'is_active' => true,
                 'is_exchange' => false,
             ]
         );

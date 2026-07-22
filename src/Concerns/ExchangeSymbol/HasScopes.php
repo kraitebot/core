@@ -11,6 +11,14 @@ use Kraite\Core\Models\Position;
 
 trait HasScopes
 {
+    public function scopeOnActiveApiSystem(Builder $query): Builder
+    {
+        return $query->whereHas(
+            'apiSystem',
+            static fn (Builder $apiSystems): Builder => $apiSystems->active()
+        );
+    }
+
     /**
      * Symbols that can be used to open positions.
      * Checks: corresponding Binance symbol is tradeable, linked to CMC symbol, manually enabled,
@@ -21,6 +29,8 @@ trait HasScopes
     {
         $correlationType = Kraite::correlationType();
         $correlationColumn = 'btc_correlation_'.$correlationType;
+
+        $query->onActiveApiSystem();
 
         // Apply tradeable conditions to the main symbol
         $this->applyTradeableConditions($query, 'exchange_symbols', $correlationColumn);
@@ -42,7 +52,7 @@ trait HasScopes
      */
     public function scopeNeedsPriceUpdates(Builder $query): Builder
     {
-        return $query->where(static function ($q) {
+        return $query->onActiveApiSystem()->where(static function ($q) {
             // Has indicator data OR we're still trying to get it
             $q->where('exchange_symbols.has_no_indicator_data', false)
             // And not explicitly disabled by admin (NULL or true, but not false)
@@ -60,6 +70,7 @@ trait HasScopes
     public function scopeNeedsIndicatorAttempt(Builder $query): Builder
     {
         return $query
+            ->onActiveApiSystem()
             ->where('exchange_symbols.api_statuses->has_taapi_data', true)
             ->whereHas('apiSystem', static function ($q) {
                 $q->where('canonical', 'binance');

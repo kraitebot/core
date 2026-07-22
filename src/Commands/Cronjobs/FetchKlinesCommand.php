@@ -134,6 +134,12 @@ final class FetchKlinesCommand extends BaseCommand
             return self::FAILURE;
         }
 
+        if (! $exchangeSymbol->apiSystem->is_active) {
+            $this->verboseWarn("Exchange '{$exchangeSymbol->apiSystem->canonical}' is inactive — nothing to do.");
+
+            return self::SUCCESS;
+        }
+
         $timeframes = $this->getTimeframesForApiSystem($exchangeSymbol->apiSystem, $explicitTimeframe);
         if ($timeframes === null) {
             return self::FAILURE;
@@ -169,7 +175,7 @@ final class FetchKlinesCommand extends BaseCommand
     /** @param  array<int, string>|null  $explicitTimeframe */
     private function handleBulkSymbols(?string $canonical, ?array $explicitTimeframe, int $limit): int
     {
-        $apiSystemsQuery = ApiSystem::query()->where('is_exchange', true)->whereHas('exchangeSymbols');
+        $apiSystemsQuery = ApiSystem::query()->activeExchange()->whereHas('exchangeSymbols');
         if ($canonical) {
             $apiSystemsQuery->where('canonical', $canonical);
         }
@@ -257,7 +263,7 @@ final class FetchKlinesCommand extends BaseCommand
     {
         $apiSystem = ApiSystem::query()
             ->where('canonical', $canonical)
-            ->where('is_exchange', true)
+            ->activeExchange()
             ->first();
 
         if ($apiSystem === null) {
@@ -350,7 +356,7 @@ final class FetchKlinesCommand extends BaseCommand
     /** @param  array<int, string>|null  $explicitTimeframe */
     private function handleActivePositionsOnly(?array $explicitTimeframe, int $limit): int
     {
-        $binanceApiSystem = ApiSystem::where('canonical', 'binance')->first();
+        $binanceApiSystem = ApiSystem::active()->where('canonical', 'binance')->first();
         if ($binanceApiSystem === null) {
             $this->verboseError('Binance API system not found in database.');
 

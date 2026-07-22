@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Factories\Factory;
 use Kraite\Core\Models\ApiSystem;
 
 /**
- * @extends \Illuminate\Database\Eloquent\Factories\Factory<\Kraite\Core\Models\ApiSystem>
+ * @extends Factory<ApiSystem>
  */
 final class ApiSystemFactory extends Factory
 {
@@ -22,6 +22,7 @@ final class ApiSystemFactory extends Factory
     public function definition(): array
     {
         return [
+            'is_active' => true,
             'is_exchange' => false,
             'name' => fake()->company(),
             'canonical' => fake()->unique()->slug(),
@@ -39,6 +40,7 @@ final class ApiSystemFactory extends Factory
             return [
                 'name' => 'TAAPI',
                 'canonical' => 'taapi',
+                'is_active' => true,
                 'is_exchange' => false,
             ];
         });
@@ -51,6 +53,7 @@ final class ApiSystemFactory extends Factory
     {
         return $this->state(function (array $attributes) {
             return [
+                'is_active' => true,
                 'is_exchange' => true,
             ];
         });

@@ -181,7 +181,7 @@ final class StreamBinanceUserDataCommand extends Command
             }
         }
 
-        $binanceSystem = ApiSystem::firstWhere('canonical', 'binance');
+        $binanceSystem = ApiSystem::active()->firstWhere('canonical', 'binance');
 
         if ($binanceSystem === null) {
             $this->error('No api_systems row with canonical=binance — refusing to start.');

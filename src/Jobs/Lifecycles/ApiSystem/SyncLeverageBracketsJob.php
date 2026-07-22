@@ -38,6 +38,14 @@ final class SyncLeverageBracketsJob extends BaseQueueableJob
     /** @return array{exchange: string, steps_created: int, message: string} */
     public function compute(): array
     {
+        if ($this->apiSystem->fresh()?->is_active !== true) {
+            return [
+                'exchange' => $this->apiSystem->canonical,
+                'steps_created' => 0,
+                'message' => 'API system is inactive',
+            ];
+        }
+
         $this->buildChildChainOnce(function (string $childBlockUuid): void {
             Step::create([
                 'class' => AtomicSyncLeverageBracketsJob::class,

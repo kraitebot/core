@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.79.0 - 2026-07-22
+
+### Exchange processing control
+
+- [ADDED] API systems have an activation switch that removes disabled
+  exchanges from account, symbol, health, recovery, and financial processing.
+- [SECURITY] Already-queued API jobs stop before making a request when their
+  API system is disabled.
+- [CHANGED] Binance is the only active exchange; Bybit, KuCoin, Bitget, and
+  future exchange rows remain stored but inactive.
+
+### Single-server production
+
+- [CHANGED] The fleet and queue topology now target the private-use `kraite`
+  host at `135.181.93.226`.
+
 ## 1.78.1 - 2026-07-21
 
 ### Improvements

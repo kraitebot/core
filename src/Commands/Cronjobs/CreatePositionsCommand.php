@@ -93,6 +93,7 @@ final class CreatePositionsCommand extends BaseCommand
         // `monthly_rate_usdt` on the tier.
         $accounts = Account::query()
             ->with(['apiSystem', 'user.subscription'])
+            ->onActiveApiSystem()
             ->where('is_active', true)
             ->where('can_trade', true)
             ->whereHas('user', static fn ($q) => $q->where('can_trade', true))

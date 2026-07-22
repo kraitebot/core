@@ -9,7 +9,9 @@ use Kraite\Core\Concerns\BaseApiableJob\HandlesApiJobExceptions;
 use Kraite\Core\Concerns\BaseApiableJob\HandlesApiJobLifecycle;
 use Kraite\Core\Contracts\ClientLevelApiThrottler;
 use Kraite\Core\Exceptions\NonNotifiableException;
+use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ForbiddenHostname;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Support\Proxies\ApiThrottlerProxy;
 use StepDispatcher\Models\Step;
 use Throwable;
@@ -193,6 +195,22 @@ abstract class BaseApiableJob extends BaseQueueableJob
         return false;
     }
 
+    protected function shouldStartOrStop(): bool
+    {
+        if (! parent::shouldStartOrStop()) {
+            return false;
+        }
+
+        if (! isset($this->exceptionHandler)) {
+            $this->assignExceptionHandler();
+        }
+
+        return ApiSystem::query()
+            ->active()
+            ->where('canonical', $this->exceptionHandler->getApiSystem())
+            ->exists();
+    }
+
     /**
      * Override to automatically record API dispatch before executing.
      */
@@ -274,7 +292,7 @@ abstract class BaseApiableJob extends BaseQueueableJob
             }
 
             $exchangeName = $apiSystem->name ?? $apiSystemCanonical;
-            $ipAddress = \Kraite\Core\Models\Kraite::ip();
+            $ipAddress = Kraite::ip();
             $accountId = $this->exceptionHandler->account?->id;
 
             $bans = ForbiddenHostname::query()

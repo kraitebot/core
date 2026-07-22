@@ -148,7 +148,7 @@ final class StreamBinancePricesCommand extends Command
         }
 
         $credentials = new ApiCredentials($account->all_credentials);
-        $this->binanceSystemId = (int) ApiSystem::firstWhere('canonical', 'binance')?->id;
+        $this->binanceSystemId = (int) ApiSystem::active()->firstWhere('canonical', 'binance')?->id;
 
         if ($this->binanceSystemId === 0) {
             $this->error('No Binance api_system row found.');
@@ -390,9 +390,12 @@ final class StreamBinancePricesCommand extends Command
         // ReactPHP message callback and any stall blocks WS keepalive.
         $startedAt = microtime(true);
 
-        $otherApiSystemIds = ApiSystem::where('id', '!=', $this->binanceSystemId)->pluck('id');
+        $otherApiSystemIds = ApiSystem::activeExchange()
+            ->where('id', '!=', $this->binanceSystemId)
+            ->pluck('id');
 
-        $otherSymbolsByKey = ExchangeSymbol::where('api_system_id', '!=', $this->binanceSystemId)
+        $otherSymbolsByKey = ExchangeSymbol::onActiveApiSystem()
+            ->where('api_system_id', '!=', $this->binanceSystemId)
             ->get(['id', 'api_system_id', 'token', 'quote'])
             ->groupBy(fn ($symbol) => "{$symbol->api_system_id}:{$symbol->token}:{$symbol->quote}");
 

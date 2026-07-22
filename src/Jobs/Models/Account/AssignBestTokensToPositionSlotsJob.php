@@ -48,6 +48,11 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
         return $this->account;
     }
 
+    public function startOrStop(): bool
+    {
+        return $this->account->fresh()?->isOnActiveApiSystem() === true;
+    }
+
     public function compute()
     {
         // Step 1: Create Position Slots

@@ -209,13 +209,14 @@ final class Account extends BaseModel
      *
      *   1. The account itself is `is_active=true && can_trade=true`
      *      (system-controlled — connectivity test gate).
-     *   2. The user is active and their pause switch is on
+     *   2. The account's API system is active.
+     *   3. The user is active and their pause switch is on
      *      (`users.is_active=true && users.can_trade=true`).
-     *   3. The user's subscription is currently active (trial in
+     *   4. The user's subscription is currently active (trial in
      *      progress, a paid renewal anchor is still in the future, or
      *      a free tier applies; always not paused) — computed by
      *      `$user->billing()->subscription()->isActive()`.
-     *   4. On a one-account tier, this account is the user's explicitly
+     *   5. On a one-account tier, this account is the user's explicitly
      *      designated active account.
      *
      * Global gates (BSCS, pump protection, exchange cooldown,
@@ -225,6 +226,10 @@ final class Account extends BaseModel
     public function isReadyToTrade(): bool
     {
         if (! $this->is_active || ! $this->can_trade) {
+            return false;
+        }
+
+        if (! $this->isOnActiveApiSystem()) {
             return false;
         }
 
@@ -246,6 +251,11 @@ final class Account extends BaseModel
         }
 
         return true;
+    }
+
+    public function isOnActiveApiSystem(): bool
+    {
+        return $this->apiSystem?->is_active === true;
     }
 
     /**

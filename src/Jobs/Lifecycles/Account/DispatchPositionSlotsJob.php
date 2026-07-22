@@ -49,13 +49,16 @@ final class DispatchPositionSlotsJob extends BaseQueueableJob
         // keeps the slots in `new` so a subsequent re-enable can pick
         // them up cleanly, OR a scrub job can clean them — without
         // ever placing exchange orders against the disabled account.
-        $freshAccount = $this->account->fresh(['user']);
+        $freshAccount = $this->account->fresh(['apiSystem', 'user']);
 
-        if (! $freshAccount || ! $freshAccount->is_active || ! $freshAccount->can_trade) {
+        if (! $freshAccount
+            || ! $freshAccount->is_active
+            || ! $freshAccount->can_trade
+            || ! $freshAccount->isOnActiveApiSystem()) {
             return [
                 'account_id' => $this->account->id,
                 'positions_dispatched' => 0,
-                'message' => 'Account became inactive/non-tradeable mid-workflow — refusing to dispatch slots',
+                'message' => 'Account or API system became inactive/non-tradeable mid-workflow — refusing to dispatch slots',
             ];
         }
 

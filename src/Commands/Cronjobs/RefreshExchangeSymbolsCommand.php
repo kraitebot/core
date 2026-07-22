@@ -71,7 +71,7 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
         $exchangeFilter = $this->option('exchange');
         $withBrackets = (bool) $this->option('with-brackets');
 
-        $exchanges = ApiSystem::where('is_exchange', true)
+        $exchanges = ApiSystem::activeExchange()
             ->when($exchangeFilter, static function ($query) use ($exchangeFilter) {
                 return $query->where('canonical', $exchangeFilter);
             })

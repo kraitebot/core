@@ -82,6 +82,7 @@ final class VerifyPriceAlignmentsJob extends BaseQueueableJob
         }
 
         return ExchangeSymbol::query()
+            ->onActiveApiSystem()
             ->where('api_system_id', '!=', $binanceSystemId)
             ->needsOperationalMonitoring()
             ->whereNotNull('symbol_id')

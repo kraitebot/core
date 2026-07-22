@@ -151,13 +151,15 @@ final class RecoverPositionsCommand extends BaseCommand
 
     /**
      * Resolve the account collection: either a single account by id, or
-     * every is_active account with a configured api_system. Inactive
-     * accounts are excluded — recovery doesn't make sense for accounts
-     * we don't otherwise touch.
+     * every is_active account on an active API system. Inactive accounts
+     * and disabled API systems are excluded — recovery must obey the same
+     * processing switch as the trading engine.
      */
     protected function resolveTargetAccounts($accountId)
     {
-        $query = Account::query()->with('apiSystem');
+        $query = Account::query()
+            ->with('apiSystem')
+            ->onActiveApiSystem();
 
         if ($accountId !== null) {
             return $query->where('id', (int) $accountId)->get();

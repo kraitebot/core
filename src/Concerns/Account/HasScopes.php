@@ -19,6 +19,14 @@ trait HasScopes
         return $query->where('accounts.can_trade', true);
     }
 
+    public function scopeOnActiveApiSystem(Builder $query): Builder
+    {
+        return $query->whereHas(
+            'apiSystem',
+            static fn (Builder $apiSystems): Builder => $apiSystems->active()
+        );
+    }
+
     /**
      * Filters accounts that are currently eligible to drive a Binance
      * user-data WebSocket stream.
@@ -39,7 +47,7 @@ trait HasScopes
      */
     public function scopeEligibleForBinanceUserDataStream(Builder $query): Builder
     {
-        $binanceId = ApiSystem::where('canonical', 'binance')->value('id');
+        $binanceId = ApiSystem::active()->where('canonical', 'binance')->value('id');
 
         if ($binanceId === null) {
             // Fresh install / mid-migration — no Binance system row yet.

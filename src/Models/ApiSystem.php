@@ -8,22 +8,25 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Illuminate\Support\Carbon;
 use Kraite\Core\Abstracts\BaseModel;
 use Kraite\Core\Concerns\ApiSystem\HasCooldown;
 use Kraite\Core\Concerns\ApiSystem\HasScopes;
 use Kraite\Core\Concerns\ApiSystem\InteractsWithApis;
+use Kraite\Core\Database\Factories\ApiSystemFactory;
 
 /**
  * @property int $id
  * @property bool $is_exchange
+ * @property bool $is_active
  * @property string $name
  * @property int $recvwindow_margin
  * @property string $canonical
- * @property \Illuminate\Support\Carbon $created_at
- * @property \Illuminate\Support\Carbon $updated_at
+ * @property Carbon $created_at
+ * @property Carbon $updated_at
  * @property bool $should_restart_websocket
  * @property string|null $websocket_class
- * @property \Illuminate\Support\Carbon|null $cooldown_until
+ * @property Carbon|null $cooldown_until
  */
 final class ApiSystem extends BaseModel
 {
@@ -34,6 +37,8 @@ final class ApiSystem extends BaseModel
 
     protected $casts = [
         'cooldown_until' => 'datetime',
+        'is_active' => 'boolean',
+        'is_exchange' => 'boolean',
     ];
 
     public function steps(): MorphMany
@@ -66,6 +71,6 @@ final class ApiSystem extends BaseModel
 
     protected static function newFactory()
     {
-        return \Kraite\Core\Database\Factories\ApiSystemFactory::new();
+        return ApiSystemFactory::new();
     }
 }

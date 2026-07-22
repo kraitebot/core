@@ -30,7 +30,8 @@ final class DiscoverCMCTokensForOrphanedSymbolsJob extends BaseQueueableJob
         // Get exchange symbols that:
         // 1. Don't have a symbol_id yet (orphaned)
         // 2. Haven't had CMC API called yet (avoid redundant API calls)
-        $orphanedSymbols = ExchangeSymbol::whereNull('symbol_id')
+        $orphanedSymbols = ExchangeSymbol::onActiveApiSystem()
+            ->whereNull('symbol_id')
             ->where(static function ($query) {
                 $query->whereNull('api_statuses->cmc_api_called')
                     ->orWhere('api_statuses->cmc_api_called', false);
@@ -40,7 +41,8 @@ final class DiscoverCMCTokensForOrphanedSymbolsJob extends BaseQueueableJob
         if ($orphanedSymbols->isEmpty()) {
             // No children to create — DON'T elect to parent mode. The step
             // completes as an orphan, no zombie. (See ~/steps-dispatcher/issue.md.)
-            $alreadyProcessedCount = ExchangeSymbol::whereNull('symbol_id')
+            $alreadyProcessedCount = ExchangeSymbol::onActiveApiSystem()
+                ->whereNull('symbol_id')
                 ->where('api_statuses->cmc_api_called', true)
                 ->count();
 

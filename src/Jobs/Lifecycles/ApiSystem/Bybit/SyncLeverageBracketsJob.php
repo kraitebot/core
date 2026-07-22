@@ -45,6 +45,14 @@ final class SyncLeverageBracketsJob extends BaseQueueableJob
     /** @return array{exchange: string, steps_created: int, message: string} */
     public function compute(): array
     {
+        if ($this->apiSystem->fresh()?->is_active !== true) {
+            return [
+                'exchange' => $this->apiSystem->canonical,
+                'steps_created' => 0,
+                'message' => 'API system is inactive',
+            ];
+        }
+
         // Skip symbols already flagged for delisting — the exchange will
         // answer "symbol not supported" for them and fail the whole parent
         // step every hour until they're cleaned up.

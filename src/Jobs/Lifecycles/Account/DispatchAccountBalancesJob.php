@@ -22,7 +22,7 @@ final class DispatchAccountBalancesJob extends BaseQueueableJob
 {
     public function compute(): array
     {
-        $accounts = Account::active()->get();
+        $accounts = Account::active()->onActiveApiSystem()->get();
 
         // No active accounts → no children to spawn → don't elect to parent.
         // Step Completes as an orphan, no zombie.

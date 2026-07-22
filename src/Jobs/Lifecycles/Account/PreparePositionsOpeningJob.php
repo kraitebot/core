@@ -44,6 +44,11 @@ final class PreparePositionsOpeningJob extends BaseQueueableJob
         return $this->account;
     }
 
+    public function startOrStop(): bool
+    {
+        return $this->account->fresh()?->isOnActiveApiSystem() === true;
+    }
+
     public function compute()
     {
         $resolver = JobProxy::with($this->account);

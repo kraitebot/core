@@ -42,7 +42,11 @@ final class FleetFinancials
      */
     public function __construct(?Collection $accounts = null)
     {
-        $this->accounts = $accounts ?? Account::query()->active()->tradeable()->get();
+        $this->accounts = $accounts ?? Account::query()
+            ->active()
+            ->tradeable()
+            ->onActiveApiSystem()
+            ->get();
     }
 
     /** @return array<int, int> */

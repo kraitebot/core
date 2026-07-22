@@ -548,6 +548,7 @@ final class CheckSystemHealthCommand extends BaseCommand
         $threshold = now()->subMinutes(self::BALANCE_STALENESS_MINUTES);
 
         $accounts = Account::query()
+            ->onActiveApiSystem()
             ->where('is_active', true)
             ->get(['id', 'name']);
 
@@ -962,6 +963,7 @@ final class CheckSystemHealthCommand extends BaseCommand
     private function checkOrphanReconciliation(): int
     {
         $accounts = Account::query()
+            ->onActiveApiSystem()
             ->where('is_active', true)
             ->whereIn('api_system_id', function ($q): void {
                 $q->select('id')

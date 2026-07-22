@@ -22,12 +22,12 @@ return [
     'clone' => [
         'timeout_seconds' => (int) env('KRAITE_CLONE_TIMEOUT_SECONDS', 1800),
         'local_dump_directory' => env('KRAITE_CLONE_LOCAL_DUMP_DIRECTORY', storage_path('app/private/kraite-clone')),
-        'remote_dump_directory' => env('KRAITE_CLONE_REMOTE_DUMP_DIRECTORY', '/home/athena/ingestion.kraite.com/storage/app/private/kraite-clone'),
+        'remote_dump_directory' => env('KRAITE_CLONE_REMOTE_DUMP_DIRECTORY', '/home/kraite/ingestion.kraite.com/storage/app/private/kraite-clone'),
         'production' => [
-            'host' => env('KRAITE_CLONE_PRODUCTION_HOST', '37.27.243.164'),
-            'ssh_user' => env('KRAITE_CLONE_PRODUCTION_SSH_USER', 'root'),
-            'app_user' => env('KRAITE_CLONE_PRODUCTION_APP_USER', 'athena'),
-            'project_path' => env('KRAITE_CLONE_PRODUCTION_PROJECT_PATH', '/home/athena/ingestion.kraite.com'),
+            'host' => env('KRAITE_CLONE_PRODUCTION_HOST', '135.181.93.226'),
+            'ssh_user' => env('KRAITE_CLONE_PRODUCTION_SSH_USER', 'kraite'),
+            'app_user' => env('KRAITE_CLONE_PRODUCTION_APP_USER', 'kraite'),
+            'project_path' => env('KRAITE_CLONE_PRODUCTION_PROJECT_PATH', '/home/kraite/ingestion.kraite.com'),
             'identity_file' => env('KRAITE_CLONE_PRODUCTION_IDENTITY_FILE', mb_rtrim((string) env('HOME', ''), '/').'/.ssh/id_ed25519_kraite'),
         ],
     ],
@@ -187,28 +187,18 @@ return [
     | Fleet — canonical hostname → IP map (matches servers table)
     |--------------------------------------------------------------------------
     |
-    | Single source of truth for the production fleet roster. Sibling to
+    | Single source of truth for the production server roster. Sibling to
     | `kraite.horizon.workers` (which only describes Horizon supervisor
     | topology). Read by `KraiteSeeder::seedServers()` to populate the
     | `servers` table on every fresh seed, and indirectly by the deploy-time
     | drift gate `kraite:verify-fleet-topology` which checks that every
     | `kraite.horizon.workers` key has a matching `servers.hostname` row.
     |
-    | Why this lives alongside `horizon.workers` instead of inside it: the
-    | two domains describe different things. `horizon.workers` describes
-    | per-supervisor process counts. `fleet.servers` describes physical
-    | hosts (IPs, roles, apiable flag). Hyperion belongs in `fleet.servers`
-    | (it's a host) but NOT in `horizon.workers` (it runs no Horizon).
-    | Keeping them separate keeps each block small + obviously-purposed.
+    | `horizon.workers` describes process counts and subscriptions;
+    | `fleet.servers` describes the physical host. Keeping them separate
+    | lets the drift gate catch a half-updated topology.
     |
-    | Adding a worker = one edit here (new hostname row) AND one edit in
-    | `horizon.workers` (supervisor block). The drift gate at deploy step
-    | 10 catches half-edits.
-    |
-    | `is_apiable`: true for hosts that make outbound exchange API calls
-    | (the workers + the ingestion box's WS daemons). False for storage-
-    | only hosts (hyperion = MySQL + Redis). The drift gate rejects orphan
-    | apiable rows (server provisioned but no horizon.workers block).
+    | `is_apiable` is true because this host performs exchange requests.
     */
     'fleet' => [
         'servers' => [
@@ -218,65 +208,11 @@ return [
                 'type' => 'local',
                 'description' => 'Local dev box (Bruno\'s Mac)',
             ],
-            'hyperion' => [
+            'kraite' => [
                 'ip_address' => '135.181.93.226',
-                'is_apiable' => false,
-                'type' => 'database',
-                'description' => 'Database (MySQL) + Redis',
-            ],
-            'athena' => [
-                'ip_address' => '37.27.243.164',
                 'is_apiable' => true,
-                'type' => 'ingestion',
-                'description' => 'Ingestion (scheduler + dispatch-daemon + WS daemons + user-data Horizon). Web stack moved to pheme 2026-06-01.',
-            ],
-            'pheme' => [
-                'ip_address' => '62.238.38.113',
-                'is_apiable' => false,
-                'type' => 'web',
-                'description' => 'Web (admin + console + kraite.com + syntax) — nginx + php8.5-fpm. No exchange API calls; no step-router consumer.',
-            ],
-            'eos' => [
-                'ip_address' => '204.168.137.153',
-                'is_apiable' => true,
-                'type' => 'worker',
-                'description' => 'Worker — positions / orders / priority',
-            ],
-            'iris' => [
-                'ip_address' => '204.168.138.83',
-                'is_apiable' => true,
-                'type' => 'worker',
-                'description' => 'Worker — positions / orders / priority',
-            ],
-            'nyx' => [
-                'ip_address' => '204.168.129.189',
-                'is_apiable' => true,
-                'type' => 'worker',
-                'description' => 'Worker — positions / orders / priority',
-            ],
-            'hemera' => [
-                'ip_address' => '77.42.68.254',
-                'is_apiable' => true,
-                'type' => 'worker',
-                'description' => 'Worker — positions / orders / priority',
-            ],
-            'tyche' => [
-                'ip_address' => '204.168.135.246',
-                'is_apiable' => true,
-                'type' => 'worker',
-                'description' => 'Worker — indicators + cronjobs (isolated from trading queues)',
-            ],
-            'palaemon' => [
-                'ip_address' => '37.27.192.42',
-                'is_apiable' => true,
-                'type' => 'worker',
-                'description' => 'Worker — positions / orders / priority. Joined 2026-06-12.',
-            ],
-            'aristaeus' => [
-                'ip_address' => '37.27.196.99',
-                'is_apiable' => true,
-                'type' => 'worker',
-                'description' => 'Worker — positions / orders / priority. Joined 2026-06-12.',
+                'type' => 'all-in-one',
+                'description' => 'Single-user production host: database, Redis, ingestion, queues, daemons, and web.',
             ],
         ],
     ],
@@ -1084,17 +1020,13 @@ return [
     | started under that env consumes exactly the queues declared here.
     |
     | Why this lives in the package and not just in the ingestion project
-    | config: web apps (admin, console, kraite.com) load the package config
-    | by default (no project-level `config/kraite.php`). If the workers
-    | block were only in ingestion, admin's Horizon transformer would see
-    | nothing for `HORIZON_ENV=pheme` and the supervisor would boot with
-    | an empty queue list. Single source of truth here keeps every app
-    | aware of the full fleet topology.
+    | config: every Kraite application loads the same queue names. Production
+    | runs one Horizon instance from ingestion; web jobs share its `web` lane.
     |
     | The ingestion project's own `config/kraite.php` mirrors this block —
     | small duplication kept on purpose so ingestion never depends on the
-    | package config landing first. The `kraite:verify-fleet-topology` drift
-    | gate at deploy step 10 asserts the two stay aligned.
+    | package config landing first. The deploy drift gate asserts the two
+    | copies stay aligned.
     */
     'horizon' => [
         'defaults' => [
@@ -1106,62 +1038,26 @@ return [
             'memory' => 256,
         ],
         'workers' => [
-            'local' => [
+            ...(env('APP_ENV', 'production') === 'local' ? [
+                'local' => [
+                    'positions' => ['processes' => 2],
+                    'orders' => ['processes' => 5],
+                    'priority' => ['processes' => 2],
+                    'cronjobs' => ['processes' => 2],
+                    'indicators' => ['processes' => 5],
+                    'user-data-stream' => ['processes' => 1],
+                    'local' => ['processes' => 1],
+                ],
+            ] : []),
+            'kraite' => [
                 'positions' => ['processes' => 2],
-                'orders' => ['processes' => 5],
-                'priority' => ['processes' => 2],
+                'orders' => ['processes' => 3],
+                'priority' => ['processes' => 1],
                 'cronjobs' => ['processes' => 2],
-                'indicators' => ['processes' => 5],
+                'indicators' => ['processes' => 3],
                 'user-data-stream' => ['processes' => 1],
-                'local' => ['processes' => 1],
-            ],
-            // Ingestion box (scheduler + dispatch-daemon + Binance WS
-            // daemons). Also a second indicators consumer: athena's public
-            // IP joins tyche's as a candidate for the kline/indicator lane
-            // so StepRouter spreads the per-IP Bybit burst across two IPs
-            // (cuts retCode 10006) and can rotate off a rate-limited tyche
-            // IP. Sized at 10 vs tyche's 20 to protect the scheduler.
-            'athena' => [
-                'user-data-stream' => ['processes' => 5],
-                'indicators' => ['processes' => 10],
-                'athena' => ['processes' => 1],
-            ],
-            'pheme' => [
-                // Logical `web` composes to physical `pheme-web` via the
-                // {hostname}-{logical} convention — naming it `pheme-web`
-                // here would double-prefix to `pheme-pheme-web`.
-                'web' => ['processes' => 2],
-                'pheme' => ['processes' => 1],
-            ],
-            'eos' => [
-                'positions' => ['processes' => 5],
-                'orders' => ['processes' => 8],
-                'priority' => ['processes' => 3],
-                'eos' => ['processes' => 1],
-            ],
-            'iris' => [
-                'positions' => ['processes' => 5],
-                'orders' => ['processes' => 8],
-                'priority' => ['processes' => 3],
-                'iris' => ['processes' => 1],
-            ],
-            'nyx' => [
-                'positions' => ['processes' => 5],
-                'orders' => ['processes' => 8],
-                'priority' => ['processes' => 3],
-                'nyx' => ['processes' => 1],
-            ],
-            'hemera' => [
-                'positions' => ['processes' => 5],
-                'orders' => ['processes' => 8],
-                'priority' => ['processes' => 3],
-                'hemera' => ['processes' => 1],
-            ],
-            'tyche' => [
-                'indicators' => ['processes' => 20],
-                'cronjobs' => ['processes' => 20],
-                'priority' => ['processes' => 5],
-                'tyche' => ['processes' => 5],
+                'web' => ['processes' => 1],
+                'kraite' => ['processes' => 1],
             ],
         ],
     ],

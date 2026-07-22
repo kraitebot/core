@@ -33,6 +33,7 @@ final class TouchTaapiDataForExchangeSymbolsJob extends BaseQueueableJob
         // 1. Don't have api_statuses->taapi_verified set to true yet
         // 2. Belong to Binance (TAAPI only supports Binance data)
         $symbolsToVerify = ExchangeSymbol::query()
+            ->onActiveApiSystem()
             ->where(static function ($query) {
                 $query->whereNull('api_statuses->taapi_verified')
                     ->orWhere('api_statuses->taapi_verified', false);
@@ -45,7 +46,9 @@ final class TouchTaapiDataForExchangeSymbolsJob extends BaseQueueableJob
         if ($symbolsToVerify->isEmpty()) {
             // No children to create — DON'T elect to parent mode. Step
             // completes as orphan, no zombie. (See ~/steps-dispatcher/issue.md.)
-            $alreadyVerifiedCount = ExchangeSymbol::where('api_statuses->taapi_verified', true)->count();
+            $alreadyVerifiedCount = ExchangeSymbol::onActiveApiSystem()
+                ->where('api_statuses->taapi_verified', true)
+                ->count();
 
             return [
                 'symbols_to_verify' => 0,

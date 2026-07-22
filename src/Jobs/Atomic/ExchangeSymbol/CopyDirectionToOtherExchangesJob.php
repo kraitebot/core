@@ -27,7 +27,7 @@ final class CopyDirectionToOtherExchangesJob extends BaseQueueableJob
         }
 
         // 2. Get Binance API system ID
-        $binanceSystem = ApiSystem::where('canonical', 'binance')->first();
+        $binanceSystem = ApiSystem::active()->where('canonical', 'binance')->first();
         if (! $binanceSystem || $sourceSymbol->api_system_id !== $binanceSystem->id) {
             return ['skipped' => 'Source symbol is not from Binance'];
         }
@@ -38,8 +38,8 @@ final class CopyDirectionToOtherExchangesJob extends BaseQueueableJob
         }
 
         // 4. Find all other exchanges
-        $otherExchanges = ApiSystem::where('canonical', '!=', 'binance')
-            ->where('is_exchange', true)
+        $otherExchanges = ApiSystem::activeExchange()
+            ->where('canonical', '!=', 'binance')
             ->get();
 
         $copiedCount = 0;

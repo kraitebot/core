@@ -196,8 +196,8 @@ final class TouchTaapiDataForExchangeSymbolJob extends BaseApiableJob
      */
     private function propagateToOverlappingSymbols(bool $hasData): void
     {
-        $otherExchanges = ApiSystem::where('canonical', '!=', 'binance')
-            ->where('is_exchange', true)
+        $otherExchanges = ApiSystem::activeExchange()
+            ->where('canonical', '!=', 'binance')
             ->get();
 
         foreach ($otherExchanges as $exchange) {

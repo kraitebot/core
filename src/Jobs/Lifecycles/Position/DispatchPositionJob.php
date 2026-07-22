@@ -43,7 +43,8 @@ class DispatchPositionJob extends BaseQueueableJob
     {
         return filled($this->position->direction)
             && filled($this->position->exchange_symbol_id)
-            && $this->position->status === 'new';
+            && $this->position->status === 'new'
+            && $this->position->account->isOnActiveApiSystem();
     }
 
     public function compute()
@@ -52,7 +53,7 @@ class DispatchPositionJob extends BaseQueueableJob
         // This should never be called directly since all exchanges have their own implementation
         throw new \RuntimeException(
             'DispatchPositionJob must be overridden by exchange-specific implementation. '
-            . 'Exchange: ' . $this->position->account->apiSystem->canonical
+            .'Exchange: '.$this->position->account->apiSystem->canonical
         );
     }
 }
