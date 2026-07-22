@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.79.1 - 2026-07-23
+
+### Immediate trading stop
+
+- [FIXED] Market entry repeats full account trading readiness immediately
+  before creating new exchange exposure.
+- [SAFETY] An entry already accepted by the exchange keeps reconciling after
+  trading is disabled, so existing exposure is never abandoned.
+
 ## 1.79.0 - 2026-07-22
 
 ### Exchange processing control

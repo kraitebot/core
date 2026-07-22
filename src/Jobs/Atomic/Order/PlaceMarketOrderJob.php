@@ -30,7 +30,7 @@ use Throwable;
  * 4. doubleCheck() verifies order was filled
  * 5. complete() updates position with opening data
  */
-class PlaceMarketOrderJob extends BaseApiableJob
+final class PlaceMarketOrderJob extends BaseApiableJob
 {
     public Position $position;
 
@@ -54,32 +54,20 @@ class PlaceMarketOrderJob extends BaseApiableJob
     }
 
     /**
-     * Hard pre-fill cooldown gate.
-     *
-     * `apiSystem->inCooldown()` is set by ApiRequestLogObserver::triggerExchangeCooldownIfNeeded
-     * when 503/504 instability is detected. The throttler's
-     * `isSafeToMakeRequest` reads cache-based signals (IP ban / rate-limit
-     * proximity) but does NOT consult the DB-side cooldown column — so a
-     * market order dispatched moments before instability was detected would
-     * otherwise fire mid-cooldown and create exposure during a degraded
-     * exchange. Routing through `shouldStartOrThrottle` reuses the existing
-     * rescheduleWithoutRetry path (no retry-budget burn while waiting for
-     * cooldown to lift).
-     *
-     * Limit ladder, SL, TP and reconciliation steps deliberately do NOT
-     * carry this gate — they protect existing exposure and must run even
-     * during exchange cooldown.
+     * Refuse a new exchange entry when trading readiness changed after the
+     * opening workflow was queued. An entry already accepted by the exchange
+     * must keep reconciling so existing exposure is never abandoned.
      */
-    protected function shouldStartOrThrottle(): bool
+    public function startOrStop(): bool
     {
-        if ($this->position->account->apiSystem->inCooldown()) {
-            $this->jobBackoffSeconds = 60;
-            $this->jobBackoffMs = 0;
-
-            return false;
+        if ($this->position->account->fresh()?->isReadyToTrade() === true) {
+            return true;
         }
 
-        return parent::shouldStartOrThrottle();
+        return $this->position->orders()
+            ->where('type', 'MARKET')
+            ->whereNotNull('exchange_order_id')
+            ->exists();
     }
 
     /**
@@ -242,5 +230,34 @@ class PlaceMarketOrderJob extends BaseApiableJob
         $this->position->updateSaving([
             'error_message' => $e->getMessage(),
         ]);
+    }
+
+    /**
+     * Hard pre-fill cooldown gate.
+     *
+     * `apiSystem->inCooldown()` is set by ApiRequestLogObserver::triggerExchangeCooldownIfNeeded
+     * when 503/504 instability is detected. The throttler's
+     * `isSafeToMakeRequest` reads cache-based signals (IP ban / rate-limit
+     * proximity) but does NOT consult the DB-side cooldown column — so a
+     * market order dispatched moments before instability was detected would
+     * otherwise fire mid-cooldown and create exposure during a degraded
+     * exchange. Routing through `shouldStartOrThrottle` reuses the existing
+     * rescheduleWithoutRetry path (no retry-budget burn while waiting for
+     * cooldown to lift).
+     *
+     * Limit ladder, SL, TP and reconciliation steps deliberately do NOT
+     * carry this gate — they protect existing exposure and must run even
+     * during exchange cooldown.
+     */
+    protected function shouldStartOrThrottle(): bool
+    {
+        if ($this->position->account->apiSystem->inCooldown()) {
+            $this->jobBackoffSeconds = 60;
+            $this->jobBackoffMs = 0;
+
+            return false;
+        }
+
+        return parent::shouldStartOrThrottle();
     }
 }
