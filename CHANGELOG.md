@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.80.4 - 2026-07-23
+
+### Partial-fill correction race
+
+- [FIXED] Working Binance stream orders retain their stated price, so a
+  partial fill's average execution price cannot masquerade as an external
+  amendment.
+- [FIXED] Binance and Bitget polling retain stated price and original
+  quantity while an order remains working.
+- [FIXED] Correction work that becomes obsolete before pickup now records
+  `Skipped`; malformed ownership or missing reference intent still fails.
+
+### Verification
+
+- [VERIFIED] Regression and dependent workflow coverage passes: 142 tests /
+  376 assertions.
+- [SKIPPED] The complete suite was intentionally omitted by the light-release
+  policy after targeted coverage passed.
+
 ## 1.80.3 - 2026-07-23
 
 ### Verified position closure

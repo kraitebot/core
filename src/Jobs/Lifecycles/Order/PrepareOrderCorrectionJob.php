@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Jobs\Lifecycles\Order;
 
 use Kraite\Core\Abstracts\BaseQueueableJob;
+use Kraite\Core\Enums\OrderStatus;
 use Kraite\Core\Jobs\Atomic\Order\CancelSingleAlgoOrderJob;
 use Kraite\Core\Jobs\Atomic\Order\CorrectModifiedOrderJob;
 use Kraite\Core\Jobs\Atomic\Order\RecreateCancelledOrderJob;
@@ -61,31 +62,30 @@ final class PrepareOrderCorrectionJob extends BaseQueueableJob
     }
 
     /**
-     * Guard: Only run if position is active and order needs correction.
+     * Structural invariants that indicate a malformed correction request.
      */
     public function startOrFail(): bool
     {
-        // Position must be in an active status
-        if (! in_array($this->position->status, $this->position->activeStatuses(), true)) {
-            return false;
-        }
-
-        // Order must belong to this position
         if ($this->order->position_id !== $this->position->id) {
             return false;
         }
 
-        // Order must be active (NEW or PARTIALLY_FILLED)
-        if (! in_array($this->order->status, ['NEW', 'PARTIALLY_FILLED'], true)) {
+        return $this->order->reference_price !== null || $this->order->reference_quantity !== null;
+    }
+
+    /**
+     * Observer-race guards: obsolete correction work is not a failure.
+     */
+    public function startOrSkip(): bool
+    {
+        if (! in_array($this->position->status, $this->position->activeStatuses(), true)) {
             return false;
         }
 
-        // Must have reference values to restore
-        if ($this->order->reference_price === null && $this->order->reference_quantity === null) {
+        if (! in_array($this->order->status, OrderStatus::workingValues(), true)) {
             return false;
         }
 
-        // Must actually be modified
         return $this->orderIsModified();
     }
 

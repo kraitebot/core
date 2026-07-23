@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Support\ApiDataMappers\Bitget\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
+use Kraite\Core\Enums\OrderStatus;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Support\ApiDataMappers\Bitget\BitgetProductContext;
 use Kraite\Core\Support\Math;
@@ -67,14 +68,17 @@ trait MapsOrderQuery
 
         // Normalize state to uppercase status (like Binance).
         $status = $this->normalizeOrderState($result['state'] ?? '');
+        $isWorking = in_array($status, OrderStatus::workingValues(), true);
 
-        // Smart price selection: priceAvg if filled, else price.
         $priceAvg = $result['priceAvg'] ?? '0';
-        $price = Math::gt($priceAvg, 0) ? $priceAvg : ($result['price'] ?? '0');
+        $price = $isWorking
+            ? ($result['price'] ?? '0')
+            : (Math::gt($priceAvg, 0) ? $priceAvg : ($result['price'] ?? '0'));
 
-        // Smart quantity selection: filledQty if > 0, else size.
         $filledQty = $result['filledQty'] ?? '0';
-        $quantity = Math::gt($filledQty, 0) ? $filledQty : ($result['size'] ?? '0');
+        $quantity = $isWorking
+            ? ($result['size'] ?? '0')
+            : (Math::gt($filledQty, 0) ? $filledQty : ($result['size'] ?? '0'));
 
         return [
             'order_id' => $result['orderId'] ?? '',

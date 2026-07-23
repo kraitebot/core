@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Jobs\Lifecycles\Order\Bitget;
 
 use Kraite\Core\Abstracts\BaseQueueableJob;
+use Kraite\Core\Enums\OrderStatus;
 use Kraite\Core\Jobs\Atomic\Order\Bitget\ModifyAlgoOrderJob;
 use Kraite\Core\Jobs\Atomic\Order\CorrectModifiedOrderJob;
 use Kraite\Core\Jobs\Atomic\Order\SyncPositionOrdersJob;
@@ -56,19 +57,20 @@ final class PrepareOrderCorrectionJob extends BaseQueueableJob
 
     public function startOrFail(): bool
     {
-        if (! in_array($this->position->status, $this->position->activeStatuses(), true)) {
-            return false;
-        }
-
         if ($this->order->position_id !== $this->position->id) {
             return false;
         }
 
-        if (! in_array($this->order->status, ['NEW', 'PARTIALLY_FILLED'], true)) {
+        return $this->order->reference_price !== null || $this->order->reference_quantity !== null;
+    }
+
+    public function startOrSkip(): bool
+    {
+        if (! in_array($this->position->status, $this->position->activeStatuses(), true)) {
             return false;
         }
 
-        if ($this->order->reference_price === null && $this->order->reference_quantity === null) {
+        if (! in_array($this->order->status, OrderStatus::workingValues(), true)) {
             return false;
         }
 

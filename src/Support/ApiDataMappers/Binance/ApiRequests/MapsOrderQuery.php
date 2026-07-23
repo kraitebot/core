@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Support\ApiDataMappers\Binance\ApiRequests;
 
 use GuzzleHttp\Psr7\Response;
+use Kraite\Core\Enums\OrderStatus;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
@@ -26,12 +27,17 @@ trait MapsOrderQuery
         $result = json_decode((string) $response->getBody(), associative: true);
 
         $raw = $result;
+        $status = $result['status'] === 'CANCELED'
+            ? OrderStatus::Cancelled->value
+            : $result['status'];
+        $isWorking = in_array($status, OrderStatus::workingValues(), true);
 
         // Special cases.
         if ($result['type'] === 'STOP_MARKET') {
             $price = $result['stopPrice'];
-            // For STOP_MARKET: use executedQty if triggered/filled, otherwise origQty
-            $quantity = Math::gt($result['executedQty'], '0') ? $result['executedQty'] : $result['origQty'];
+            $quantity = $isWorking
+                ? $result['origQty']
+                : (Math::gt($result['executedQty'], '0') ? $result['executedQty'] : $result['origQty']);
         } else {
             // Binance omits `avgPrice` on payloads for never-filled orders —
             // already fataled production twice on the cancel and modify
@@ -39,12 +45,12 @@ trait MapsOrderQuery
             // here so a query response without the key degrades to `price`
             // instead of crashing the sync worker mid-reconciliation.
             $avgPrice = $result['avgPrice'] ?? '0';
-            $price = Math::gt($avgPrice, '0') ? $avgPrice : $result['price'];
-            $quantity = Math::gt($result['executedQty'], '0') ? $result['executedQty'] : $result['origQty'];
-        }
-
-        if ($result['status'] === 'CANCELED') {
-            $result['status'] = 'CANCELLED';
+            $price = $isWorking
+                ? $result['price']
+                : (Math::gt($avgPrice, '0') ? $avgPrice : $result['price']);
+            $quantity = $isWorking
+                ? $result['origQty']
+                : (Math::gt($result['executedQty'], '0') ? $result['executedQty'] : $result['origQty']);
         }
 
         return [
@@ -55,7 +61,7 @@ trait MapsOrderQuery
             'symbol' => $this->identifyBaseAndQuote($result['symbol']),
 
             // NEW, FILLED, CANCELED, PARTIALLY_FILLED
-            'status' => $result['status'],
+            'status' => $status,
 
             'price' => $price,
             '_price' => $this->computeOrderQueryPrice($result),

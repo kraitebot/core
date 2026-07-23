@@ -8,6 +8,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Kraite\Core\Abstracts\BaseQueueableJob;
+use Kraite\Core\Enums\OrderStatus;
 use Kraite\Core\Jobs\Lifecycles\Position\PreparePositionReplacementJob;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ApiDataStream;
@@ -305,13 +306,9 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
      *   2. client_order_id (fallback — useful for orders placed but
      *      whose placement response has not been processed yet).
      *
-     * Price selection mirrors apiSyncDefault: prefer averagePrice when
-     * fills have occurred (avgPrice > 0); otherwise the order's stated
-     * price. Quantity follows the same rule with filledQuantity vs
-     * originalQuantity. Math::gt is used because decimal strings like
-     * "0.00000000" are non-null but logically zero — a naive ?? would
-     * pick the wrong value on a fresh AMENDMENT (avgPrice="0" preserves
-     * truthiness in PHP but we want the real price).
+     * Working orders keep their stated price so a normal partial fill's
+     * average execution price cannot masquerade as an external amendment.
+     * Terminal events may switch to averagePrice for final execution truth.
      */
     private function applyToOrderModel(UserDataStreamEvent $event): bool
     {
@@ -321,9 +318,12 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
             return false;
         }
 
-        $price = $event->averagePrice !== null && Math::gt($event->averagePrice, '0')
-            ? $event->averagePrice
-            : $event->price;
+        $isWorking = in_array($event->normalizedStatus, OrderStatus::workingValues(), true);
+        $price = $isWorking
+            ? $event->price
+            : ($event->averagePrice !== null && Math::gt($event->averagePrice, '0')
+                ? $event->averagePrice
+                : $event->price);
 
         // `orders.quantity` holds the ORIGINAL placed quantity. WS
         // events carry `filledQuantity` (cumulative-executed) — which
