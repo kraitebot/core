@@ -49,18 +49,24 @@ final class EnsureBacktestCandleCoverageStep extends BaseQueueableJob
         $this->retries = 3;
     }
 
-    public function relatable()
+    public function relatable(): ExchangeSymbol
     {
         return $this->exchangeSymbol;
     }
 
-    public function compute()
+    /**
+     * @return array{spawned: false, ready: true, reason: null, coverage: array<string, mixed>, verified_at: string}|array{spawned: true, child_block_uuid: string|null, pre_fetch_coverage: array<string, mixed>}
+     */
+    public function compute(): array
     {
         $coverage = (new CandleCoverageVerifier)->verify($this->exchangeSymbol, $this->timeframe);
-        $gate = CoverageGate::evaluate($coverage, $this->timeframe);
+        $gate = CoverageGate::evaluate(
+            $coverage,
+            $this->timeframe,
+            $this->maxMonths,
+            $this->gapLookbackTs,
+        );
 
-        // Already good — no fetch needed. Complete inline; the verdict lives on
-        // this step's own response (no children, no zombie).
         if ($gate['ready']) {
             return [
                 'spawned' => false,
@@ -101,7 +107,10 @@ final class EnsureBacktestCandleCoverageStep extends BaseQueueableJob
             Step::create([
                 'class' => VerifyCoverageResultStep::class,
                 'queue' => 'indicators',
-                'arguments' => $args,
+                'arguments' => $args + [
+                    'maxMonths' => $this->maxMonths,
+                    'requestedSinceTimestamp' => $this->gapLookbackTs,
+                ],
                 'block_uuid' => $childBlockUuid,
                 'index' => 4,
             ]);

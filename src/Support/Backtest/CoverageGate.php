@@ -28,8 +28,12 @@ final class CoverageGate
      * @param  array<string, mixed>  $coverage  Output of CandleCoverageVerifier::verify()
      * @return array{ready: bool, fresh: bool, complete: bool, has_data: bool, reason: string|null}
      */
-    public static function evaluate(array $coverage, string $timeframe): array
-    {
+    public static function evaluate(
+        array $coverage,
+        string $timeframe,
+        ?int $maxMonths = null,
+        ?int $requestedSinceTimestamp = null,
+    ): array {
         $backtestTimeframe = BacktestTimeframe::tryFrom($timeframe);
 
         if ($backtestTimeframe === null) {
@@ -44,21 +48,34 @@ final class CoverageGate
 
         $intervalSec = $backtestTimeframe->seconds();
 
-        $present = (int) ($coverage['total_present'] ?? 0);
-        $latest = $coverage['latest'] ?? null;
-        $holes = (int) ($coverage['holes_count'] ?? 0);
-        $contiguity = (float) ($coverage['contiguity_percent'] ?? 0.0);
+        $presentValue = $coverage['total_present'] ?? 0;
+        $latestValue = $coverage['latest'] ?? null;
+        $holesValue = $coverage['holes_count'] ?? 0;
+        $contiguityValue = $coverage['contiguity_percent'] ?? 0.0;
+
+        $present = is_numeric($presentValue) ? (int) $presentValue : 0;
+        $latest = is_string($latestValue) && $latestValue !== '' ? $latestValue : null;
+        $holes = is_numeric($holesValue) ? (int) $holesValue : 0;
+        $contiguity = is_numeric($contiguityValue) ? (float) $contiguityValue : 0.0;
 
         // The candle that closed one interval ago. The currently-forming candle
         // is excluded — we never require it.
         $lastClosedTs = intdiv(time(), $intervalSec) * $intervalSec - $intervalSec;
-        $latestTs = $latest !== null ? Carbon::parse((string) $latest, 'UTC')->getTimestamp() : 0;
+        $latestTs = $latest !== null ? Carbon::parse($latest, 'UTC')->getTimestamp() : 0;
 
         $hasData = $present >= 1;
         $fresh = $latestTs >= $lastClosedTs;
-        // 99% (not 100%) tolerates a token listed mid-window whose full history
-        // cannot exist — that is not a data-quality fault.
-        $complete = $holes === 0 && $contiguity >= 99.0;
+        $historyCovered = $maxMonths === null || BacktestHistoryWindow::covers(
+            $coverage,
+            $timeframe,
+            $maxMonths,
+            $requestedSinceTimestamp,
+        );
+        // 99% (not 100%) keeps the continuity check tolerant of small edge
+        // effects. Callers that request a concrete history window still require
+        // the earliest candle to reach that boundary.
+        $contiguous = $holes === 0 && $contiguity >= 99.0;
+        $complete = $contiguous && $historyCovered;
         $ready = $hasData && $fresh && $complete;
 
         $reasons = [];
@@ -72,8 +89,22 @@ final class CoverageGate
                 Carbon::createFromTimestamp($lastClosedTs, 'UTC')->format('Y-m-d H:i'),
             );
         }
-        if (! $complete) {
+        if (! $contiguous) {
             $reasons[] = sprintf('%d gap%s · %.1f%% contiguity', $holes, $holes === 1 ? '' : 's', $contiguity);
+        }
+        if ($maxMonths !== null && ! $historyCovered) {
+            $requiredSince = BacktestHistoryWindow::requiredSinceTimestamp(
+                $timeframe,
+                $maxMonths,
+                $requestedSinceTimestamp,
+            );
+            $reasons[] = sprintf(
+                'thin history — earliest %s, need ≤ %s UTC',
+                is_string($coverage['earliest'] ?? null) ? $coverage['earliest'] : 'none',
+                $requiredSince !== null
+                    ? Carbon::createFromTimestamp($requiredSince, 'UTC')->format('Y-m-d H:i')
+                    : 'requested boundary',
+            );
         }
 
         return [

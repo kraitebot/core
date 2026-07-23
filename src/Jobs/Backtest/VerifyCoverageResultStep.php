@@ -25,22 +25,40 @@ final class VerifyCoverageResultStep extends BaseQueueableJob
 
     public string $timeframe;
 
-    public function __construct(int $exchangeSymbolId, string $timeframe)
-    {
+    public int $maxMonths;
+
+    public ?int $requestedSinceTimestamp;
+
+    public function __construct(
+        int $exchangeSymbolId,
+        string $timeframe,
+        int $maxMonths = 24,
+        ?int $requestedSinceTimestamp = null,
+    ) {
         $this->exchangeSymbol = ExchangeSymbol::with('apiSystem')->findOrFail($exchangeSymbolId);
         $this->timeframe = $timeframe;
+        $this->maxMonths = $maxMonths;
+        $this->requestedSinceTimestamp = $requestedSinceTimestamp;
         $this->retries = 2;
     }
 
-    public function relatable()
+    public function relatable(): ExchangeSymbol
     {
         return $this->exchangeSymbol;
     }
 
-    public function compute()
+    /**
+     * @return array{ready: bool, reason: string|null, coverage: array<string, mixed>, verified_at: string}
+     */
+    public function compute(): array
     {
         $coverage = (new CandleCoverageVerifier)->verify($this->exchangeSymbol, $this->timeframe);
-        $gate = CoverageGate::evaluate($coverage, $this->timeframe);
+        $gate = CoverageGate::evaluate(
+            $coverage,
+            $this->timeframe,
+            $this->maxMonths,
+            $this->requestedSinceTimestamp,
+        );
 
         return [
             'ready' => $gate['ready'],

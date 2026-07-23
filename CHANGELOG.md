@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.80.1 - 2026-07-23
+
+### Backtest history depth
+
+- [FIXED] Fresh, contiguous candles count as complete only when they also
+  reach the history boundary requested by the operator.
+- [FIXED] The pre-fetch and post-fetch coverage verdicts now use the same
+  requested-window rule, so thin history remains visibly advisory.
+
+### Verification
+
+- [VERIFIED] Focused coverage passes: 15 tests / 58 assertions; changed core
+  files pass static analysis and formatting.
+
 ## 1.80.0 - 2026-07-23
 
 ### Unified business rules
