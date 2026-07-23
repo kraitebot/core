@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.80.2 - 2026-07-23
+
+### Position-slot diagnostics
+
+- [FIXED] Token assignment reports the actual number of temporary position
+  slots removed after policy rejection instead of reporting zero afterward.
+- [UNCHANGED] Rejected slots are still removed inside token selection; token
+  eligibility and position-opening behavior are unchanged.
+
+### Verification
+
+- [VERIFIED] The full ingestion suite passes: 3,091 tests / 9,874 assertions;
+  static analysis, formatting, and PHP syntax checks pass.
+
 ## 1.80.1 - 2026-07-23
 
 ### Backtest history depth

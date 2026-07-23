@@ -65,6 +65,8 @@ final class AccountTokenSelection
      */
     private string $tokens = '';
 
+    private int $deletedCount = 0;
+
     /*
      * Current position being processed.
      */
@@ -143,6 +145,11 @@ final class AccountTokenSelection
         return $deletedCount;
     }
 
+    public function deletedCount(): int
+    {
+        return $this->deletedCount;
+    }
+
     /**
      * Expand a collection of tokens to include all equivalent tokens via TokenMapper.
      *
@@ -168,6 +175,7 @@ final class AccountTokenSelection
     {
         // Reset tokens string for each call
         $this->tokens = '';
+        $this->deletedCount = 0;
 
         $this->availableExchangeSymbols = $this->candidatePoolBuilder->build($this->account);
 
@@ -219,7 +227,7 @@ final class AccountTokenSelection
          * Delete all position slots and return (STRICT mode)
          */
         if (! $btcDirection && $btcBiasedRestriction) {
-            $this->deleteUnassignedPositionSlots();
+            $this->deletedCount = $this->deleteUnassignedPositionSlots();
 
             return '';
         }
@@ -249,7 +257,7 @@ final class AccountTokenSelection
          *
          * Clean up positions that couldn't be assigned a token.
          */
-        $this->deleteUnassignedPositionSlots();
+        $this->deletedCount = $this->deleteUnassignedPositionSlots();
 
         return $this->tokens;
     }
