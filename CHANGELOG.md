@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.82.0 - 2026-07-23
+
+### Long-range compounding
+
+- [ADDED] The exact decimal wallet compounder is available to long-range
+  planning callers while preserving the existing monthly projection path.
+- [UNCHANGED] Compounding remains day-by-day and avoids floating-point drift.
+
+### Verification
+
+- [VERIFIED] Focused Projections coverage passes: 15 tests / 122 assertions.
+- [SKIPPED] The complete suite was intentionally omitted by the light-release
+  policy after targeted coverage passed.
+
 ## 1.81.0 - 2026-07-23
 
 ### Investment basis

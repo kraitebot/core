@@ -39,7 +39,7 @@ final class ProjectionCompounder
             return null;
         }
 
-        $endWallet = self::compoundForward(
+        $endWallet = self::compoundWallet(
             currentWallet: $currentWallet,
             dailyPct: $dailyPct,
             from: CarbonImmutable::now(),
@@ -64,12 +64,12 @@ final class ProjectionCompounder
      * result matches what the admin projections calendar paints cell
      * by cell — no `pow()` rounding drift.
      */
-    private static function compoundForward(
+    public static function compoundWallet(
         string $currentWallet,
         string $dailyPct,
         CarbonImmutable $from,
         CarbonImmutable $until,
-        int $scale,
+        int $scale = 8,
     ): string {
         $wallet = $currentWallet;
 
