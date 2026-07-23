@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.81.0 - 2026-07-23
+
+### Investment basis
+
+- [ADDED] Account financials automatically assess the net personal capital
+  still funding an account from its latest wallet and exchange-reported PnL.
+- [ADDED] The assessment exposes its wallet tracking boundary and flags closed
+  positions whose exchange PnL is still incomplete.
+- [UNCHANGED] Deposits and withdrawals remain external money movements; they
+  raise or reduce the assessed personal-capital basis instead of appearing as
+  trading profit.
+
+### Verification
+
+- [VERIFIED] Focused Projections coverage passes: 10 tests / 57 assertions.
+- [SKIPPED] The complete suite was intentionally omitted by the light-release
+  policy after targeted coverage passed.
+
 ## 1.80.4 - 2026-07-23
 
 ### Partial-fill correction race

@@ -45,12 +45,102 @@ final class AccountFinancials
      */
     public function currentWallet(): ?string
     {
-        $val = DB::table('account_balance_history')
-            ->where('account_id', $this->account->id)
-            ->orderByDesc('id')
-            ->value('total_wallet_balance');
+        $latestSnapshot = $this->latestWalletSnapshot();
 
-        return $val !== null ? (string) $val : null;
+        return $latestSnapshot !== null
+            ? (string) $latestSnapshot->total_wallet_balance
+            : null;
+    }
+
+    /**
+     * Auto-assess the personal capital still funding the account.
+     *
+     * The first recorded wallet snapshot is the tracking boundary. From
+     * there, the latest wallet less exchange-reported net trading PnL is
+     * the money movement not explained by trading: deposits increase the
+     * basis, withdrawals reduce it. PnL is bounded by the latest wallet
+     * snapshot so a newly closed trade cannot outrun a stale balance.
+     *
+     * A negative result means withdrawals have already recovered all
+     * tracked personal capital, so the exposed basis is clamped to zero.
+     *
+     * @return array{
+     *     amount: ?string,
+     *     current_wallet: ?string,
+     *     known_realized_pnl: string,
+     *     tracking_started_at: ?string,
+     *     tracking_ended_at: ?string,
+     *     closed_positions: int,
+     *     missing_pnl_positions: int,
+     *     is_complete: bool,
+     * }
+     */
+    public function investmentBasis(): array
+    {
+        $firstSnapshot = DB::table('account_balance_history')
+            ->where('account_id', $this->account->id)
+            ->whereNotNull('total_wallet_balance')
+            ->whereNotNull('created_at')
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->first(['total_wallet_balance', 'created_at']);
+
+        $latestSnapshot = $this->latestWalletSnapshot();
+
+        if ($firstSnapshot === null || $latestSnapshot === null || $latestSnapshot->total_wallet_balance === null) {
+            return [
+                'amount' => null,
+                'current_wallet' => null,
+                'known_realized_pnl' => '0.00000000',
+                'tracking_started_at' => null,
+                'tracking_ended_at' => null,
+                'closed_positions' => 0,
+                'missing_pnl_positions' => 0,
+                'is_complete' => false,
+            ];
+        }
+
+        $positionStats = DB::table('positions')
+            ->where('account_id', $this->account->id)
+            ->where('status', 'closed')
+            ->whereNotNull('closed_at')
+            ->where('closed_at', '>', (string) $firstSnapshot->created_at)
+            ->where('closed_at', '<=', (string) $latestSnapshot->created_at)
+            ->selectRaw('COUNT(*) AS closed_positions')
+            ->selectRaw('SUM(CASE WHEN pnl IS NULL THEN 1 ELSE 0 END) AS missing_pnl_positions')
+            ->selectRaw('COALESCE(SUM(pnl), 0) AS known_realized_pnl')
+            ->first();
+
+        $knownRealizedPnl = bcadd('0', (string) ($positionStats?->known_realized_pnl ?? '0'), self::SCALE);
+        $amount = bcsub((string) $latestSnapshot->total_wallet_balance, $knownRealizedPnl, self::SCALE);
+
+        if (bccomp($amount, '0', self::SCALE) < 0) {
+            $amount = '0.00000000';
+        }
+
+        $missingPnlPositions = (int) ($positionStats?->missing_pnl_positions ?? 0);
+
+        return [
+            'amount' => $amount,
+            'current_wallet' => (string) $latestSnapshot->total_wallet_balance,
+            'known_realized_pnl' => $knownRealizedPnl,
+            'tracking_started_at' => (string) $firstSnapshot->created_at,
+            'tracking_ended_at' => (string) $latestSnapshot->created_at,
+            'closed_positions' => (int) ($positionStats?->closed_positions ?? 0),
+            'missing_pnl_positions' => $missingPnlPositions,
+            'is_complete' => $missingPnlPositions === 0,
+        ];
+    }
+
+    private function latestWalletSnapshot(): ?object
+    {
+        return DB::table('account_balance_history')
+            ->where('account_id', $this->account->id)
+            ->whereNotNull('total_wallet_balance')
+            ->whereNotNull('created_at')
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->first(['total_wallet_balance', 'created_at']);
     }
 
     /**
