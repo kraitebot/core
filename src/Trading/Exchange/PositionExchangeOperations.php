@@ -149,10 +149,9 @@ final class PositionExchangeOperations
      * `ProcessUserDataEventJob` from the user-data WS push, which lands
      * before the positions endpoint catches up.
      *
-     * If the exchange truly has nothing to reduce (e.g. SL filled
-     * microseconds before our close), Binance returns -2022 ReduceOnly
-     * rejected and `ClosePositionAtomicallyJob` translates that into a
-     * NonNotifiableException for operator reconcile.
+     * Binance's -2022 ReduceOnly rejection is ambiguous. The caller accepts
+     * it as an idempotent close only after two valid position reads confirm
+     * the exact side is flat.
      */
     public function apiClose(): ApiResponse
     {
@@ -173,10 +172,9 @@ final class PositionExchangeOperations
         } catch (Throwable $e) {
             // Speculative Order::create above already wrote a NEW row to
             // the local DB. apiPlace throws when the exchange rejects
-            // (e.g. -2022 / 22002 "nothing to reduce" — the position has
-            // already been flattened on the exchange). The caller maps
-            // that rejection to `already_closed=true` success — but
-            // without this cleanup the local row sits forever as a NEW
+            // (e.g. -2022 / 22002). The caller reconciles that rejection
+            // before deciding whether it is an `already_closed=true` success.
+            // Without this cleanup the local row sits forever as a NEW
             // MARKET-CANCEL with no exchange_order_id, an orphan that
             // never syncs and clutters the orders table on every
             // TP-fill close path.

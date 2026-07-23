@@ -5,14 +5,17 @@ declare(strict_types=1);
 namespace Kraite\Core\Jobs\Atomic\Position;
 
 use Carbon\Carbon;
+use Illuminate\Support\Sleep;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
+use Kraite\Core\Enums\PositionPresence;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\IndicatorHistory;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
+use Kraite\Core\Support\PositionSnapshot;
 use Throwable;
 
 /**
@@ -46,7 +49,7 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
         return $this->position;
     }
 
-    public function computeApiable()
+    public function computeApiable(): array
     {
         $position = $this->position;
         $exchangeSymbol = $position->exchangeSymbol;
@@ -114,43 +117,24 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
             }
         }
 
-        // No pre-flight exchange query before the close. The REST positions
-        // endpoint lags the WS trade ledger by 5-20s under load; a stale empty
-        // response previously skipped the close silently and left Position
-        // #577 (TONUSDT, 2026-05-06) naked on the exchange. `apiClose()` now
-        // builds the close order from local DB truth and trusts Binance's
-        // own -2022 response as the authoritative "nothing to reduce" signal:
-        // when Binance rejects a reduceOnly order with -2022 the position
-        // has already been flattened (TP/SL fill, manual close, prior cancel
-        // cascade), and we map that to the same `already_closed=true` shape
-        // the legacy snapshot pre-flight returned. Position #755 (TONUSDT)
-        // and #803 (CAKEUSDT) — TP-fill close paths — were mismarked
-        // `failed` on 2026-05-06 because the legacy handler raised
-        // NonNotifiableException on this signal; treating -2022 as success
-        // restores the natural TP-close exit path.
+        // Always attempt the close first. A pre-flight positions response can
+        // lag exchange trade truth and previously skipped a required close.
+        // Reconcile only after an exchange rejection.
         try {
             $apiResponse = $position->apiClose();
         } catch (Throwable $e) {
-            // Each exchange has its own "nothing to reduce" rejection. All
-            // four signals collapse to the same `already_closed=true` shape
-            // — the position has been flattened (TP/SL fill, manual close,
-            // prior cancel cascade), and the local close call is a harmless
-            // no-op confirmation.
-            //
-            //   Binance: -2022     "ReduceOnly Order is rejected"
-            //   Bitget:   22002    "No position to close"  (classic flash close)
-            //   Bitget:   25227    "No position available to close" (UTA)
-            //   Bybit:   110043 / 110017 (variants — not yet observed in prod)
-            //   Kucoin:  330005    (variant — not yet observed in prod)
             $message = $e->getMessage();
-            $alreadyClosed = str_contains($message, '-2022')
-                || str_contains($message, 'ReduceOnly Order is rejected')
-                || str_contains($message, '(code 22002)')
+            $binanceReduceOnlyRejected = $position->account->apiSystem->canonical === 'binance'
+                && (str_contains($message, '-2022')
+                    || str_contains($message, 'ReduceOnly Order is rejected'));
+            $exchangeExplicitlyReportsNoPosition = str_contains($message, '(code 22002)')
                 || str_contains($message, 'No position to close')
                 || str_contains($message, '(code 25227)')
                 || str_contains($message, 'No position available to close');
+            $confirmedFlat = $exchangeExplicitlyReportsNoPosition
+                || ($binanceReduceOnlyRejected && $this->confirmBinancePositionFlat($position));
 
-            if ($alreadyClosed) {
+            if ($confirmedFlat) {
                 return [
                     'position_id' => $position->id,
                     'symbol' => $position->parsed_trading_pair,
@@ -158,7 +142,9 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
                     'pump_cooldown_triggered' => $pumpCooldownTriggered,
                     'cooldown_details' => $cooldownDetails,
                     'result' => ['already_closed' => true],
-                    'message' => 'Position already closed on exchange (exchange returned "nothing to reduce")',
+                    'message' => $binanceReduceOnlyRejected
+                        ? 'Position confirmed flat after Binance rejected the close order'
+                        : 'Position already closed on exchange (exchange reported no position to close)',
                 ];
             }
 
@@ -177,6 +163,31 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
             'result' => $apiResponse->result,
             'message' => 'Position closed on exchange',
         ];
+    }
+
+    private function confirmBinancePositionFlat(Position $position): bool
+    {
+        $initialSnapshot = PositionSnapshot::fromApiResponse(
+            $position->account,
+            $position->account->apiQueryPositions(),
+        );
+
+        if (! $initialSnapshot->isValid()
+            || $initialSnapshot->presenceOf($position) !== PositionPresence::Flat) {
+            return false;
+        }
+
+        Sleep::for(
+            (int) config('kraite.position_safety.flat_confirmation_delay_seconds', 20),
+        )->seconds();
+
+        $confirmationSnapshot = PositionSnapshot::fromApiResponse(
+            $position->account,
+            $position->account->apiQueryPositions(),
+        );
+
+        return $confirmationSnapshot->isValid()
+            && $confirmationSnapshot->presenceOf($position) === PositionPresence::Flat;
     }
 
     /**

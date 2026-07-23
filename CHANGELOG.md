@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.80.3 - 2026-07-23
+
+### Verified position closure
+
+- [FIXED] Binance `-2022` close rejections become idempotent success only
+  after two valid, direction-aware flat position reads 20 seconds apart.
+- [FIXED] Live residual, missing position evidence, or malformed evidence now
+  stops the lifecycle before terminal local closure.
+- [UNCHANGED] Bitget responses that explicitly report no position remain
+  idempotent close successes.
+
+### Verification
+
+- [VERIFIED] TDD regressions pass: 18 tests / 58 assertions. The complete
+  ingestion suite also passes: 3,096 tests / 9,906 assertions.
+
 ## 1.80.2 - 2026-07-23
 
 ### Position-slot diagnostics

@@ -5,11 +5,14 @@ declare(strict_types=1);
 namespace Kraite\Core\Jobs\Atomic\Position;
 
 use Kraite\Core\Abstracts\BaseQueueableJob;
+use Kraite\Core\Enums\PositionPresence;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
+use Kraite\Core\Support\PositionSnapshot;
+use UnexpectedValueException;
 
 /**
  * VerifyPositionResidualAmountJob (Atomic)
@@ -17,8 +20,8 @@ use Kraite\Core\Support\NotificationService;
  * Checks if position still exists on exchange after close attempt.
  * Uses the account-positions snapshot from ApiSnapshot to verify.
  *
- * If residual amount is found, notifies admins with warning.
- * This indicates the close was incomplete and manual intervention may be needed.
+ * If residual amount is found, notifies admins and fails the lifecycle before
+ * it can mark the local position closed.
  */
 final class VerifyPositionResidualAmountJob extends BaseQueueableJob
 {
@@ -34,64 +37,68 @@ final class VerifyPositionResidualAmountJob extends BaseQueueableJob
         return $this->position;
     }
 
-    public function compute()
+    public function compute(): array
     {
         $position = $this->position;
         $tradingPair = mb_strtoupper(mb_trim($position->parsed_trading_pair));
-        $hasResidual = false;
-        $residualAmount = '0';
-
-        // Get account-positions snapshot from ApiSnapshot
         $openPositions = ApiSnapshot::getFrom($position->account, 'account-positions');
 
-        if (is_array($openPositions)) {
-            // Check if position still exists with quantity > 0
-            foreach ($openPositions as $key => $positionData) {
-                // Handle both keyed (by symbol) and indexed arrays
-                $symbol = $positionData['symbol'] ?? $key;
-                $symbol = mb_strtoupper(mb_trim($symbol));
-
-                if ($symbol !== $tradingPair) {
-                    continue;
-                }
-
-                // Get position amount (different exchanges use different field names)
-                $positionAmt = (string) ($positionData['positionAmt']
-                    ?? $positionData['size']
-                    ?? $positionData['qty']
-                    ?? $positionData['available']
-                    ?? '0');
-
-                // Get absolute value without float casting. One-way mode
-                // SHORTs report negative positionAmt; flip via Math::sub
-                // (Math::mul against '-1' is equivalent but sub is clearer
-                // for sign negation).
-                $absAmount = Math::lt($positionAmt, '0')
-                    ? Math::sub('0', $positionAmt)
-                    : $positionAmt;
-
-                if (Math::gt($absAmount, '0')) {
-                    $hasResidual = true;
-                    $residualAmount = $absAmount;
-                    break;
-                }
-            }
+        if (! is_array($openPositions)) {
+            throw new UnexpectedValueException(
+                "Trusted account-positions snapshot is missing for position #{$position->id}.",
+            );
         }
 
-        if ($hasResidual) {
-            // Notify admins about residual position
+        $snapshot = PositionSnapshot::fromValidatedResult($openPositions);
+        $presence = $snapshot->presenceOf($position);
+
+        if ($presence === PositionPresence::Unknown) {
+            throw new UnexpectedValueException(
+                "Trusted account-positions snapshot is malformed for position #{$position->id}.",
+            );
+        }
+
+        if ($presence === PositionPresence::Open) {
+            $matchingPosition = $snapshot->matchingPosition($position);
+
+            if (! is_array($matchingPosition)) {
+                throw new UnexpectedValueException(
+                    "Trusted account-positions snapshot is malformed for position #{$position->id}.",
+                );
+            }
+
+            $residualAmount = $this->residualAmount($matchingPosition);
             $this->notifyResidualPosition($position, $residualAmount);
+
+            throw new UnexpectedValueException(
+                "Residual amount {$residualAmount} found for {$tradingPair}.",
+            );
         }
 
         return [
             'position_id' => $position->id,
             'symbol' => $tradingPair,
-            'has_residual' => $hasResidual,
-            'residual_amount' => $residualAmount,
-            'message' => $hasResidual
-                ? "Warning: Residual amount {$residualAmount} found for {$tradingPair}"
-                : 'Position fully closed - no residual',
+            'has_residual' => false,
+            'residual_amount' => '0',
+            'message' => 'Position fully closed - no residual',
         ];
+    }
+
+    /** @param array<string, mixed> $positionData */
+    private function residualAmount(array $positionData): string
+    {
+        $amount = (string) ($positionData['positionAmt']
+            ?? $positionData['size']
+            ?? $positionData['total']
+            ?? $positionData['currentQty']
+            ?? $positionData['qty']
+            ?? $positionData['available']
+            ?? $positionData['contracts']
+            ?? '0');
+
+        return Math::lt($amount, '0')
+            ? mb_ltrim($amount, '-')
+            : $amount;
     }
 
     /**
