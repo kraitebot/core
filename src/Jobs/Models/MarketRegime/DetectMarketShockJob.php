@@ -187,7 +187,7 @@ final class DetectMarketShockJob extends BaseQueueableJob
     public function sampleLiveMarks(): void
     {
         $maxAge = (int) config('kraite.market_regime.shock.live_window.mark_max_age_seconds', 90);
-        $binance = ApiSystem::where('canonical', 'binance')->first();
+        $binance = ApiSystem::canonical('binance')->first();
 
         if ($binance === null) {
             return;
@@ -360,7 +360,7 @@ final class DetectMarketShockJob extends BaseQueueableJob
      */
     private function loadBars(string $token): ?array
     {
-        $binance = ApiSystem::where('canonical', 'binance')->first();
+        $binance = ApiSystem::canonical('binance')->first();
         if ($binance === null) {
             return null;
         }

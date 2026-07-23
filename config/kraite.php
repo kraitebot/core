@@ -280,6 +280,12 @@ return [
      */
     'bracket_headroom_pct' => '0.004',
 
+    'leverage_brackets' => [
+        // Per-symbol exchanges run this many peer steps in parallel before
+        // StepDispatcher promotes the next sequential batch.
+        'per_symbol_batch_size' => (int) env('LEVERAGE_BRACKETS_PER_SYMBOL_BATCH_SIZE', 5),
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | Performance / Feature Toggles
@@ -326,6 +332,11 @@ return [
     |               Default: 0.20.
     */
     'indicators' => [
+        // QuerySymbolIndicatorsJob exhausts retries only after this many
+        // step attempts. Kept high because TAAPI throttling and partial
+        // bulk responses can legitimately span many scheduler cycles.
+        'query_retries' => (int) env('INDICATORS_QUERY_RETRIES', 150),
+
         // Same-run provenance gate for direction conclusion. A conclusion
         // must be built from indicators all written by ONE query run; a
         // partial TAAPI bulk response (construct-level errors on a 200)
@@ -819,6 +830,8 @@ return [
             'rejection_pct' => (float) env('MARKET_REGIME_REJECTION_PCT', -5.0),
             'fut_vol' => (float) env('MARKET_REGIME_FUT_VOL', 1.20),
         ],
+        // Bootstrap fallbacks only. Once the kraite singleton exists, its
+        // persisted BSCS columns are the operator-controlled runtime values.
         'block_threshold' => (int) env('MARKET_REGIME_BLOCK_THRESHOLD', 80),
         'freshness_max_seconds' => (int) env('MARKET_REGIME_FRESHNESS_MAX_SECONDS', 6900),
         'fragile' => [

@@ -47,7 +47,7 @@ trait HasScopes
      */
     public function scopeEligibleForBinanceUserDataStream(Builder $query): Builder
     {
-        $binanceId = ApiSystem::active()->where('canonical', 'binance')->value('id');
+        $binanceId = ApiSystem::active()->canonical('binance')->value('id');
 
         if ($binanceId === null) {
             // Fresh install / mid-migration — no Binance system row yet.

@@ -440,9 +440,8 @@ final class KraiteSeeder extends Seeder
             'status' => 'active',
             'is_active' => true,
             'is_admin' => true,
-            // Wire notification routing so user-scoped pushovers
-            // (position_opened / position_closed / position_wap_applied
-            // / position_high_profit_closed) actually deliver.
+            // Wire notification routing so active user-scoped trading
+            // notifications actually deliver.
             // Without these, AlertNotification::via() returns [] and
             // every trading-event push silently drops.
             'pushover_key' => config('kraite.admin_user_pushover_key')
@@ -893,12 +892,8 @@ final class KraiteSeeder extends Seeder
                 'verified' => 1,
                 'cache_duration' => 60,
                 'cache_key' => ['position'],
-                // Muted on Bruno's call — too chatty on a 12-slot
-                // book. Matches the commented-out
-                // dispatchOpenedNotification() call in
-                // ActivatePositionJob::complete(). Re-enable both
-                // (here + the call site) when adding a
-                // digest / quiet-hours filter.
+                // Reserved for a future digest / quiet-hours feature. The
+                // immediate sender was removed because it was too chatty.
                 'is_active' => false,
             ],
             [

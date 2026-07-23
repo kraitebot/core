@@ -6,10 +6,10 @@ namespace Kraite\Core\Commands\Backtest;
 
 use Carbon\Carbon;
 use InvalidArgumentException;
+use Kraite\Core\Enums\BacktestTimeframe;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Support\Backtest\BacktestSimulator;
-use Kraite\Core\Support\Backtest\CandleCoverageVerifier;
 use Kraite\Core\Support\Math;
 use StepDispatcher\Support\BaseCommand;
 use Throwable;
@@ -124,7 +124,7 @@ final class BacktestTokenCommand extends BaseCommand
 
         $symbol = ExchangeSymbol::query()
             ->whereHas('symbol', fn ($q) => $q->where('token', mb_strtoupper($token)))
-            ->whereHas('apiSystem', fn ($q) => $q->where('canonical', $this->option('exchange')))
+            ->whereHas('apiSystem', fn ($q) => $q->canonical((string) $this->option('exchange')))
             ->where('quote', $this->option('quote'))
             ->first();
 
@@ -201,11 +201,13 @@ final class BacktestTokenCommand extends BaseCommand
         }
 
         if ($candlesBack !== null) {
-            if (! isset(CandleCoverageVerifier::INTERVAL_SECONDS[$timeframe])) {
+            $backtestTimeframe = BacktestTimeframe::tryFrom($timeframe);
+
+            if ($backtestTimeframe === null) {
                 throw new InvalidArgumentException("Unsupported timeframe: {$timeframe}.");
             }
 
-            return Carbon::now()->subSeconds($candlesBack * CandleCoverageVerifier::INTERVAL_SECONDS[$timeframe]);
+            return Carbon::now()->subSeconds($candlesBack * $backtestTimeframe->seconds());
         }
 
         return null;

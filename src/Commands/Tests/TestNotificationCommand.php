@@ -481,7 +481,7 @@ final class TestNotificationCommand extends BaseCommand
 
     private function getApiSystem(string $canonical): ?ApiSystem
     {
-        $apiSystem = ApiSystem::where('canonical', $canonical)->first();
+        $apiSystem = ApiSystem::canonical($canonical)->first();
         if (! $apiSystem) {
             $this->verboseError("❌ {$canonical} API system not found");
         }

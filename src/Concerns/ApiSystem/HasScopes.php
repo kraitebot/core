@@ -22,4 +22,14 @@ trait HasScopes
     {
         return $query->active()->exchange();
     }
+
+    public function scopeCanonical(Builder $query, string $canonical): Builder
+    {
+        return $query->where('api_systems.canonical', $canonical);
+    }
+
+    public function scopeExcludingCanonical(Builder $query, string $canonical): Builder
+    {
+        return $query->where('api_systems.canonical', '!=', $canonical);
+    }
 }

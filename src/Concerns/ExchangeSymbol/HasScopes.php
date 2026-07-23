@@ -6,8 +6,8 @@ namespace Kraite\Core\Concerns\ExchangeSymbol;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Query\Builder as QueryBuilder;
-use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Trading\ExchangeSymbolTradability;
 
 trait HasScopes
 {
@@ -27,52 +27,16 @@ trait HasScopes
      */
     public function scopeTradeable(Builder $query): Builder
     {
-        $correlationType = Kraite::correlationType();
-        $correlationColumn = 'btc_correlation_'.$correlationType;
-
-        $query->onActiveApiSystem();
-
-        // Apply tradeable conditions to the main symbol
-        $this->applyTradeableConditions($query, 'exchange_symbols', $correlationColumn);
-
-        // Ensure a tradeable Binance counterpart exists (or this IS a Binance symbol)
-        return $query->whereExists(function (QueryBuilder $subquery) use ($correlationColumn) {
-            $subquery->from('exchange_symbols as binance_es')
-                ->join('api_systems', 'api_systems.id', '=', 'binance_es.api_system_id')
-                ->where('api_systems.canonical', 'binance')
-                ->whereColumn('binance_es.token', 'exchange_symbols.token')
-                ->whereColumn('binance_es.quote', 'exchange_symbols.quote');
-
-            $this->applyTradeableConditionsToQuery($subquery, 'binance_es', $correlationColumn);
-        });
+        return (new ExchangeSymbolTradability)->apply($query);
     }
 
     /**
      * Binance symbols where approval is the only remaining operator action
-     * before the complete new-position tradability policy passes. Approval
-     * also enables the selected symbol manually.
+     * before the complete new-position tradability policy passes.
      */
     public function scopeAwaitingBacktestingApproval(Builder $query): Builder
     {
-        $correlationColumn = 'btc_correlation_'.Kraite::correlationType();
-
-        $query
-            ->onActiveApiSystem()
-            ->whereHas(
-                'apiSystem',
-                static fn (Builder $apiSystems): Builder => $apiSystems->where('api_systems.canonical', 'binance'),
-            )
-            ->where('exchange_symbols.was_backtesting_approved', false);
-
-        $this->applyTradeableConditions(
-            $query,
-            'exchange_symbols',
-            $correlationColumn,
-            requireManualEnablement: false,
-            requireBacktestingApproval: false,
-        );
-
-        return $query;
+        return (new ExchangeSymbolTradability)->applyAwaitingBacktestingApproval($query);
     }
 
     /**
@@ -101,7 +65,7 @@ trait HasScopes
             ->onActiveApiSystem()
             ->where('exchange_symbols.api_statuses->has_taapi_data', true)
             ->whereHas('apiSystem', static function ($q) {
-                $q->where('canonical', 'binance');
+                $q->canonical('binance');
             });
     }
 
@@ -133,88 +97,5 @@ trait HasScopes
                     ->whereColumn('positions.exchange_symbol_id', 'exchange_symbols.id')
                     ->whereIn('positions.status', $openedStatuses));
         });
-    }
-
-    /**
-     * Apply tradeable conditions to an Eloquent Builder.
-     */
-    private function applyTradeableConditions(
-        Builder $query,
-        string $table,
-        string $correlationColumn,
-        bool $requireManualEnablement = true,
-        bool $requireBacktestingApproval = true,
-    ): void {
-        $query->where("{$table}.api_statuses->has_taapi_data", true)
-            ->where("{$table}.has_no_indicator_data", false)
-            ->where("{$table}.is_marked_for_delisting", false)
-            ->whereNull("{$table}.system_disabled_at")
-            // Price must approximately match the Binance same-asset sibling — a
-            // unit-divergent contract (KuCoin FLOKI vs Binance 1000FLOKI) carries
-            // a replicated mark_price wrong by the contract ratio. Set by the
-            // refresh price-alignment check; Binance + unverified rows default true.
-            ->where("{$table}.is_price_aligned", true)
-            ->where("{$table}.has_price_trend_misalignment", false)
-            ->where("{$table}.has_early_direction_change", false)
-            ->where("{$table}.has_invalid_indicator_direction", false)
-            ->whereNotNull("{$table}.symbol_id")
-            ->whereNotNull("{$table}.leverage_brackets");
-
-        if ($requireManualEnablement) {
-            $query->where(static function ($q) use ($table) {
-                $q->whereNull("{$table}.is_manually_enabled")
-                    ->orWhere("{$table}.is_manually_enabled", true);
-            });
-        }
-
-        if ($requireBacktestingApproval) {
-            $query->where("{$table}.was_backtesting_approved", true);
-        }
-
-        $query
-            ->whereNotNull("{$table}.direction")
-            ->where(static function ($q) use ($table) {
-                $q->whereNull("{$table}.tradeable_at")
-                    ->orWhere("{$table}.tradeable_at", '<=', now());
-            })
-            ->whereNotNull("{$table}.indicators_timeframe")
-            ->whereRaw(
-                "JSON_EXTRACT({$table}.{$correlationColumn}, CONCAT('$.\"', {$table}.indicators_timeframe, '\"')) IS NOT NULL"
-            );
-    }
-
-    /**
-     * Apply tradeable conditions to a Query Builder (for subqueries).
-     */
-    private function applyTradeableConditionsToQuery(QueryBuilder $query, string $table, string $correlationColumn): void
-    {
-        $query->where("{$table}.api_statuses->has_taapi_data", true)
-            ->where("{$table}.has_no_indicator_data", false)
-            ->where("{$table}.is_marked_for_delisting", false)
-            ->whereNull("{$table}.system_disabled_at")
-            // Price must approximately match the Binance same-asset sibling — a
-            // unit-divergent contract (KuCoin FLOKI vs Binance 1000FLOKI) carries
-            // a replicated mark_price wrong by the contract ratio. Set by the
-            // refresh price-alignment check; Binance + unverified rows default true.
-            ->where("{$table}.is_price_aligned", true)
-            ->where("{$table}.has_price_trend_misalignment", false)
-            ->where("{$table}.has_early_direction_change", false)
-            ->where("{$table}.has_invalid_indicator_direction", false)
-            ->whereNotNull("{$table}.symbol_id")
-            ->whereNotNull("{$table}.leverage_brackets")
-            ->where(static function ($q) use ($table) {
-                $q->whereNull("{$table}.is_manually_enabled")
-                    ->orWhere("{$table}.is_manually_enabled", true);
-            })
-            ->where("{$table}.was_backtesting_approved", true)
-            ->whereNotNull("{$table}.direction")
-            ->where(static function ($q) use ($table) {
-                $q->whereNull("{$table}.tradeable_at")
-                    ->orWhere("{$table}.tradeable_at", '<=', now());
-            })
-            ->whereNotNull("{$table}.indicators_timeframe")
-            ->whereRaw(
-                "JSON_EXTRACT({$table}.{$correlationColumn}, CONCAT('$.\"', {$table}.indicators_timeframe, '\"')) IS NOT NULL"
-            );
     }
 }

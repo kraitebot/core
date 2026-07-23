@@ -161,7 +161,7 @@ final class ComputeMarketRegimeJob extends BaseQueueableJob
     private function resolveSymbols(array $configuredSymbols): array
     {
         $tokens = array_unique(array_merge([$this->btcToken], $this->altTokens));
-        $binance = ApiSystem::where('canonical', 'binance')->first();
+        $binance = ApiSystem::canonical('binance')->first();
         if ($binance === null) {
             return [];
         }

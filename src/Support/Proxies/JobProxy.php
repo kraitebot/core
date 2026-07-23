@@ -44,8 +44,8 @@ final class JobProxy
     /**
      * Resolve a job class to its exchange-specific implementation.
      *
-     * @param  string  $jobClass  The default job class FQCN
-     * @return string The resolved FQCN (exchange-specific if exists, otherwise default)
+     * @param  class-string  $jobClass  The default job class FQCN
+     * @return class-string The resolved FQCN (exchange-specific if exists, otherwise default)
      */
     public function resolve(string $jobClass): string
     {

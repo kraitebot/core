@@ -7,6 +7,7 @@ namespace Kraite\Core\Support\Backtest;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use InvalidArgumentException;
+use Kraite\Core\Enums\BacktestTimeframe;
 use Kraite\Core\Models\Candle;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Support\Math;
@@ -784,7 +785,7 @@ final class BacktestSimulator
      * since the metric is informational, not used in fill decisions — full
      * Math::lt precision would be overkill.
      *
-     * @return array{0: string|null, 1: mixed}  [max-pain price, candle_time of that bar]
+     * @return array{0: string|null, 1: mixed} [max-pain price, candle_time of that bar]
      */
     private function trackMaxPainAfterSl(string $direction, Collection $allCandles, int $slFireIdx): array
     {
@@ -1059,7 +1060,7 @@ final class BacktestSimulator
 
     private function validate(string $timeframe, string $margin, int $leverage, int $totalLimitOrders, int $daysToIgnore): void
     {
-        $allowed = array_keys(CandleCoverageVerifier::INTERVAL_SECONDS);
+        $allowed = BacktestTimeframe::values();
         if (! in_array($timeframe, $allowed, true)) {
             throw new InvalidArgumentException("Unsupported timeframe: {$timeframe}. Allowed: ".implode(', ', $allowed).'.');
         }

@@ -60,17 +60,20 @@ final class BscsState
     public static function current(): self
     {
         $kraite = Kraite::find(1);
-        $config = (array) (config('kraite.market_regime.cooldown') ?? []);
+        $marketRegimeConfig = (array) (config('kraite.market_regime') ?? []);
+        $cooldownConfig = (array) ($marketRegimeConfig['cooldown'] ?? []);
 
         return new self(
             score: $kraite?->bscs_score !== null ? (int) $kraite->bscs_score : null,
             band: $kraite?->bscs_band !== null ? RegimeBand::tryFrom((string) $kraite->bscs_band) : null,
             syncedAt: self::immutable($kraite?->bscs_synced_at),
             cooldownUntil: self::immutable($kraite?->bscs_cooldown_until),
-            blockThreshold: (int) ($kraite?->bscs_block_threshold ?? 80),
-            freshnessMaxSeconds: (int) ($kraite?->bscs_freshness_max_seconds ?? 6900),
-            cooldownThreshold: isset($config['threshold']) ? (int) $config['threshold'] : null,
-            cooldownHours: isset($config['hours']) ? (int) $config['hours'] : null,
+            blockThreshold: (int) ($kraite?->bscs_block_threshold
+                ?? config()->integer('kraite.market_regime.block_threshold')),
+            freshnessMaxSeconds: (int) ($kraite?->bscs_freshness_max_seconds
+                ?? config()->integer('kraite.market_regime.freshness_max_seconds')),
+            cooldownThreshold: isset($cooldownConfig['threshold']) ? (int) $cooldownConfig['threshold'] : null,
+            cooldownHours: isset($cooldownConfig['hours']) ? (int) $cooldownConfig['hours'] : null,
         );
     }
 

@@ -143,7 +143,7 @@ final class Account extends BaseModel
      */
     public static function temporary(string $apiSystemCanonical, array $credentials): self
     {
-        $apiSystem = ApiSystem::where('canonical', $apiSystemCanonical)->firstOrFail();
+        $apiSystem = ApiSystem::canonical($apiSystemCanonical)->firstOrFail();
 
         return tap(new self, static function (self $account) use ($credentials, $apiSystem) {
             // Fills encrypted columns via the mutator

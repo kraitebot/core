@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
+use Kraite\Core\Enums\BacktestTimeframe;
 use Kraite\Core\Models\ExchangeSymbol;
 use RuntimeException;
 use Throwable;
@@ -46,15 +47,13 @@ final class BinanceVisionCandleFetcher
 {
     private const VISION_BASE_URL = 'https://data.binance.vision/data/futures/um/monthly/klines';
 
-    private const SUPPORTED_TIMEFRAMES = ['1h', '4h', '12h', '1d'];
-
     private const DEFAULT_MAX_MONTHS = 24;
 
     /**
      * Fetch monthly ZIPs for a symbol + timeframe and upsert candles.
      *
      * @param  ExchangeSymbol  $symbol  Must be a Binance exchange_symbol.
-     * @param  string  $timeframe  One of SUPPORTED_TIMEFRAMES.
+     * @param  string  $timeframe  One of BacktestTimeframe::values().
      * @param  int  $maxMonths  Hard cap on months-back (default 24).
      * @return array{
      *   months_downloaded: int,
@@ -382,7 +381,7 @@ final class BinanceVisionCandleFetcher
             ->where('timestamp', '<', $end)
             ->count();
 
-        $tfHours = intdiv(CandleCoverageVerifier::INTERVAL_SECONDS[$timeframe], 3600);
+        $tfHours = intdiv(BacktestTimeframe::from($timeframe)->seconds(), 3600);
         $expected = intdiv($monthCursor->daysInMonth * 24, $tfHours);
 
         return $existing >= $expected;
@@ -390,11 +389,11 @@ final class BinanceVisionCandleFetcher
 
     private function assertSupportedTimeframe(string $timeframe): void
     {
-        if (! in_array($timeframe, self::SUPPORTED_TIMEFRAMES, true)) {
+        if (BacktestTimeframe::tryFrom($timeframe) === null) {
             throw new InvalidArgumentException(sprintf(
                 'Unsupported timeframe "%s". Allowed: %s.',
                 $timeframe,
-                implode(', ', self::SUPPORTED_TIMEFRAMES)
+                implode(', ', BacktestTimeframe::values())
             ));
         }
     }

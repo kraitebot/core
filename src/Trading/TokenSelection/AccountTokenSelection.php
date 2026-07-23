@@ -8,18 +8,14 @@ use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Kraite\Core\Models\Account;
-use Kraite\Core\Models\ApiSnapshot;
-use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Kraite as KraiteSettings;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Models\Symbol;
-use Kraite\Core\Models\TokenMapper;
 use Kraite\Core\Support\SupportResistanceProximity;
 use Kraite\Core\Support\TokenScoring\BatchDiversificationPenalty;
 use Kraite\Core\Support\TokenScoring\CorrelationStabilityWeight;
 use Kraite\Core\Support\TokenScoring\LogElasticityScorer;
-use Kraite\Core\Trading\Kraite;
 
 /*
  * Account-scoped token selection workflow
@@ -74,7 +70,10 @@ final class AccountTokenSelection
      */
     private Position $positionReference;
 
-    public function __construct(private readonly Account $account) {}
+    public function __construct(
+        private readonly Account $account,
+        private readonly TokenCandidatePoolBuilder $candidatePoolBuilder,
+    ) {}
 
     public function assign(): string
     {
@@ -158,21 +157,7 @@ final class AccountTokenSelection
      */
     public function expandTokensWithMappings(Collection $tokens): Collection
     {
-        $expandedTokens = $tokens->values();
-
-        // Find mappings where our tokens are the binance_token
-        $fromBinance = TokenMapper::whereIn('binance_token', $tokens)
-            ->pluck('other_token');
-
-        // Find mappings where our tokens are the other_token
-        $fromOther = TokenMapper::whereIn('other_token', $tokens)
-            ->pluck('binance_token');
-
-        return $expandedTokens
-            ->merge($fromBinance)
-            ->merge($fromOther)
-            ->unique()
-            ->values();
+        return $this->candidatePoolBuilder->expandTokensWithMappings($tokens);
     }
 
     /**
@@ -184,180 +169,7 @@ final class AccountTokenSelection
         // Reset tokens string for each call
         $this->tokens = '';
 
-        /*
-         * Step 1: Load Available Exchange Symbols Pool
-         *
-         * availableExchangeSymbols() returns symbols that:
-         * - Are tradeable (is_active=1, is_tradeable=1, has direction)
-         * - Match account's trading_quote (usually USDT)
-         * - Are NOT already in opened positions for this account (local DB)
-         *
-         * We then filter to only include symbols from this account's exchange.
-         */
-        $this->availableExchangeSymbols = $this->account->availableExchangeSymbols()
-            ->where('api_system_id', $this->account->api_system_id);
-
-        /*
-         * Step 1b: Cross-Exchange Token Restriction (Binance Reference)
-         *
-         * For non-Binance exchanges, only allow tokens that are ALSO tradeable on Binance.
-         * Binance is the reference exchange - if a token isn't tradeable there, we don't
-         * trade it on other exchanges either. This ensures cross-exchange consistency.
-         */
-        $binanceApiSystemId = ApiSystem::where('canonical', 'binance')->value('id');
-
-        if ($this->account->api_system_id !== $binanceApiSystemId) {
-            $binanceTradeableTokens = ExchangeSymbol::query()
-                ->tradeable()
-                ->where('api_system_id', $binanceApiSystemId)
-                ->pluck('token');
-
-            $this->availableExchangeSymbols = $this->availableExchangeSymbols
-                ->whereIn('token', $binanceTradeableTokens);
-        }
-
-        /*
-         * Step 1b: Exclude Tokens Already Open on Exchange
-         *
-         * Check api_snapshots for both:
-         * - 'account-positions': Open positions on exchange
-         * - 'account-open-orders': Pending orders on exchange
-         *
-         * Keys in account-positions are formatted as 'BTCUSDT:LONG'.
-         * Orders in account-open-orders have 'symbol' field (e.g., 'BTCUSDT').
-         */
-        $openPositionsOnExchange = ApiSnapshot::getFrom($this->account, 'account-positions') ?? [];
-        $openPositionPairs = collect(array_keys($openPositionsOnExchange))
-            ->map(static fn (string $key): string => mb_strtoupper(explode(':', $key)[0]));
-
-        $openOrdersOnExchange = ApiSnapshot::getFrom($this->account, 'account-open-orders') ?? [];
-        $openOrderPairs = collect($openOrdersOnExchange)
-            ->pluck('symbol')
-            ->filter()
-            ->map(static fn (mixed $symbol): string => mb_strtoupper((string) $symbol));
-
-        $openTradingPairs = $openPositionPairs
-            ->merge($openOrderPairs)
-            ->unique()
-            ->values();
-
-        if ($openTradingPairs->isNotEmpty()) {
-            $this->availableExchangeSymbols = $this->availableExchangeSymbols
-                ->reject(static fn (ExchangeSymbol $symbol): bool => $openTradingPairs->contains(
-                    mb_strtoupper((string) $symbol->parsed_trading_pair),
-                ));
-        }
-
-        /*
-         * Step 1c: Cross-Account Token Exclusion (User-Level) - Database Check
-         *
-         * When user has have_distinct_position_tokens_on_all_accounts=true:
-         * - Get tokens from ALL user's active positions (across all accounts)
-         * - Expand tokens via TokenMapper to include equivalents (e.g., XBT↔BTC, FLOKI↔1000FLOKI)
-         * - Exclude all exchange symbols with those tokens
-         *
-         * This prevents the same token exposure across multiple accounts.
-         */
-        if ($this->account->user->have_distinct_position_tokens_on_all_accounts) {
-            $activeTokens = $this->account->user->positions()
-                ->opened()
-                ->whereNotNull('exchange_symbol_id')
-                ->with('exchangeSymbol')
-                ->get()
-                ->pluck('exchangeSymbol.token')
-                ->filter()
-                ->unique();
-
-            if ($activeTokens->isNotEmpty()) {
-                $excludedTokens = $this->expandTokensWithMappings($activeTokens);
-
-                $this->availableExchangeSymbols = $this->availableExchangeSymbols
-                    ->whereNotIn('token', $excludedTokens->all());
-            }
-        }
-
-        /*
-         * Step 1d: Cross-Account Token Exclusion (User-Level) - Cache Check
-         *
-         * When user has have_distinct_position_tokens_on_all_accounts=true:
-         * - Check cache for tokens reserved by other accounts (race condition protection)
-         * - This catches tokens that were just assigned but not yet saved to DB
-         * - Expand via TokenMapper and exclude from pool
-         *
-         * Cache key: user:{user_id}:reserved_tokens
-         * TTL: 10 minutes (auto-cleans if job fails)
-         */
-        if ($this->account->user->have_distinct_position_tokens_on_all_accounts) {
-            $cacheKey = "user:{$this->account->user->id}:reserved_tokens";
-            $cachedReservedTokens = Cache::get($cacheKey, []);
-
-            if (! empty($cachedReservedTokens)) {
-                $expandedCachedTokens = $this->expandTokensWithMappings(collect($cachedReservedTokens));
-
-                $this->availableExchangeSymbols = $this->availableExchangeSymbols
-                    ->whereNotIn('token', $expandedCachedTokens->all());
-            }
-        }
-
-        /*
-         * Step 2: Filter Pool - Only Complete Symbols
-         *
-         * Filter symbols that have:
-         * - Complete trading metadata (min order requirements, tick_size, etc.)
-         * - Complete correlation/elasticity data
-         *
-         * Min order requirements are exchange-specific:
-         * - Binance/Bybit/BitGet: Direct min_notional
-         * - KuCoin: kucoin_lot_size * kucoin_multiplier * current_price
-         */
-        $correlationType = KraiteSettings::correlationType();
-        $correlationField = 'btc_correlation_'.$correlationType;
-
-        $this->availableExchangeSymbols = $this->availableExchangeSymbols->filter(static function ($symbol) use ($correlationField) {
-            return Kraite::hasMinOrderRequirements($symbol)
-                && filled($symbol->tick_size)
-                && filled($symbol->price_precision)
-                && filled($symbol->quantity_precision)
-                && filled($symbol->btc_elasticity_long)
-                && filled($symbol->btc_elasticity_short)
-                && filled($symbol->{$correlationField});
-        });
-
-        /*
-         * Step 2b: Stale Mark-Price Freshness Gate
-         *
-         * When the price daemon stalls (Binance WS hiccup, daemon
-         * crash, frame loss), every reader of mark_price keeps
-         * returning the last value the daemon wrote — silently. Token
-         * discovery uses mark_price for the wrong-side-pivot check
-         * downstream and sizing uses it as the divisor turning
-         * notional intent into MARKET order quantity. Acting on a
-         * 60-second-stale price across 200 accounts in the same tick
-         * is the structural risk this gate exists to prevent.
-         *
-         * Behaviour:
-         *  - Sidecar `mark_price_synced_at` strictly older than the
-         *    configured threshold → symbol dropped from the pool.
-         *  - Null sidecar (legacy column path, brand-new symbol,
-         *    test fixture) → allowed through. The throwing
-         *    computations in HasTradingComputations catch the
-         *    null-everything case downstream as defence in depth.
-         *  - Threshold set to 0 → gate disabled entirely.
-         */
-        $markPriceMaxAgeSeconds = (int) config('kraite.token_discovery.mark_price_max_age_seconds', 30);
-        if ($markPriceMaxAgeSeconds > 0) {
-            $freshnessThreshold = now()->subSeconds($markPriceMaxAgeSeconds);
-
-            $this->availableExchangeSymbols = $this->availableExchangeSymbols->filter(static function ($symbol) use ($freshnessThreshold) {
-                $syncedAt = $symbol->mark_price_synced_at;
-
-                if ($syncedAt === null) {
-                    return true;
-                }
-
-                return $syncedAt->greaterThanOrEqualTo($freshnessThreshold);
-            });
-        }
+        $this->availableExchangeSymbols = $this->candidatePoolBuilder->build($this->account);
 
         /*
          * Step 3: Get BTC ExchangeSymbol for BTC Bias

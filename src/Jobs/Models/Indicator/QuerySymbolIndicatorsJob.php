@@ -40,7 +40,7 @@ final class QuerySymbolIndicatorsJob extends BaseApiableJob
         $this->exchangeSymbolId = $exchangeSymbolId;
         $this->timeframe = $timeframe;
         $this->previousConclusions = $previousConclusions;
-        $this->retries = 150;
+        $this->retries = config()->integer('kraite.indicators.query_retries');
     }
 
     public function relatable()
@@ -61,9 +61,9 @@ final class QuerySymbolIndicatorsJob extends BaseApiableJob
 
         // Load active conclude-indicators indicators
         $indicators = Indicator::query()
-            ->where('is_active', true)
-            ->where('is_computed', false)
-            ->where('type', 'conclude-indicators')
+            ->active()
+            ->fromApi()
+            ->concluding()
             ->get();
 
         if ($indicators->isEmpty()) {
@@ -249,9 +249,9 @@ final class QuerySymbolIndicatorsJob extends BaseApiableJob
 
         // Process computed (non-apiable) indicators
         $computedIndicators = Indicator::query()
-            ->where('is_active', true)
-            ->where('is_computed', true)
-            ->where('type', 'conclude-indicators')
+            ->active()
+            ->computed()
+            ->concluding()
             ->get();
 
         foreach ($computedIndicators as $computedIndicator) {

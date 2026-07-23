@@ -295,7 +295,7 @@ final class ExchangeSymbolObserver
     public function getBinanceSystemId(): ?int
     {
         return once(function (): ?int {
-            return ApiSystem::where('canonical', 'binance')->value('id');
+            return ApiSystem::canonical('binance')->value('id');
         });
     }
 

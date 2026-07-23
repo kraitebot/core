@@ -7,6 +7,7 @@ namespace Kraite\Core\Support\Backtest;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
+use Kraite\Core\Enums\BacktestTimeframe;
 use Kraite\Core\Models\ExchangeSymbol;
 
 /**
@@ -30,15 +31,6 @@ use Kraite\Core\Models\ExchangeSymbol;
  */
 final class CandleCoverageVerifier
 {
-    private const SUPPORTED_TIMEFRAMES = ['1h', '4h', '12h', '1d'];
-
-    public const INTERVAL_SECONDS = [
-        '1h' => 3600,
-        '4h' => 14400,
-        '12h' => 43200,
-        '1d' => 86400,
-    ];
-
     /**
      * Report coverage for a given symbol + timeframe.
      *
@@ -77,7 +69,7 @@ final class CandleCoverageVerifier
         // in seconds; only the final human-readable strings convert.
         $earliestSec = min($present);
         $latestSec = max($present);
-        $intervalSec = self::INTERVAL_SECONDS[$timeframe];
+        $intervalSec = BacktestTimeframe::from($timeframe)->seconds();
 
         $expected = (int) floor(($latestSec - $earliestSec) / $intervalSec) + 1;
         $presentSet = array_flip($present);
@@ -98,7 +90,7 @@ final class CandleCoverageVerifier
         $now = Carbon::now('UTC');
         $latestCarbon = Carbon::createFromTimestamp($latestSec, 'UTC');
         $stalenessHours = round($now->diffInMinutes($latestCarbon) / 60, 2);
-        $isFresh = $stalenessHours <= (self::INTERVAL_SECONDS[$timeframe] / 3600) * 2;
+        $isFresh = $stalenessHours <= ($intervalSec / 3600) * 2;
 
         $contiguity = $expected > 0
             ? round((count($present) / $expected) * 100, 2)
@@ -189,11 +181,11 @@ final class CandleCoverageVerifier
 
     private function assertSupportedTimeframe(string $timeframe): void
     {
-        if (! in_array($timeframe, self::SUPPORTED_TIMEFRAMES, true)) {
+        if (BacktestTimeframe::tryFrom($timeframe) === null) {
             throw new InvalidArgumentException(sprintf(
                 'Unsupported timeframe "%s". Allowed: %s.',
                 $timeframe,
-                implode(', ', self::SUPPORTED_TIMEFRAMES)
+                implode(', ', BacktestTimeframe::values())
             ));
         }
     }

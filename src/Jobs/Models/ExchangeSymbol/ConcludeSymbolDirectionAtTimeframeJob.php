@@ -38,20 +38,16 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
 
     public array $previousConclusions;
 
-    public bool $shouldCleanup;
-
     /**
      * @param  int  $exchangeSymbolId  Symbol to conclude
      * @param  string  $timeframe  Current timeframe being evaluated
      * @param  array  $previousConclusions  Map of previous timeframe conclusions (e.g., ['1h' => 'INCONCLUSIVE'])
-     * @param  bool  $shouldCleanup  Whether to clean up indicator histories after completion
      */
-    public function __construct(int $exchangeSymbolId, string $timeframe, array $previousConclusions = [], bool $shouldCleanup = true)
+    public function __construct(int $exchangeSymbolId, string $timeframe, array $previousConclusions = [])
     {
         $this->exchangeSymbolId = $exchangeSymbolId;
         $this->timeframe = $timeframe;
         $this->previousConclusions = $previousConclusions;
-        $this->shouldCleanup = $shouldCleanup;
         $this->retries = 20;
     }
 
@@ -101,8 +97,8 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
 
         // Check if we have data for all expected indicators
         $expectedIndicatorCount = Indicator::query()
-            ->where('is_active', true)
-            ->where('type', 'conclude-indicators')
+            ->active()
+            ->concluding()
             ->count();
 
         if ($latestPerIndicator->count() < $expectedIndicatorCount) {
@@ -283,9 +279,6 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
         $nextIndex = $currentIndex + 1;
         if ($nextIndex >= count($allTimeframes)) {
             // No more timeframes - invalidate symbol
-            $hadDirection = ! is_null($exchangeSymbol->direction);
-            $previousDirection = $exchangeSymbol->direction;
-
             $exchangeSymbol->updateSaving([
                 'direction' => null,
                 'indicators_values' => null,
@@ -309,18 +302,6 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
                 'pivot_synced_at' => null,
             ]);
 
-            // Notify admin when direction is invalidated after exhausting all timeframes
-            if ($hadDirection) {
-                $message = "[ES:{$exchangeSymbol->id}] Symbol {$exchangeSymbol->parsed_trading_pair} direction invalidated (was {$previousDirection}, all timeframes exhausted)";
-                $title = 'Direction Invalidated ('.ucfirst($exchangeSymbol->apiSystem->canonical).')';
-
-                // Kraite::notifyAdmins(
-                //     message: $message,
-                //     title: $title,
-                //     deliveryGroup: 'indicators'
-                // );
-            }
-
             $response = [
                 'result' => 'not_concluded',
                 'message' => 'All timeframes exhausted without conclusion',
@@ -333,7 +314,7 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
 
         // Spawn child workflow for next timeframe
         $nextTimeframe = $allTimeframes[$nextIndex];
-        $this->spawnNextTimeframeWorkflow($exchangeSymbol->id, $nextTimeframe, $currentConclusions, $this->shouldCleanup);
+        $this->spawnNextTimeframeWorkflow($exchangeSymbol->id, $nextTimeframe, $currentConclusions);
 
         $response = [
             'result' => 'inconclusive',
@@ -396,16 +377,6 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
                 'pivot_s3' => null,
                 'pivot_synced_at' => null,
             ]);
-
-            // Notify admin when direction is invalidated due to path inconsistency
-            $message = "[ES:{$exchangeSymbol->id}] Symbol {$exchangeSymbol->parsed_trading_pair} direction invalidated (was {$oldDirection}, path inconsistency detected)";
-            $title = 'Direction Invalidated ('.ucfirst($exchangeSymbol->apiSystem->canonical).')';
-
-            // Kraite::notifyAdmins(
-            //     message: $message,
-            //     title: $title,
-            //     deliveryGroup: 'indicators'
-            // );
 
             $response = [
                 'result' => 'rejected',
@@ -474,11 +445,11 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
      * Only creates Query and Conclude steps - finalization steps are created
      * dynamically by createFinalizationSteps() when direction is concluded.
      */
-    private function spawnNextTimeframeWorkflow(int $symbolId, string $nextTimeframe, array $conclusions, bool $shouldCleanup): void
+    private function spawnNextTimeframeWorkflow(int $symbolId, string $nextTimeframe, array $conclusions): void
     {
         $group = $this->step->group;
 
-        $this->buildChildChainOnce(function (string $childBlockUuid) use ($conclusions, $group, $nextTimeframe, $shouldCleanup, $symbolId): void {
+        $this->buildChildChainOnce(function (string $childBlockUuid) use ($conclusions, $group, $nextTimeframe, $symbolId): void {
             Step::create([
                 'class' => QuerySymbolIndicatorsJob::class,
                 'queue' => 'indicators',
@@ -502,7 +473,6 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
                     'exchangeSymbolId' => $symbolId,
                     'timeframe' => $nextTimeframe,
                     'previousConclusions' => $conclusions,
-                    'shouldCleanup' => $shouldCleanup,
                 ],
             ]);
         });

@@ -12,7 +12,7 @@ final class AlternativeMeApiClient extends BaseApiClient
 {
     public function __construct(array $config)
     {
-        $this->apiSystem = ApiSystem::firstWhere('canonical', 'alternativeme');
+        $this->apiSystem = ApiSystem::canonical('alternativeme')->first();
 
         parent::__construct($config['url'], null);
     }

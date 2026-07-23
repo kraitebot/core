@@ -24,7 +24,6 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
      */
     protected $signature = 'kraite:cron-conclude-symbols-direction
                             {--clean : Truncate steps, api_request_logs, application_logs, and indicator_histories tables before running}
-                            {--preserve : Do not delete indicator histories (for debugging purposes)}
                             {--reset : Reset all exchange symbols to default state (direction=NULL, clear all flags)}
                             {--output : Display command output (silent by default)}';
 
@@ -132,7 +131,6 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
             $this->verboseNewLine();
         }
 
-        $shouldCleanup = ! $this->option('preserve');
         $progressBar = $this->shouldOutput() ? $this->output->createProgressBar($symbolsToProcess->count()) : null;
         $progressBar?->start();
 
@@ -141,7 +139,7 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
 
         // Wrap workflow creation in transaction to prevent race conditions
         // if command runs concurrently
-        DB::transaction(function () use ($symbolsToProcess, $shouldCleanup, $progressBar, &$skippedCount) {
+        DB::transaction(function () use ($symbolsToProcess, $progressBar, &$skippedCount) {
             $timeframes = Kraite::timeframes();
 
             if (empty($timeframes)) {
@@ -154,7 +152,7 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
             foreach ($symbolsToProcess as $exchangeSymbol) {
 
                 $startingTimeframe = $timeframes[0];
-                $this->createWorkflowForSymbol($exchangeSymbol->id, $startingTimeframe, $shouldCleanup);
+                $this->createWorkflowForSymbol($exchangeSymbol->id, $startingTimeframe);
                 $progressBar?->advance();
             }
         });
@@ -177,9 +175,9 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
     /**
      * Create workflow for a single symbol
      * Only creates Query and Conclude steps upfront.
-     * ConfirmPriceAlignment and Cleanup steps will be created by ConcludeSymbolDirectionAtTimeframeJob if it concludes.
+     * Finalization steps will be created by ConcludeSymbolDirectionAtTimeframeJob if it concludes.
      */
-    private function createWorkflowForSymbol(int $symbolId, string $startingTimeframe, bool $shouldCleanup): string
+    private function createWorkflowForSymbol(int $symbolId, string $startingTimeframe): string
     {
         $blockUuid = Str::uuid()->toString();
         $group = StepsDispatcher::getNextGroup();
@@ -210,11 +208,10 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
                 'exchangeSymbolId' => $symbolId,
                 'timeframe' => $startingTimeframe,
                 'previousConclusions' => [],
-                'shouldCleanup' => $shouldCleanup,
             ],
         ]);
 
-        // INDEX 3, 4, 5 (ConfirmPriceAlignment, Cleanup, CopyDirection) are created dynamically
+        // Finalization steps are created dynamically
         // by ConcludeSymbolDirectionAtTimeframeJob only when a direction is successfully concluded
 
         return $blockUuid;

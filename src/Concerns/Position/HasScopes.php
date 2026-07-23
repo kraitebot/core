@@ -48,7 +48,10 @@ trait HasScopes
         return ['opening', 'waping', 'active', 'new', 'closing', 'cancelling', 'syncing'];
     }
 
-    public function activeStatuses()
+    /**
+     * @return list<string>
+     */
+    public function activeStatuses(): array
     {
         return ['opening', 'active', 'new', 'waping', 'syncing'];
     }

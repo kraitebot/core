@@ -182,7 +182,7 @@ final class ApiRequestLogObserver
     private function deactivateExchangeSymbolIfNoTaapiData(ApiRequestLog $log): void
     {
         // Only process TAAPI requests
-        $taapiSystem = ApiSystem::where('canonical', 'taapi')->first();
+        $taapiSystem = ApiSystem::canonical('taapi')->first();
         if (! $taapiSystem || $log->api_system_id !== $taapiSystem->id) {
             return;
         }
@@ -300,7 +300,7 @@ final class ApiRequestLogObserver
             return null;
         }
 
-        $apiSystem = ApiSystem::where('canonical', $exchangeCanonical)->first();
+        $apiSystem = ApiSystem::canonical($exchangeCanonical)->first();
         if (! $apiSystem) {
             return null;
         }
@@ -323,7 +323,7 @@ final class ApiRequestLogObserver
             return false;
         }
 
-        $taapiSystem = ApiSystem::where('canonical', 'taapi')->first();
+        $taapiSystem = ApiSystem::canonical('taapi')->first();
 
         // Escape the symbol for LIKE query (JSON stores it as "ETC\/USDC")
         // MySQL LIKE needs quadruple backslash in PHP to match JSON's escaped slash
@@ -357,7 +357,7 @@ final class ApiRequestLogObserver
         $symbol = $payload['options']['symbol'] ?? null;
         $escapedSymbol = str_replace(search: '/', replace: '\\\/', subject: $symbol);
 
-        $taapiSystem = ApiSystem::where('canonical', 'taapi')->first();
+        $taapiSystem = ApiSystem::canonical('taapi')->first();
         $failureCount = ApiRequestLog::where('api_system_id', $taapiSystem->id)
             ->where('created_at', '>=', now()->subHours(24))
             ->where('payload', 'LIKE', "%{$exchange}%")

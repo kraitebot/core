@@ -34,7 +34,7 @@ final class BitgetApiClient extends BaseApiClient
 {
     public function __construct(array $config)
     {
-        $this->apiSystem = ApiSystem::firstWhere('canonical', 'bitget');
+        $this->apiSystem = ApiSystem::canonical('bitget')->first();
 
         $this->exceptionHandler = BaseExceptionHandler::make('bitget');
 

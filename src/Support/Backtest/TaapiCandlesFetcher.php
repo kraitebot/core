@@ -8,6 +8,7 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
+use Kraite\Core\Enums\BacktestTimeframe;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Kraite;
 use RuntimeException;
@@ -43,8 +44,6 @@ final class TaapiCandlesFetcher
 {
     private const BASE_URL = 'https://api.taapi.io/candles';
 
-    private const SUPPORTED_TIMEFRAMES = ['1h', '4h', '12h', '1d'];
-
     private const MAX_RESULTS_PER_CALL = 300;
 
     /**
@@ -55,7 +54,7 @@ final class TaapiCandlesFetcher
      * present, the call is skipped entirely — TAAPI rate-limit budget is
      * shared with production ingestion, so every avoided call matters.
      *
-     * @param  string  $timeframe  One of SUPPORTED_TIMEFRAMES.
+     * @param  string  $timeframe  One of BacktestTimeframe::values().
      * @param  int  $results  Upper bound on candles per call (<=300). Actual call uses min($results, gap+buffer).
      * @param  int  $backtrack  Shift window backwards by N candles (0 = latest). Forces an HTTP call when >0.
      * @return array{inserted: int, earliest: string|null, latest: string|null, source_url: string, skipped?: bool, reason?: string, requested?: int}
@@ -187,7 +186,7 @@ final class TaapiCandlesFetcher
         }
 
         $latestTsInt = (int) $latestTs;
-        $gap = intdiv(time() - $latestTsInt, CandleCoverageVerifier::INTERVAL_SECONDS[$timeframe]);
+        $gap = intdiv(time() - $latestTsInt, BacktestTimeframe::from($timeframe)->seconds());
 
         return ['gap' => max(0, $gap), 'latest_ts' => $latestTsInt];
     }
@@ -332,11 +331,11 @@ final class TaapiCandlesFetcher
 
     private function assertSupportedTimeframe(string $timeframe): void
     {
-        if (! in_array($timeframe, self::SUPPORTED_TIMEFRAMES, true)) {
+        if (BacktestTimeframe::tryFrom($timeframe) === null) {
             throw new InvalidArgumentException(sprintf(
                 'Unsupported timeframe "%s". Allowed: %s.',
                 $timeframe,
-                implode(', ', self::SUPPORTED_TIMEFRAMES)
+                implode(', ', BacktestTimeframe::values())
             ));
         }
     }

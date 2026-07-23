@@ -8,6 +8,7 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
+use Kraite\Core\Enums\BacktestTimeframe;
 use Kraite\Core\Models\ExchangeSymbol;
 use RuntimeException;
 
@@ -41,8 +42,6 @@ final class BinanceRestCandleFetcher
 {
     private const BASE_URL = 'https://fapi.binance.com/fapi/v1/klines';
 
-    private const SUPPORTED_TIMEFRAMES = ['1h', '4h', '12h', '1d'];
-
     private const MAX_CANDLES_PER_CALL = 1500;
 
     /**
@@ -65,7 +64,7 @@ final class BinanceRestCandleFetcher
         $this->assertBinanceSymbol($symbol);
         $this->assertSupportedTimeframe($timeframe);
 
-        $intervalSec = CandleCoverageVerifier::INTERVAL_SECONDS[$timeframe];
+        $intervalSec = BacktestTimeframe::from($timeframe)->seconds();
         $resumeTs = $sinceTs ?? $this->resumeFromDb($symbol, $timeframe, $intervalSec);
         $nowTs = time();
 
@@ -152,7 +151,7 @@ final class BinanceRestCandleFetcher
         $this->assertBinanceSymbol($symbol);
         $this->assertSupportedTimeframe($timeframe);
 
-        $intervalSec = CandleCoverageVerifier::INTERVAL_SECONDS[$timeframe];
+        $intervalSec = BacktestTimeframe::from($timeframe)->seconds();
         $startTs = $lookbackTs ?? (time() - 180 * 86400);
         $endTs = (int) (intdiv(time(), $intervalSec) * $intervalSec);
 
@@ -354,11 +353,11 @@ final class BinanceRestCandleFetcher
 
     private function assertSupportedTimeframe(string $timeframe): void
     {
-        if (! in_array($timeframe, self::SUPPORTED_TIMEFRAMES, true)) {
+        if (BacktestTimeframe::tryFrom($timeframe) === null) {
             throw new InvalidArgumentException(sprintf(
                 'Unsupported timeframe "%s". Allowed: %s.',
                 $timeframe,
-                implode(', ', self::SUPPORTED_TIMEFRAMES)
+                implode(', ', BacktestTimeframe::values())
             ));
         }
     }

@@ -37,7 +37,7 @@ final class KucoinApiClient extends BaseApiClient
 {
     public function __construct(array $config)
     {
-        $this->apiSystem = ApiSystem::firstWhere('canonical', 'kucoin');
+        $this->apiSystem = ApiSystem::canonical('kucoin')->first();
 
         $this->exceptionHandler = BaseExceptionHandler::make('kucoin');
 

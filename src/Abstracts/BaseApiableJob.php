@@ -207,7 +207,7 @@ abstract class BaseApiableJob extends BaseQueueableJob
 
         return ApiSystem::query()
             ->active()
-            ->where('canonical', $this->exceptionHandler->getApiSystem())
+            ->canonical($this->exceptionHandler->getApiSystem())
             ->exists();
     }
 
@@ -285,7 +285,7 @@ abstract class BaseApiableJob extends BaseQueueableJob
             }
 
             $apiSystemCanonical = $this->exceptionHandler->getApiSystem();
-            $apiSystem = ApiSystem::where('canonical', $apiSystemCanonical)->first();
+            $apiSystem = ApiSystem::canonical($apiSystemCanonical)->first();
 
             if (! $apiSystem) {
                 return $diagnostics;

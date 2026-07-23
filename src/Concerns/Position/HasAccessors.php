@@ -83,7 +83,7 @@ trait HasAccessors
 
         // Resolve dashboard candle indicator id
         $indicatorId = Indicator::query()
-            ->where('canonical', 'candle')
+            ->canonical('candle')
             ->where('type', 'dashboard')
             ->value('id');
 

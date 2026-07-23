@@ -73,7 +73,7 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
 
         $exchanges = ApiSystem::activeExchange()
             ->when($exchangeFilter, static function ($query) use ($exchangeFilter) {
-                return $query->where('canonical', $exchangeFilter);
+                return $query->canonical($exchangeFilter);
             })
             ->get();
 

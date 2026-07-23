@@ -177,7 +177,7 @@ final class FetchKlinesCommand extends BaseCommand
     {
         $apiSystemsQuery = ApiSystem::query()->activeExchange()->whereHas('exchangeSymbols');
         if ($canonical) {
-            $apiSystemsQuery->where('canonical', $canonical);
+            $apiSystemsQuery->canonical($canonical);
         }
         $apiSystems = $apiSystemsQuery->get();
         if ($apiSystems->isEmpty()) {
@@ -262,7 +262,7 @@ final class FetchKlinesCommand extends BaseCommand
     private function handleReferenceSet(string $canonical, ?array $explicitTimeframe, int $limit): int
     {
         $apiSystem = ApiSystem::query()
-            ->where('canonical', $canonical)
+            ->canonical($canonical)
             ->activeExchange()
             ->first();
 
@@ -356,7 +356,7 @@ final class FetchKlinesCommand extends BaseCommand
     /** @param  array<int, string>|null  $explicitTimeframe */
     private function handleActivePositionsOnly(?array $explicitTimeframe, int $limit): int
     {
-        $binanceApiSystem = ApiSystem::active()->where('canonical', 'binance')->first();
+        $binanceApiSystem = ApiSystem::active()->canonical('binance')->first();
         if ($binanceApiSystem === null) {
             $this->verboseError('Binance API system not found in database.');
 

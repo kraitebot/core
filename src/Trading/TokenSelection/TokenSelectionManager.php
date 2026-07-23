@@ -10,6 +10,6 @@ final class TokenSelectionManager
 {
     public function forAccount(Account $account): AccountTokenSelection
     {
-        return new AccountTokenSelection($account);
+        return new AccountTokenSelection($account, new TokenCandidatePoolBuilder);
     }
 }

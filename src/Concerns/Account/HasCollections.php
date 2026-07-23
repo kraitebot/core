@@ -9,6 +9,7 @@ use Kraite\Core\Models\ExchangeSymbol;
 
 trait HasCollections
 {
+    /** @return Collection<int, ExchangeSymbol> */
     public function availableExchangeSymbols(): Collection
     {
         $activeIds = $this->positions()

@@ -148,7 +148,7 @@ final class StreamBinancePricesCommand extends Command
         }
 
         $credentials = new ApiCredentials($account->all_credentials);
-        $this->binanceSystemId = (int) ApiSystem::active()->firstWhere('canonical', 'binance')?->id;
+        $this->binanceSystemId = (int) ApiSystem::active()->canonical('binance')->first()?->id;
 
         if ($this->binanceSystemId === 0) {
             $this->error('No Binance api_system row found.');

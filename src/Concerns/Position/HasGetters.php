@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Concerns\Position;
 
 use Kraite\Core\Models\ApiSnapshot;
+use Kraite\Core\Models\Order;
 use Kraite\Core\Support\PositionSnapshot;
 use RuntimeException;
 
@@ -137,7 +138,7 @@ trait HasGetters
      *
      * Safe: may return null.
      */
-    public function profitOrder()
+    public function profitOrder(): ?Order
     {
         return $this->orders()
             ->whereIn('orders.type', ['PROFIT-LIMIT', 'PROFIT-MARKET'])

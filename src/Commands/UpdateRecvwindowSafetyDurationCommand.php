@@ -36,7 +36,7 @@ final class UpdateRecvwindowSafetyDurationCommand extends BaseCommand
         $recvWindowMargin = max($recvWindowMargin, 2000);
 
         // Update the `recvwindow_margin` in the `api_systems` table
-        ApiSystem::where('canonical', 'binance')->update([
+        ApiSystem::canonical('binance')->update([
             'recvwindow_margin' => $recvWindowMargin,
             'updated_at' => now(),
         ]);

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Support\Backtest;
 
 use Carbon\Carbon;
+use Kraite\Core\Enums\BacktestTimeframe;
 
 /**
  * CoverageGate
@@ -29,9 +30,9 @@ final class CoverageGate
      */
     public static function evaluate(array $coverage, string $timeframe): array
     {
-        $intervalSec = CandleCoverageVerifier::INTERVAL_SECONDS[$timeframe] ?? null;
+        $backtestTimeframe = BacktestTimeframe::tryFrom($timeframe);
 
-        if ($intervalSec === null) {
+        if ($backtestTimeframe === null) {
             return [
                 'ready' => false,
                 'fresh' => false,
@@ -40,6 +41,8 @@ final class CoverageGate
                 'reason' => "unsupported timeframe '{$timeframe}'",
             ];
         }
+
+        $intervalSec = $backtestTimeframe->seconds();
 
         $present = (int) ($coverage['total_present'] ?? 0);
         $latest = $coverage['latest'] ?? null;

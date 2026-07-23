@@ -75,7 +75,7 @@ final class VerifyPriceAlignmentsJob extends BaseQueueableJob
      */
     public function namingDivergentCandidateIds(): ?Collection
     {
-        $binanceSystemId = ApiSystem::where('canonical', 'binance')->value('id');
+        $binanceSystemId = ApiSystem::canonical('binance')->value('id');
 
         if ($binanceSystemId === null) {
             return null;

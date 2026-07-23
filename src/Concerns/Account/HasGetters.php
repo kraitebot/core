@@ -47,7 +47,7 @@ trait HasGetters
             return false;
         }
 
-        $binanceId = ApiSystem::where('canonical', 'binance')->value('id');
+        $binanceId = ApiSystem::canonical('binance')->value('id');
         if ($binanceId === null) {
             return false;
         }

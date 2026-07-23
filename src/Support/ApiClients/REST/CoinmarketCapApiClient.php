@@ -13,7 +13,7 @@ final class CoinmarketCapApiClient extends BaseApiClient
 {
     public function __construct(array $config)
     {
-        $this->apiSystem = ApiSystem::firstWhere('canonical', 'coinmarketcap');
+        $this->apiSystem = ApiSystem::canonical('coinmarketcap')->first();
 
         $this->credentials = ApiCredentials::make([
             'api_key' => $config['api_key'],

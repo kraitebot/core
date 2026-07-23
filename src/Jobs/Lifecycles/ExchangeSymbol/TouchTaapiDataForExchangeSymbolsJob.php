@@ -39,7 +39,7 @@ final class TouchTaapiDataForExchangeSymbolsJob extends BaseQueueableJob
                     ->orWhere('api_statuses->taapi_verified', false);
             })
             ->whereHas('apiSystem', static function ($query) {
-                $query->where('canonical', 'binance');
+                $query->canonical('binance');
             })
             ->get();
 

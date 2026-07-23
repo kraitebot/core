@@ -13,7 +13,7 @@ final class TaapiApiClient extends BaseApiClient
 {
     public function __construct(array $config)
     {
-        $this->apiSystem = ApiSystem::firstWhere('canonical', 'taapi');
+        $this->apiSystem = ApiSystem::canonical('taapi')->first();
 
         $credentials = ApiCredentials::make([
             'secret' => $config['secret'],

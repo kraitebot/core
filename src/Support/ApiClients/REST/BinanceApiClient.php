@@ -16,7 +16,7 @@ final class BinanceApiClient extends BaseApiClient
 {
     public function __construct(array $config)
     {
-        $this->apiSystem = ApiSystem::firstWhere('canonical', 'binance');
+        $this->apiSystem = ApiSystem::canonical('binance')->first();
 
         $this->exceptionHandler = BaseExceptionHandler::make('binance');
 
@@ -38,7 +38,7 @@ final class BinanceApiClient extends BaseApiClient
         // Set the recvwindow
         $apiRequest->properties->set(
             'options.recvWindow',
-            ApiSystem::firstWhere('canonical', 'binance')->recvwindow_margin
+            ApiSystem::canonical('binance')->first()->recvwindow_margin
         );
 
         $apiRequest->properties->set(

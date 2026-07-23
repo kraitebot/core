@@ -65,7 +65,7 @@ final class VerifyPriceAlignmentJob extends BaseApiableJob
         // own exchange price against it.
         $binance = ExchangeSymbol::query()
             ->whereHas('apiSystem', function ($query): void {
-                $query->where('canonical', 'binance');
+                $query->canonical('binance');
             })
             ->when(! $hasOpenPosition, fn ($query) => $query
                 ->where('is_marked_for_delisting', false)

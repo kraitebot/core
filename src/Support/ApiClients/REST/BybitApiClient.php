@@ -15,7 +15,7 @@ final class BybitApiClient extends BaseApiClient
 {
     public function __construct(array $config)
     {
-        $this->apiSystem = ApiSystem::firstWhere('canonical', 'bybit');
+        $this->apiSystem = ApiSystem::canonical('bybit')->first();
 
         $this->exceptionHandler = BaseExceptionHandler::make('bybit');
 
@@ -35,7 +35,7 @@ final class BybitApiClient extends BaseApiClient
     public function signRequest(ApiRequest $apiRequest)
     {
         $timestamp = now()->getTimestampMs();
-        $recvWindow = ApiSystem::firstWhere('canonical', 'bybit')->recvwindow_margin;
+        $recvWindow = ApiSystem::canonical('bybit')->first()->recvwindow_margin;
 
         // Build query string from options
         $queryString = http_build_query($apiRequest->properties->getOr('options', []));

@@ -22,11 +22,13 @@ use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Fleet\FleetMetricsRepository;
 use Kraite\Core\Support\Health\AccountActivityFlagSync;
-use Kraite\Core\Support\Health\CallbackHealthCheck;
+use Kraite\Core\Support\Health\Contracts\SystemHealthProbe;
 use Kraite\Core\Support\Health\ForeignActivityDetector;
 use Kraite\Core\Support\Health\HealthCheckRunner;
 use Kraite\Core\Support\Health\OrphanReconciler;
 use Kraite\Core\Support\Health\Remediation\OrphanExchangeRemediator;
+use Kraite\Core\Support\Health\SystemHealthCheck;
+use Kraite\Core\Support\Health\SystemHealthCheckType;
 use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
@@ -60,7 +62,7 @@ use Throwable;
  * on it. The field is here so the dashboard / model_logs can render
  * differently if Bruno ever wants tiered display.
  */
-final class CheckSystemHealthCommand extends BaseCommand
+final class CheckSystemHealthCommand extends BaseCommand implements SystemHealthProbe
 {
     private const MARK_PRICE_STALENESS_SECONDS = 60;
 
@@ -178,24 +180,6 @@ final class CheckSystemHealthCommand extends BaseCommand
      */
     private const STALE_SYNCING_POSITION_MINUTES = 15;
 
-    /**
-     * Checks that depend on the steps-dispatcher actively draining
-     * Pending steps. When `MaintenanceMode::pauseStepsDispatch()` is
-     * armed (intentional ops window), these signals trivially go
-     * stale because the upstream cron path writes via Step::create →
-     * dispatcher promotion → worker execution. Pausing the
-     * dispatcher freezes that pipeline by design, so the operator
-     * does NOT want a Pushover storm five minutes into a planned
-     * pause. Daemon-driven signals (mark price, daemon heartbeat,
-     * scheduler liveness) keep firing — they don't depend on the
-     * dispatcher and a real outage on those paths is still
-     * actionable mid-pause.
-     */
-    private const DISPATCHER_DEPENDENT_CHECKS = [
-        'checkIndicatorFreshness',
-        'checkAccountBalanceFreshness',
-    ];
-
     protected $signature = 'kraite:cron-check-system-health
                             {--output : Display command output (silent by default)}';
 
@@ -258,42 +242,15 @@ final class CheckSystemHealthCommand extends BaseCommand
         // been in maintenance too long" — and skip the rest so a
         // normal deploy window never produces transient pages.
         if (app()->isDownForMaintenance()) {
-            $alertCount = $this->checkMaintenanceModeStuck();
+            $alertCount = (new SystemHealthCheck(
+                SystemHealthCheckType::MaintenanceModeStuck,
+                $this,
+            ))->run();
 
             $this->verboseInfo("Maintenance mode active — stuck-maintenance check only. Alerts emitted: {$alertCount}");
 
             return self::SUCCESS;
         }
-
-        $checks = [
-            'checkMarkPriceFreshness',
-            'checkIndicatorFreshness',
-            'checkAccountBalanceFreshness',
-            'checkDaemonHeartbeat',
-            // Dispatcher-progress liveness is owned outside this
-            // command: `kraite-dispatch-daemon` supervisor process
-            // (alive via `supervisorctl status`) plus the step-
-            // dispatcher package's own `steps:recover-stale
-            // --recover-dispatched --release-locks` cron (wedge
-            // detection per prefix). A direct in-command tick check
-            // was tried (2026-05-03) using
-            // `steps_dispatcher.last_selected_at` and removed because
-            // that column only updates on root-step CREATE — quiet
-            // periods between minute-level crons fired false positives
-            // while the dispatcher was healthy. Worker-side starvation
-            // is caught here by `checkHorizonQueueDepth` +
-            // `checkFailedJobsOverflow`.
-            'checkSchedulerLiveness',
-            'checkFailedJobsOverflow',
-            'checkDatabaseConnection',
-            'checkRedisConnection',
-            'checkHorizonQueueDepth',
-            'checkOrphanReconciliation',
-            'checkDiskPressure',
-            'checkStaleSyncingPositions',
-            'checkUserDataDeadLetters',
-            'checkFleetMetricsSilence',
-        ];
 
         // The two dispatcher-dependent checks (indicator + balance
         // freshness) read tables populated by DEFAULT-prefix crons —
@@ -309,12 +266,12 @@ final class CheckSystemHealthCommand extends BaseCommand
         $dispatcherDataRecovering = MaintenanceMode::isStepsDispatchPaused('')
             || MaintenanceMode::isPostWarmupRecoveryActive();
 
-        $activeChecks = collect($checks)
-            ->reject(fn (string $check): bool => $dispatcherDataRecovering
-                && in_array($check, self::DISPATCHER_DEPENDENT_CHECKS, true))
-            ->map(fn (string $check): CallbackHealthCheck => new CallbackHealthCheck(
-                $check,
-                fn (): int => $this->{$check}(),
+        $activeChecks = collect(SystemHealthCheckType::standardCases())
+            ->reject(fn (SystemHealthCheckType $type): bool => $dispatcherDataRecovering
+                && $type->isDispatcherDependent())
+            ->map(fn (SystemHealthCheckType $type): SystemHealthCheck => new SystemHealthCheck(
+                $type,
+                $this,
             ));
 
         $run = $this->healthCheckRunner->run(
@@ -358,7 +315,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      * apply on the parent table while the freshness filter
      * targets the narrow table.
      */
-    private function checkMarkPriceFreshness(): int
+    public function checkMarkPriceFreshness(): int
     {
         $threshold = now()->subSeconds(self::MARK_PRICE_STALENESS_SECONDS);
         $missingGraceCutoff = now()->subMinutes(self::MARK_PRICE_MISSING_GRACE_MINUTES);
@@ -450,7 +407,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      * agnostic and tracks the canonical "this symbol's direction
      * is current" signal that the bot itself uses.
      */
-    private function checkIndicatorFreshness(): int
+    public function checkIndicatorFreshness(): int
     {
         $threshold = now()->subMinutes(self::INDICATOR_STALENESS_MINUTES);
 
@@ -497,7 +454,7 @@ final class CheckSystemHealthCommand extends BaseCommand
         // klines / conclude down) freezes the Binance stamps themselves,
         // so it still alerts at full severity through the Binance rows and
         // their siblings.
-        $binanceSystemId = ApiSystem::query()->where('canonical', 'binance')->value('id');
+        $binanceSystemId = ApiSystem::query()->canonical('binance')->value('id');
 
         if ($binanceSystemId !== null) {
             $staleSiblings = $stale->filter(
@@ -543,7 +500,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      * every minute; >10 minutes silent = the cron is broken or the
      * account's balance fetch is throwing.
      */
-    private function checkAccountBalanceFreshness(): int
+    public function checkAccountBalanceFreshness(): int
     {
         $threshold = now()->subMinutes(self::BALANCE_STALENESS_MINUTES);
 
@@ -593,7 +550,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      * the daemon's health tick. A stale mtime means the event loop is
      * wedged even though `supervisorctl status` reports RUNNING.
      */
-    private function checkDaemonHeartbeat(): int
+    public function checkDaemonHeartbeat(): int
     {
         $path = storage_path('app/user-data-daemon.heartbeat');
 
@@ -645,7 +602,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      * `routes/console.php` via `Schedule::call(...)`, used as primary
      * signal with the listen-key proxy as fallback.
      */
-    private function checkSchedulerLiveness(): int
+    public function checkSchedulerLiveness(): int
     {
         $keepaliveProxy = BinanceListenKey::query()->max('last_keep_alive_at');
 
@@ -683,7 +640,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      *
      * Each signal has its own cache key so they dedupe independently.
      */
-    private function checkFailedJobsOverflow(): int
+    public function checkFailedJobsOverflow(): int
     {
         $alerts = 0;
 
@@ -796,7 +753,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      * SELECT-1 against the default connection. The case where this
      * fails is typically a fail-over mid-run.
      */
-    private function checkDatabaseConnection(): int
+    public function checkDatabaseConnection(): int
     {
         try {
             DB::select('SELECT 1');
@@ -819,7 +776,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      * Horizon flips FATAL. The check is a PING against the default
      * connection.
      */
-    private function checkRedisConnection(): int
+    public function checkRedisConnection(): int
     {
         try {
             Redis::connection()->ping();
@@ -847,7 +804,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      * Pushover names which queue + threshold + actual depth, and the
      * full per-queue map gets attached for triage context.
      */
-    private function checkHorizonQueueDepth(): int
+    public function checkHorizonQueueDepth(): int
     {
         try {
             $depths = [];
@@ -906,7 +863,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      * exception path through the `handle()` runner if PHP itself
      * throws.
      */
-    private function checkDiskPressure(): int
+    public function checkDiskPressure(): int
     {
         $free = @disk_free_space('/');
         $total = @disk_total_space('/');
@@ -960,7 +917,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      * log entry per run. Splitting would multiply notification +
      * scheduling surface area for no operator gain.
      */
-    private function checkOrphanReconciliation(): int
+    public function checkOrphanReconciliation(): int
     {
         $accounts = Account::query()
             ->onActiveApiSystem()
@@ -1425,7 +1382,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      * legitimate sync (still progressing) from a wedge with no in-flight
      * worker.
      */
-    private function checkStaleSyncingPositions(): int
+    public function checkStaleSyncingPositions(): int
     {
         $threshold = now()->subMinutes(self::STALE_SYNCING_POSITION_MINUTES);
 
@@ -1479,7 +1436,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      * inspect the JSONL and replay (no replay command yet — the file is
      * idempotent-safe to manually replay through `api_data_stream.idempotency_key`).
      */
-    private function checkUserDataDeadLetters(): int
+    public function checkUserDataDeadLetters(): int
     {
         $path = storage_path('logs/user-data-deadletter-'.now()->format('Y-m-d').'.log');
 
@@ -1547,7 +1504,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      * run — the default canonical throttle is shorter than the check cadence,
      * which would page on every single tick while a box is down).
      */
-    private function checkFleetMetricsSilence(): int
+    public function checkFleetMetricsSilence(): int
     {
         $silent = app(FleetMetricsRepository::class)->silentHosts();
 
@@ -1628,7 +1585,7 @@ final class CheckSystemHealthCommand extends BaseCommand
      * span so healthy deploys never page; a box past it has been
      * forgotten. Re-pages every 30 minutes while the condition holds.
      */
-    private function checkMaintenanceModeStuck(): int
+    public function checkMaintenanceModeStuck(): int
     {
         $thresholdMinutes = (int) config('kraite.health_watchdog.maintenance_stuck_minutes', 45);
 

@@ -36,14 +36,6 @@ final class Kraite
      */
     public const SCALE = 16;
 
-    /**
-     * Extra headroom applied to the unit-leverage worst-case constant K when deriving feasible leverage.
-     * You can override via config('kraite.bracket_headroom_pct', ...).
-     *
-     * Example: '0.003' represents 0.3%
-     */
-    public const BRACKET_HEADROOM_PCT = '0.003';
-
     public function __construct(
         public Account $account,
     ) {}

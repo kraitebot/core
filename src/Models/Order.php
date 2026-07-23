@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Models;
 
+use Carbon\CarbonInterface;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Kraite\Core\Abstracts\BaseModel;
 use Kraite\Core\Concerns\Order\HandlesChanges;
@@ -16,17 +18,23 @@ use Kraite\Core\Concerns\Order\InteractsWithApis;
 /**
  * @property int $id
  * @property int $position_id
+ * @property string|null $uuid
+ * @property string|null $client_order_id
  * @property string $type
- * @property string $status
+ * @property string|null $status
  * @property string|null $reference_status
  * @property string|null $reference_price
  * @property string|null $reference_quantity
+ * @property string|null $original_price
+ * @property string|null $original_quantity
  * @property string|null $exchange_order_id
  * @property string|null $quantity
  * @property string|null $price
  * @property string|null $filled_quantity
+ * @property CarbonInterface|null $filled_at
  * @property string|null $side
- * @property Position $position
+ * @property string|null $position_side
+ * @property-read Position|null $position
  * @property bool $is_algo
  *
  * @method \Kraite\Core\Models\ExchangeSymbol exchangeSymbol()
@@ -63,7 +71,10 @@ final class Order extends BaseModel
         return $this->morphMany(ApiRequestLog::class, 'relatable');
     }
 
-    public function position()
+    /**
+     * @return BelongsTo<Position, $this>
+     */
+    public function position(): BelongsTo
     {
         return $this->belongsTo(Position::class);
     }

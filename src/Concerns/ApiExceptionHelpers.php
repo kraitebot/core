@@ -354,7 +354,7 @@ trait ApiExceptionHelpers
         ?string $errorCode,
         ?string $errorMessage
     ): void {
-        $apiSystem = ApiSystem::where('canonical', $this->getApiSystem())->firstOrFail();
+        $apiSystem = ApiSystem::canonical($this->getApiSystem())->firstOrFail();
         $ipAddress = Kraite::ip();
 
         $record = ForbiddenHostname::updateOrCreate(

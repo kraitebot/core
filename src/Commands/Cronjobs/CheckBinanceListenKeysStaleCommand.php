@@ -67,7 +67,7 @@ final class CheckBinanceListenKeysStaleCommand extends BaseCommand
         $missingGrace = now()->subSeconds(self::MISSING_ROW_GRACE_SECONDS);
 
         $eligibleAccounts = Account::query()
-            ->whereHas('apiSystem', fn ($q) => $q->where('canonical', 'binance'))
+            ->whereHas('apiSystem', fn ($q) => $q->canonical('binance'))
             ->where('is_active', true)
             ->whereNotNull('binance_api_key')
             ->get(['id', 'name', 'created_at', 'updated_at']);

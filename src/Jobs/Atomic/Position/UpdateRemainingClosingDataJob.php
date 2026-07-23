@@ -11,6 +11,7 @@ use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
+use Throwable;
 
 /**
  * UpdateRemainingClosingDataJob (Atomic)
@@ -65,7 +66,7 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
                 $trades = is_array($tradesResponse->result) ? $tradesResponse->result : [];
                 $closingPrice = $this->extractClosingPriceFromTrades($trades, (string) $position->direction);
             }
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             // Log but don't fail - closing price is nice to have
             info("Failed to get closing price for position {$position->id}: ".$e->getMessage());
         }
@@ -96,18 +97,10 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
             }
         }
 
-        // 3. Notifications (unified dispatch — position_closed always,
-        // position_high_profit_closed when the account-level threshold is
-        // crossed). Both route through NotificationService so they share
-        // the throttling / logging / delivery pipeline used by every
-        // other canonical in the system.
+        // 3. Notify when the account-level high-profit threshold is crossed.
         $filledLimitCount = $position->totalLimitOrdersFilled();
         $notifyThreshold = $account->total_limit_orders_filled_to_notify ?? 0;
         $highProfitNotificationSent = false;
-
-        // TEMP: position_closed pushover muted on Bruno's call — too chatty on a
-        // 12-slot book. high_profit_closed still fires because it's a real event.
-        // $this->dispatchClosedNotification($position, $closingPrice, $filledLimitCount, $wasFastTraded);
 
         if ($notifyThreshold > 0 && $filledLimitCount >= $notifyThreshold) {
             $highProfitNotificationSent = $this->dispatchHighProfitNotification(
@@ -186,41 +179,6 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
         }
 
         return null;
-    }
-
-    /**
-     * Fire the `position_closed` notification (priority -1 / low — silent
-     * on the user's device). Cache-throttled at 60s per position, so a
-     * re-run of the close workflow doesn't double-ping.
-     */
-    private function dispatchClosedNotification(
-        Position $position,
-        ?string $closingPrice,
-        int $filledLimitCount,
-        bool $wasFastTraded,
-    ): void {
-        $user = $position->account->user ?? null;
-
-        if (! $user || ! $user->is_active) {
-            return;
-        }
-
-        NotificationService::send(
-            user: $user,
-            canonical: 'position_closed',
-            referenceData: [
-                'token' => $position->exchangeSymbol?->token,
-                'pair' => $position->parsed_trading_pair,
-                'direction' => mb_strtoupper((string) $position->direction),
-                'position_id' => (int) $position->id,
-                'account_name' => $position->account?->name,
-                'closing_price' => $closingPrice,
-                'filled_limits' => $filledLimitCount,
-                'was_fast_traded' => $wasFastTraded,
-            ],
-            relatable: $position,
-            cacheKeys: ['position' => $position->id],
-        );
     }
 
     /**

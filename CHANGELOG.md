@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.80.0 - 2026-07-23
+
+### Unified business rules
+
+- [IMPROVED] Tradability, token candidate selection, order lifecycle routing,
+  system-health checks, order states, and backtest timeframes now have one
+  domain owner instead of repeated rules across jobs, observers, and commands.
+- [IMPROVED] Repeated API-system, indicator, order, and position filters use
+  named model scopes so their business meaning stays consistent.
+- [CONFIG] Indicator retry and per-symbol leverage-bracket batch limits are
+  explicit configuration values instead of embedded numbers.
+
+### Dormant behavior removed
+
+- [CHANGED] Indicator histories are retained; the obsolete cleanup workflow
+  and its constructor flag are removed.
+- [CHANGED] Inactive direction and routine position-opened/closed notification
+  senders are removed. High-profit and safety notifications remain active.
+
+### Verification
+
+- [VERIFIED] Ingestion coverage passes: 205 tests / 531 assertions; static
+  analysis reports zero errors.
+
 ## 1.79.2 - 2026-07-23
 
 ### Immediate backtesting approval queue
