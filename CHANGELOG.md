@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.82.1 - 2026-07-23
+
+### Runtime capacity reliability
+
+- [FIXED] WebSocket reconnect timers register replacement connections on the
+  active ReactPHP loop instead of attempting to start that loop again.
+- [FIXED] Dispatcher saturation flushing follows the active runtime prefix, so
+  trading-group metrics persist independently from default-group metrics.
+- [IMPROVED] Every physical Horizon queue receives the configured default
+  long-wait threshold from the same derived worker topology.
+- [UNCHANGED] TAAPI throttling and provider pacing remain unchanged.
+
+### Verification
+
+- [VERIFIED] Focused regressions pass: 9 tests / 43 assertions.
+- [VERIFIED] The complete ingestion suite passes: 3,107 tests /
+  9,983 assertions. Static analysis and formatting pass.
+
 ## 1.82.0 - 2026-07-23
 
 ### Long-range compounding

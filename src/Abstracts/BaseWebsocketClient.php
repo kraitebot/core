@@ -531,7 +531,7 @@ abstract class BaseWebsocketClient
             }
 
             $this->reconnectAttempt++;
-            $this->handleCallback($url, $callback);
+            $this->registerCallbacks($url, $callback);
         });
     }
 

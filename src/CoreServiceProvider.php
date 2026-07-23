@@ -461,6 +461,7 @@ final class CoreServiceProvider extends ServiceProvider
 
         $environments = [];
         $physicalQueues = [];
+        $physicalQueueConnections = [];
 
         foreach ($workers as $hostname => $logicalQueues) {
             if (! is_array($logicalQueues)) {
@@ -476,19 +477,34 @@ final class CoreServiceProvider extends ServiceProvider
                 // exactly so the dispatcher and Horizon agree on naming.
                 $physical = $logical === $hostname ? $hostname : "{$hostname}-{$logical}";
 
-                $supervisors["{$logical}-supervisor"] = array_merge(
+                $supervisor = array_merge(
                     $defaults,
                     ['queue' => [$physical]],
                     is_array($overrides) ? $overrides : [],
                 );
+                $supervisors["{$logical}-supervisor"] = $supervisor;
 
                 $physicalQueues[] = $physical;
+                $physicalQueueConnections[$physical] = (string) ($supervisor['connection'] ?? config('queue.default', 'redis'));
             }
 
             $environments[$hostname] = $supervisors;
         }
 
         config(['horizon.environments' => $environments]);
+
+        // Horizon matches wait thresholds by exact connection + physical
+        // queue name. Keep the configured default threshold, then project it
+        // onto every queue derived above so LongWaitDetected can observe the
+        // queues workers actually consume.
+        $waits = (array) config('horizon.waits', []);
+
+        foreach ($physicalQueueConnections as $physicalQueue => $connection) {
+            $waitKey = "{$connection}:{$physicalQueue}";
+            $waits[$waitKey] ??= (int) ($waits["{$connection}:default"] ?? 60);
+        }
+
+        config(['horizon.waits' => $waits]);
 
         // Extend step-dispatcher.queues.valid with every derived physical
         // queue so StepObserver's saving() hook accepts them. Without this

@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Kraite\Core\Models\StepsDispatcherSaturation;
 use StepDispatcher\Support\BaseCommand;
+use StepDispatcher\Support\RuntimeContext;
 use Throwable;
 
 /**
@@ -55,13 +56,16 @@ final class FlushDispatcherSaturationCommand extends BaseCommand
         // a bucket that the dispatcher is still writing into.
         $bucketAt = Carbon::now('UTC')->startOfMinute()->subMinute();
         $bucketKey = $bucketAt->format('Y-m-d-H-i');
+        $runtimePrefix = app(RuntimeContext::class)->current();
 
         foreach (self::GROUPS as $group) {
+            $metricGroup = $runtimePrefix.$group;
+
             try {
-                $this->flushBucket($group, $bucketAt, $bucketKey);
+                $this->flushBucket($metricGroup, $bucketAt, $bucketKey);
             } catch (Throwable $e) {
                 Log::channel('jobs')->error('[SATURATION-FLUSH] failed for group', [
-                    'group' => $group,
+                    'group' => $metricGroup,
                     'bucket' => $bucketKey,
                     'exception' => $e::class,
                     'message' => $e->getMessage(),
