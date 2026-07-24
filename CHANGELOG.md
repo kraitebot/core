@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.82.2 - 2026-07-24
+
+### Backtest daily amplitude
+
+- [ADDED] Backtest totals report the largest price amplitude recorded inside
+  one UTC calendar day and identify that day.
+- [UNCHANGED] Maximum adverse excursion remains available to the existing
+  risk grade; the new amplitude is operator market context only.
+
+### Verification
+
+- [VERIFIED] Focused Backtesting coverage passes: 10 tests / 55 assertions.
+- [SKIPPED] The complete suite was intentionally omitted by the light-release
+  policy after targeted coverage passed.
+
 ## 1.82.1 - 2026-07-23
 
 ### Runtime capacity reliability

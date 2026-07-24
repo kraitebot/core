@@ -99,7 +99,7 @@ final class BacktestSimulator
      * @param  Carbon|null  $since  Limit the candle window: include only candles with candle_time_utc >= $since. Null = walk everything.
      * @return array{
      *   rows: array<int, array<string, mixed>>,
-     *   totals: array{candles: int, stops: int, inconclusive: int, tp_market_only: int, reboundable: int},
+     *   totals: array<string, mixed>,
      *   meta: array<string, mixed>
      * }
      */
@@ -135,6 +135,8 @@ final class BacktestSimulator
         if ($all->isEmpty()) {
             return $this->emptyResult('No candles present for this symbol / timeframe.');
         }
+
+        $dailyAmplitude = (new BacktestDailyAmplitude)->calculate($all);
 
         // Preserve original positional index into $all so single-candle
         // mode still walks forward from the right starting point.
@@ -317,7 +319,11 @@ final class BacktestSimulator
 
         return [
             'rows' => $rows,
-            'totals' => array_merge($totals, $analytics['totals'], ['sl_coverage' => $slCoverage]),
+            'totals' => array_merge($totals, $analytics['totals'], [
+                'max_daily_amplitude_pct' => $dailyAmplitude['percentage'],
+                'max_daily_amplitude_date' => $dailyAmplitude['date'],
+                'sl_coverage' => $slCoverage,
+            ]),
             'regimes' => $analytics['regimes'],
             'meta' => [
                 'symbol' => $symbol->parsed_trading_pair,
@@ -1099,7 +1105,7 @@ final class BacktestSimulator
     }
 
     /**
-     * @return array{rows: array<int, array<string, mixed>>, totals: array<string, int>, meta: array<string, mixed>}
+     * @return array{rows: array<int, array<string, mixed>>, totals: array<string, mixed>, meta: array<string, mixed>}
      */
     private function emptyResult(string $reason): array
     {
@@ -1120,6 +1126,8 @@ final class BacktestSimulator
                 'rung_distribution' => [],
                 'avg_mae_pct' => 0,
                 'max_mae_pct' => 0,
+                'max_daily_amplitude_pct' => 0,
+                'max_daily_amplitude_date' => null,
                 'avg_candles_to_profit' => null,
                 'p95_candles_to_profit' => null,
                 'worst_bucket_pass_rate' => null,
