@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.82.3 - 2026-07-24
+
+### Binance-compatible daily amplitude
+
+- [FIXED] Daily amplitude normalizes each UTC day's high-low spread by the
+  previous daily close instead of that day's low.
+- [FIXED] The final candle close from each UTC day becomes the next day's
+  reference, including intraday backtest timeframes.
+
+### Verification
+
+- [VERIFIED] Focused Backtesting coverage passes: 12 tests / 58 assertions.
+- [SKIPPED] The complete suite was intentionally omitted by the light-release
+  policy after targeted coverage passed.
+
 ## 1.82.2 - 2026-07-24
 
 ### Backtest daily amplitude
