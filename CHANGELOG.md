@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.83.1 - 2026-07-25
+
+### Automatic backtest batch progress
+
+- [FIXED] Per-token coverage and evaluation steps remain dispatchable behind
+  the one-time batch's larger pending-token queue.
+- [UNCHANGED] Tokens remain sequential, reviewed decisions stay excluded, and
+  TAAPI requests keep using the shared production throttle.
+- [VERIFIED] Automatic backtest workflow coverage passes: 19 tests /
+  133 assertions. Changed-file static analysis and formatting pass.
+- [SKIPPED] The complete suite was intentionally omitted by the light-release
+  policy after targeted coverage passed.
+
 ## 1.83.0 - 2026-07-24
 
 ### One-time automatic backtest approvals

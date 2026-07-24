@@ -44,6 +44,7 @@ final class AutomaticBacktestLifecycleStep extends BaseQueueableJob
             Step::create([
                 'class' => EnsureBacktestCandleCoverageStep::class,
                 'queue' => 'indicators',
+                'priority' => 'high',
                 'relatable_type' => ExchangeSymbol::class,
                 'relatable_id' => $this->exchangeSymbol->id,
                 'arguments' => [
@@ -59,6 +60,7 @@ final class AutomaticBacktestLifecycleStep extends BaseQueueableJob
             Step::create([
                 'class' => RunAutomaticBacktestStep::class,
                 'queue' => 'indicators',
+                'priority' => 'high',
                 'relatable_type' => ExchangeSymbol::class,
                 'relatable_id' => $this->exchangeSymbol->id,
                 'arguments' => [
