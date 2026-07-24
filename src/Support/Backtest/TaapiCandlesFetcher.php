@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Support\Backtest;
 
 use Carbon\Carbon;
+use Closure;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
@@ -37,8 +38,8 @@ use Throwable;
  *
  * Strategy: issue ONE bounded call (results=caller-chosen, backtrack=0)
  * and upsert. Caller drives repeat invocations for deeper windows.
- * Keeps this class leaf-simple; the throttler / orchestration question
- * lives at the queue layer if we ever run this at scale.
+ * Keeps this class leaf-simple; queue callers may provide a request gate
+ * that coordinates the real HTTP attempt with shared production throttling.
  */
 final class TaapiCandlesFetcher
 {
@@ -57,10 +58,16 @@ final class TaapiCandlesFetcher
      * @param  string  $timeframe  One of BacktestTimeframe::values().
      * @param  int  $results  Upper bound on candles per call (<=300). Actual call uses min($results, gap+buffer).
      * @param  int  $backtrack  Shift window backwards by N candles (0 = latest). Forces an HTTP call when >0.
-     * @return array{inserted: int, earliest: string|null, latest: string|null, source_url: string, skipped?: bool, reason?: string, requested?: int}
+     * @param  Closure(): bool|null  $beforeRequest  Return false when a queued caller rescheduled instead of reserving a request.
+     * @return array{inserted: int, earliest: string|null, latest: string|null, source_url: string, skipped?: bool, reason?: string, requested?: int}|null
      */
-    public function fetch(ExchangeSymbol $symbol, string $timeframe, int $results = 200, int $backtrack = 0): array
-    {
+    public function fetch(
+        ExchangeSymbol $symbol,
+        string $timeframe,
+        int $results = 200,
+        int $backtrack = 0,
+        ?Closure $beforeRequest = null,
+    ): ?array {
         $this->assertSupportedTimeframe($timeframe);
         if ($results < 1 || $results > self::MAX_RESULTS_PER_CALL) {
             throw new InvalidArgumentException(sprintf(
@@ -114,6 +121,10 @@ final class TaapiCandlesFetcher
             'backtrack' => $backtrack,
             'addResultTimestamp' => 'true',
         ];
+
+        if ($beforeRequest !== null && ! $beforeRequest()) {
+            return null;
+        }
 
         $response = Http::timeout(60)->get(self::BASE_URL, $params);
 
@@ -186,7 +197,10 @@ final class TaapiCandlesFetcher
         }
 
         $latestTsInt = (int) $latestTs;
-        $gap = intdiv(time() - $latestTsInt, BacktestTimeframe::from($timeframe)->seconds());
+        $intervalSeconds = BacktestTimeframe::from($timeframe)->seconds();
+        $currentCandleTimestamp = intdiv(time(), $intervalSeconds) * $intervalSeconds;
+        $lastClosedTimestamp = $currentCandleTimestamp - $intervalSeconds;
+        $gap = intdiv(max(0, $lastClosedTimestamp - $latestTsInt), $intervalSeconds);
 
         return ['gap' => max(0, $gap), 'latest_ts' => $latestTsInt];
     }
@@ -203,12 +217,14 @@ final class TaapiCandlesFetcher
     {
         $rows = [];
         $now = now();
+        $intervalSeconds = BacktestTimeframe::from($timeframe)->seconds();
+        $currentCandleTimestamp = intdiv(time(), $intervalSeconds) * $intervalSeconds;
 
         // Shape 1: array of objects [{timestamp, open, high, low, close, volume}, ...]
         if (isset($data[0]) && is_array($data[0])) {
             foreach ($data as $row) {
                 $tsSec = $this->coerceTimestampSeconds($row['timestamp'] ?? $row['timestampHuman'] ?? null);
-                if ($tsSec === null) {
+                if ($tsSec === null || $tsSec >= $currentCandleTimestamp) {
                     continue;
                 }
                 $rows[] = $this->buildRow($symbol, $timeframe, $tsSec, $row, $now);
@@ -222,7 +238,7 @@ final class TaapiCandlesFetcher
             $count = count($data['timestamp']);
             for ($i = 0; $i < $count; $i++) {
                 $tsSec = $this->coerceTimestampSeconds($data['timestamp'][$i] ?? null);
-                if ($tsSec === null) {
+                if ($tsSec === null || $tsSec >= $currentCandleTimestamp) {
                     continue;
                 }
                 $rows[] = $this->buildRow($symbol, $timeframe, $tsSec, [

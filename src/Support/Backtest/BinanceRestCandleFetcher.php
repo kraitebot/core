@@ -66,9 +66,9 @@ final class BinanceRestCandleFetcher
 
         $intervalSec = BacktestTimeframe::from($timeframe)->seconds();
         $resumeTs = $sinceTs ?? $this->resumeFromDb($symbol, $timeframe, $intervalSec);
-        $nowTs = time();
+        $currentCandleTs = intdiv(time(), $intervalSec) * $intervalSec;
 
-        if ($resumeTs >= $nowTs) {
+        if ($resumeTs >= $currentCandleTs) {
             return [
                 'inserted' => 0,
                 'earliest' => null,
@@ -88,7 +88,7 @@ final class BinanceRestCandleFetcher
 
         // Hard safety cap — a pathological loop over 2y of 1h candles would
         // be ~12 pages; anything beyond 50 means a bug in the termination logic.
-        while ($cursor < $nowTs && $pages < 50) {
+        while ($cursor < $currentCandleTs && $pages < 50) {
             $batch = $this->fetchPage($binanceSymbol, $timeframe, $cursor);
             $pages++;
 
@@ -152,7 +152,8 @@ final class BinanceRestCandleFetcher
         $this->assertSupportedTimeframe($timeframe);
 
         $intervalSec = BacktestTimeframe::from($timeframe)->seconds();
-        $startTs = $lookbackTs ?? (time() - 180 * 86400);
+        $requestedStartTs = $lookbackTs ?? (time() - 180 * 86400);
+        $startTs = intdiv($requestedStartTs + $intervalSec - 1, $intervalSec) * $intervalSec;
         $endTs = (int) (intdiv(time(), $intervalSec) * $intervalSec);
 
         $existing = DB::table('candles')
@@ -277,6 +278,8 @@ final class BinanceRestCandleFetcher
         $now = now();
         $tz = config('app.timezone', 'UTC');
         $rows = [];
+        $intervalSeconds = BacktestTimeframe::from($timeframe)->seconds();
+        $currentCandleTimestamp = intdiv(time(), $intervalSeconds) * $intervalSeconds;
 
         foreach ($batch as $kline) {
             if (! is_array($kline) || count($kline) < 6) {
@@ -284,6 +287,10 @@ final class BinanceRestCandleFetcher
             }
 
             $ts = intdiv((int) $kline[0], 1000);
+            if ($ts >= $currentCandleTimestamp) {
+                continue;
+            }
+
             $time = Carbon::createFromTimestamp($ts, 'UTC');
 
             $rows[] = [

@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.83.0 - 2026-07-24
+
+### One-time automatic backtest approvals
+
+- [ADDED] Pending Binance tokens can run through daily-candle fetching,
+  coverage verification, and the default backtest configuration as one
+  bounded batch.
+- [ADDED] Automation approves only tokens with complete coverage, at least
+  180 eligible starts, no skipped simulations, and fewer than five stops.
+- [UNCHANGED] Tokens that miss any gate remain pending; automation never
+  rejects them.
+- [IMPROVED] Backtest candle fetches ignore the open daily candle and reserve
+  every TAAPI request through the existing shared provider throttle.
+
+### Position maximum pain
+
+- [ADDED] Position activation snapshots the gross quote-asset loss at the
+  opening stop from the market fill and every accepted ladder rung.
+- [UNCHANGED] Existing positions remain unknown, and fees, funding, and stop
+  slippage remain outside the snapshot.
+
+### Verification
+
+- [VERIFIED] Focused backtest, throttling, candle, max-pain, and activation
+  coverage passes: 50 tests / 209 assertions. Static analysis and formatting
+  pass.
+- [SKIPPED] The complete suite was intentionally omitted by the light-release
+  policy after targeted coverage passed.
+
 ## 1.82.3 - 2026-07-24
 
 ### Binance-compatible daily amplitude

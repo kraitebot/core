@@ -22,6 +22,7 @@ use Kraite\Core\Database\Factories\PositionFactory;
  * @property int $id
  * @property string $status
  * @property string $direction
+ * @property string|null $max_pain
  * @property int $total_limit_orders
  * @property Account $account
  * @property ExchangeSymbol $exchangeSymbol
@@ -48,6 +49,7 @@ final class Position extends BaseModel
         'indicators_values' => 'array',
 
         'quantity' => 'string',
+        'max_pain' => 'string',
 
         'bscs_score' => 'integer',
     ];

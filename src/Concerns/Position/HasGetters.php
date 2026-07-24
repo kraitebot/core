@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Concerns\Position;
 
+use Illuminate\Database\Eloquent\Builder;
+use Kraite\Core\Enums\OrderStatus;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\Order;
+use Kraite\Core\Support\Math;
 use Kraite\Core\Support\PositionSnapshot;
 use RuntimeException;
 
@@ -179,6 +182,89 @@ trait HasGetters
         }
 
         return bcdiv($totalCost, $totalQty, scale: 8);
+    }
+
+    /**
+     * Calculate the position's worst-case gross loss at its opening stop.
+     *
+     * The opening MARKET fill and every accepted LIMIT rung are included.
+     * A price move to the stop necessarily crosses every ladder price first,
+     * so unfilled live rungs are part of the maximum exposure. Terminal
+     * cancelled, expired, and rejected attempts are excluded.
+     *
+     * Returns null when the order graph is incomplete. Fees, funding, and
+     * stop slippage are intentionally excluded because they are unknowable
+     * at activation time.
+     */
+    public function maxPain(): ?string
+    {
+        $direction = mb_strtoupper((string) $this->direction);
+
+        if (! in_array($direction, ['LONG', 'SHORT'], true)) {
+            return null;
+        }
+
+        $stopMarketOrder = $this->orders()
+            ->where('type', 'STOP-MARKET')
+            ->whereIn('status', OrderStatus::workingOrFilledValues())
+            ->latest('id')
+            ->first();
+        $stopPriceValue = $stopMarketOrder?->price;
+
+        if (! Math::isPositive($stopPriceValue)) {
+            return null;
+        }
+
+        $stopPrice = (string) $stopPriceValue;
+
+        $entryOrders = $this->orders()
+            ->where(function (Builder $query): void {
+                $query
+                    ->where(function (Builder $marketQuery): void {
+                        $marketQuery
+                            ->where('type', 'MARKET')
+                            ->where('status', OrderStatus::Filled->value);
+                    })
+                    ->orWhere(function (Builder $limitQuery): void {
+                        $limitQuery
+                            ->where('type', 'LIMIT')
+                            ->whereIn('status', OrderStatus::workingOrFilledValues());
+                    });
+            })
+            ->get();
+
+        if ($entryOrders->isEmpty()) {
+            return null;
+        }
+
+        $totalLoss = '0';
+
+        foreach ($entryOrders as $entryOrder) {
+            $entryPriceValue = $entryOrder->price;
+            $quantityValue = $entryOrder->quantity;
+
+            if (! Math::isPositive($entryPriceValue) || ! Math::isPositive($quantityValue)) {
+                return null;
+            }
+
+            $entryPrice = (string) $entryPriceValue;
+            $quantity = (string) $quantityValue;
+
+            $lossPerUnit = $direction === 'LONG'
+                ? Math::sub($entryPrice, $stopPrice)
+                : Math::sub($stopPrice, $entryPrice);
+
+            $totalLoss = Math::add(
+                $totalLoss,
+                Math::mul($lossPerUnit, $quantity),
+            );
+        }
+
+        if (! Math::isPositive($totalLoss)) {
+            return '0.00000000';
+        }
+
+        return Math::add($totalLoss, '0', scale: 8);
     }
 
     /**

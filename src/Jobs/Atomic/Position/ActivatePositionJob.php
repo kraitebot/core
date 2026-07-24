@@ -94,11 +94,15 @@ final class ActivatePositionJob extends BaseQueueableJob
 
     public function complete(): void
     {
+        $this->position->max_pain = $this->position->maxPain();
         $this->position->updateToActive();
 
         $this->position->appLog(
             event: 'position_activated',
             message: 'Position activated — all orders confirmed',
+            metadata: [
+                'max_pain' => $this->position->max_pain,
+            ],
         );
     }
 

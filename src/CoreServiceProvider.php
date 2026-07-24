@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
 use Kraite\Core\Commands\BackfillOriginalPricesCommand;
+use Kraite\Core\Commands\Backtest\AutomaticBacktestCommand;
 use Kraite\Core\Commands\Backtest\BacktestTokenCommand;
 use Kraite\Core\Commands\CloneCommand;
 use Kraite\Core\Commands\CooldownCommand;
@@ -125,6 +126,7 @@ final class CoreServiceProvider extends ServiceProvider
             BackfillOriginalPricesCommand::class,
             UpdateRecvwindowSafetyDurationCommand::class,
             VerifyFleetTopologyCommand::class,
+            AutomaticBacktestCommand::class,
             BacktestTokenCommand::class,
             AnalyseBscsCommand::class,
             CheckDriftsCommand::class,
