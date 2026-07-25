@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.84.1 - 2026-07-25
+
+### Deployment cooldown safety
+
+- [FIXED] Cooldown counts every configured physical Horizon queue before it
+  can declare the single host drained.
+- [VERIFIED] Cooldown regressions pass: 3 tests / 7 assertions.
+
 ## 1.84.0 - 2026-07-25
 
 ### Trading safety and runtime resilience

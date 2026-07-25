@@ -7,6 +7,7 @@ namespace Kraite\Core\Commands;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Redis;
 use Kraite\Core\Support\MaintenanceMode;
+use Kraite\Core\Support\StepRouter;
 use StepDispatcher\Models\Step;
 use StepDispatcher\States\Dispatched;
 use StepDispatcher\States\Running;
@@ -23,6 +24,11 @@ final class CooldownCommand extends BaseCommand
         {--force : Force immediate cooldown, killing remaining work}';
 
     protected $description = 'Cooldown this server for deployment. Behaviour depends on SERVER_ROLE env.';
+
+    public function __construct(private readonly StepRouter $stepRouter)
+    {
+        parent::__construct();
+    }
 
     public function handle(): int
     {
@@ -194,12 +200,11 @@ final class CooldownCommand extends BaseCommand
     {
         try {
             $depth = 0;
-            foreach (self::QUEUE_NAMES as $queue) {
-                $depth += (int) Redis::connection()->llen("queues:{$queue}");
-            }
+            $redis = Redis::connection();
 
-            $hostname = mb_strtolower(str_replace('-', '', gethostname() ?: 'unknown'));
-            $depth += (int) Redis::connection()->llen("queues:{$hostname}");
+            foreach ($this->queueNames() as $queue) {
+                $depth += (int) $redis->llen("queues:{$queue}");
+            }
 
             return $depth;
         } catch (Throwable $e) {
@@ -207,6 +212,34 @@ final class CooldownCommand extends BaseCommand
 
             return -1;
         }
+    }
+
+    /**
+     * Every physical Redis queue Horizon can consume, plus legacy raw queues
+     * that may still contain work from an older deployment.
+     *
+     * @return list<string>
+     */
+    private function queueNames(): array
+    {
+        $logicalQueues = self::QUEUE_NAMES;
+
+        foreach ((array) config('kraite.horizon.workers', []) as $queues) {
+            if (is_array($queues)) {
+                $logicalQueues = [...$logicalQueues, ...array_keys($queues)];
+            }
+        }
+
+        $physicalQueues = array_map('strval', array_unique($logicalQueues));
+
+        foreach (array_unique($logicalQueues) as $logicalQueue) {
+            $physicalQueues = [
+                ...$physicalQueues,
+                ...$this->stepRouter->physicalQueuesFor((string) $logicalQueue),
+            ];
+        }
+
+        return array_values(array_unique($physicalQueues));
     }
 
     /**
