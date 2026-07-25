@@ -59,7 +59,7 @@ final class CooldownCommand extends BaseCommand
             if ($queueDepth === -1) {
                 $reasons[] = 'Queue depth: UNKNOWN (Redis probe failed — fail-closed)';
             } elseif ($queueDepth > 0) {
-                $reasons[] = "Queue depth: {$queueDepth} jobs pending";
+                $reasons[] = "Queue depth: {$queueDepth} jobs pending or in-flight";
             }
         }
 
@@ -191,10 +191,10 @@ final class CooldownCommand extends BaseCommand
     }
 
     /**
-     * Queue depth probe. Returns -1 on probe failure so callers can
-     * distinguish "I cannot prove queues are empty" from "queues are
-     * empty". Pre-fix, a Redis outage returned 0 — letting cooldown
-     * declare drained while real queue state was unknown.
+     * Ready and reserved queue workload probe. Delayed work is intentionally
+     * excluded because self-rescheduling jobs may remain delayed throughout a
+     * deployment. Returns -1 on probe failure so callers can distinguish
+     * "I cannot prove queues are empty" from "queues are empty".
      */
     private function getQueueDepth(): int
     {
@@ -204,6 +204,7 @@ final class CooldownCommand extends BaseCommand
 
             foreach ($this->queueNames() as $queue) {
                 $depth += (int) $redis->llen("queues:{$queue}");
+                $depth += (int) $redis->zcard("queues:{$queue}:reserved");
             }
 
             return $depth;

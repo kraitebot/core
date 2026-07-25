@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.84.2 - 2026-07-25
+
+### Deployment cooldown safety
+
+- [FIXED] Cooldown counts in-flight Horizon reservations as well as ready jobs,
+  so an empty ready list cannot hide work still executing during deployment.
+- [UNCHANGED] Future delayed jobs remain outside the drain gate and resume
+  after warmup.
+- [VERIFIED] Cooldown and deploy-handoff regressions pass: 6 tests /
+  14 assertions. The complete ingestion suite passes: 3,225 tests /
+  10,427 assertions.
+
 ## 1.84.1 - 2026-07-25
 
 ### Deployment cooldown safety
