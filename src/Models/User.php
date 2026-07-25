@@ -80,6 +80,7 @@ final class User extends Authenticatable
 
     protected $casts = [
         'email_verified_at' => 'datetime',
+        'terms_accepted_at' => 'datetime',
         'last_logged_in_at' => 'datetime',
         'previous_logged_in_at' => 'datetime',
         'trial_started_at' => 'datetime',
