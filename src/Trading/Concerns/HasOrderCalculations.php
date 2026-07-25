@@ -334,6 +334,12 @@ trait HasOrderCalculations
                 ? Math::mul($ref, Math::sub('1', $factor, $scale), $scale)
                 : Math::mul($ref, Math::add('1', $factor, $scale), $scale);
 
+            if (Math::lte($raw, '0', $scale)) {
+                throw new RuntimeException(
+                    "Computed limit price <= 0 (rung={$i}, ref={$ref}, gap={$effectiveGapPercent})."
+                );
+            }
+
             $clamped = false;
             $origRaw = $raw;
 
@@ -562,6 +568,10 @@ trait HasOrderCalculations
 
         $rawPrice = Math::mul($anchor, $mult, $scale);
 
+        if (Math::lte($rawPrice, '0', $scale)) {
+            throw new RuntimeException("Computed stop price <= 0 (anchor={$anchor}, pct={$stopPercent}).");
+        }
+
         // Clamp to symbol bounds
         if (isset($exchangeSymbol->min_price) && is_numeric($exchangeSymbol->min_price)) {
             if (Math::lt($rawPrice, (string) $exchangeSymbol->min_price, $scale)) {
@@ -572,10 +582,6 @@ trait HasOrderCalculations
             if (Math::gt($rawPrice, (string) $exchangeSymbol->max_price, $scale)) {
                 $rawPrice = (string) $exchangeSymbol->max_price;
             }
-        }
-
-        if (Math::lte($rawPrice, '0', $scale)) {
-            throw new RuntimeException("Computed stop price <= 0 (anchor={$anchor}, pct={$stopPercent}).");
         }
 
         $price = api_format_price($rawPrice, $exchangeSymbol);

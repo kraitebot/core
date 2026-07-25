@@ -6,7 +6,9 @@ namespace Kraite\Core\Abstracts;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
-
+use Illuminate\Support\Facades\Log;
+use RuntimeException;
+use Throwable;
 
 /**
  * BaseApiThrottler
@@ -26,7 +28,10 @@ abstract class BaseApiThrottler
      *     requests_per_window: int,
      *     window_seconds: int,
      *     min_delay_between_requests_ms?: int,
-     *     safety_threshold?: float
+     *     safety_threshold?: float,
+     *     atomic_reservation?: bool,
+     *     cache_failure_backoff_ms?: int,
+     *     reservation_contention_backoff_ms?: int
      * }
      */
     abstract protected static function getRateLimitConfig(): array;
@@ -62,6 +67,16 @@ abstract class BaseApiThrottler
         $config = static::getRateLimitConfig();
         $prefix = static::getCacheKeyPrefix();
 
+        if (($config['atomic_reservation'] ?? false) === true) {
+            $msToWait = static::reserveDispatchAtomically($prefix, $config);
+
+            if ($retryCount > 0 && $msToWait > 0) {
+                $msToWait += static::calculateExponentialBackoff($retryCount) * 1000;
+            }
+
+            return $msToWait;
+        }
+
         // Minimum delay between requests — sub-second precision preserved.
         if (isset($config['min_delay_between_requests_ms'])) {
             $msToWait = static::checkMinimumDelay($prefix, $config['min_delay_between_requests_ms']);
@@ -96,6 +111,14 @@ abstract class BaseApiThrottler
     {
         $prefix = static::getCacheKeyPrefix();
         $config = static::getRateLimitConfig();
+
+        // Opt-in throttlers reserve both the window counter and minimum-delay
+        // timestamp inside canDispatch(). Recording again here would double
+        // count every admitted request. Other throttlers keep their existing
+        // behavior unchanged.
+        if (($config['atomic_reservation'] ?? false) === true) {
+            return;
+        }
 
         // Update last dispatch timestamp
         Cache::put($prefix.':last_dispatch', Carbon::now(), $config['window_seconds']);
@@ -188,13 +211,90 @@ abstract class BaseApiThrottler
         $currentCount = Cache::get($windowKey, 0);
 
         if ($currentCount >= $effectiveLimit) {
-            $nowMs = (int) round(Carbon::now()->getPreciseTimestamp(3));
-            $windowEndMs = ((int) floor($nowMs / ($windowSeconds * 1000)) + 1) * $windowSeconds * 1000;
-
-            return max(1, $windowEndMs - $nowMs);
+            return static::millisecondsUntilWindowReset($windowSeconds);
         }
 
         return 0;
+    }
+
+    /**
+     * Atomically claim one request slot and the minimum-delay timestamp.
+     *
+     * This is opt-in because changing reservation semantics for every provider
+     * at once would alter independently tuned throttlers. Binance enables it:
+     * its many workers share one IP budget, so check-then-record can overshoot
+     * by worker concurrency and read-modify-write can lose counter increments.
+     *
+     * @param  array<string, mixed>  $config
+     */
+    protected static function reserveDispatchAtomically(string $prefix, array $config): int
+    {
+        $windowSeconds = max(1, (int) $config['window_seconds']);
+        $minDelayMs = max(0, (int) ($config['min_delay_between_requests_ms'] ?? 0));
+        $cacheFailureBackoffMs = max(1, (int) ($config['cache_failure_backoff_ms'] ?? 30000));
+        $contentionBackoffMs = max(1, (int) ($config['reservation_contention_backoff_ms'] ?? 50));
+
+        try {
+            $lock = Cache::lock($prefix.':reservation', 5);
+
+            if (! $lock->get()) {
+                return max($contentionBackoffMs, $minDelayMs);
+            }
+
+            try {
+                if ($minDelayMs > 0) {
+                    $msToWait = static::checkMinimumDelay($prefix, $minDelayMs);
+                    if ($msToWait > 0) {
+                        return $msToWait;
+                    }
+                }
+
+                $maxRequests = max(1, (int) $config['requests_per_window']);
+                $safetyThreshold = (float) ($config['safety_threshold'] ?? 1.0);
+                $effectiveLimit = max(1, (int) floor($maxRequests * $safetyThreshold));
+                $windowKey = static::getCurrentWindowKey($prefix, $windowSeconds);
+
+                // add() creates the key with its TTL exactly once. increment()
+                // is atomic, so concurrent workers cannot lose reservations.
+                Cache::add($windowKey, 0, $windowSeconds * 2);
+                $incremented = Cache::increment($windowKey);
+                if ($incremented === false) {
+                    throw new RuntimeException('Unable to increment API throttle reservation counter.');
+                }
+                $reservedCount = (int) $incremented;
+
+                if ($reservedCount > $effectiveLimit) {
+                    Cache::decrement($windowKey);
+
+                    return static::millisecondsUntilWindowReset($windowSeconds);
+                }
+
+                if (! Cache::put($prefix.':last_dispatch', Carbon::now(), $windowSeconds)) {
+                    throw new RuntimeException('Unable to persist API throttle dispatch timestamp.');
+                }
+
+                return 0;
+            } finally {
+                $lock->release();
+            }
+        } catch (Throwable $exception) {
+            Log::channel('jobs')->warning('[API-THROTTLER] atomic reservation cache failure — backing off', [
+                'throttler' => static::class,
+                'error' => $exception->getMessage(),
+                'backoff_ms' => $cacheFailureBackoffMs,
+            ]);
+
+            return $cacheFailureBackoffMs;
+        }
+    }
+
+    protected static function millisecondsUntilWindowReset(int $windowSeconds): int
+    {
+        $windowSeconds = max(1, $windowSeconds);
+        $nowMs = (int) round(Carbon::now()->getPreciseTimestamp(3));
+        $windowEndMs = ((int) floor($nowMs / ($windowSeconds * 1000)) + 1) * $windowSeconds * 1000;
+
+        return max(1, $windowEndMs - $nowMs);
     }
 
     /**

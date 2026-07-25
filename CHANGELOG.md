@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.84.0 - 2026-07-25
+
+### Trading safety and runtime resilience
+
+- [FIXED] Position close, correction, replacement, WAP, and manual-close paths
+  revalidate live ownership and preserve protection until exchange exposure is
+  confirmed gone.
+- [FIXED] Binance `-2022`, Bitget response envelopes, market-shock inputs, and
+  candidate mark prices require current trustworthy evidence before advancing.
+- [IMPROVED] Private-stream socket heartbeat, dispatcher tick health, exchange
+  error bursts, and stream execution mode are observable without mistaking
+  healthy idle or replacement work for failure.
+- [IMPROVED] Binance fallback request reservations are atomic and fail closed
+  on coordination loss; TAAPI throttling scope is unchanged.
+- [VERIFIED] The complete ingestion suite passes: 3,221 tests /
+  10,414 assertions. Static formatting and changed-file checks pass.
+
 ## 1.83.1 - 2026-07-25
 
 ### Automatic backtest batch progress

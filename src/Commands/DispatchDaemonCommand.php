@@ -46,26 +46,26 @@ final class DispatchDaemonCommand extends Command
             // a one-hop-per-minute crawl (caught 2026-06-05 during the
             // first live trading smoke test). Worse on the fleet: child
             // steps created on a worker box write the WORKER's local flag
-            // file, never athena's. `hasActiveSteps()` is a sub-millisecond
-            // EXISTS on the shared DB, so it is both prefix-correct and
-            // fleet-correct.
-            $defaultActive = StepDispatcher::hasActiveSteps();
-            $tradingActive = Steps::usingPrefix('trading', static function (): bool {
-                return StepDispatcher::hasActiveSteps();
+            // file, never athena's. `activeGroups()` reads the shared DB, so
+            // it is prefix-correct and fleet-correct while avoiding empty
+            // group ticks.
+            $defaultGroups = StepDispatcher::activeGroups();
+            $tradingGroups = Steps::usingPrefix('trading', static function (): array {
+                return StepDispatcher::activeGroups();
             });
 
-            if (! $defaultActive && ! $tradingActive) {
+            if ($defaultGroups === [] && $tradingGroups === []) {
                 usleep($idleSleepMs * 1000);
 
                 continue;
             }
 
-            if ($defaultActive) {
-                $this->tickDefault();
+            if ($defaultGroups !== []) {
+                $this->tickDefault($defaultGroups);
             }
 
-            if ($tradingActive) {
-                $this->tickTrading();
+            if ($tradingGroups !== []) {
+                $this->tickTrading($tradingGroups);
             }
 
             usleep($sleepMs * 1000);
@@ -74,35 +74,35 @@ final class DispatchDaemonCommand extends Command
         return self::SUCCESS;
     }
 
-    private function tickDefault(): void
+    /** @param list<string> $groups */
+    private function tickDefault(array $groups): void
     {
         if (MaintenanceMode::isStepsDispatchPaused('')) {
             return;
         }
 
-        try {
-            foreach (self::GROUPS as $group) {
-                StepDispatcher::dispatch($group);
-            }
-        } catch (Throwable $e) {
-            report($e);
-        }
+        $this->dispatchGroups($groups);
     }
 
-    private function tickTrading(): void
+    /** @param list<string> $groups */
+    private function tickTrading(array $groups): void
     {
         if (MaintenanceMode::isStepsDispatchPaused('trading')) {
             return;
         }
 
-        try {
-            Steps::usingPrefix('trading', function (): void {
-                foreach (self::GROUPS as $group) {
-                    StepDispatcher::dispatch($group);
-                }
-            });
-        } catch (Throwable $e) {
-            report($e);
+        Steps::usingPrefix('trading', fn () => $this->dispatchGroups($groups));
+    }
+
+    /** @param list<string> $groups */
+    private function dispatchGroups(array $groups): void
+    {
+        foreach (array_intersect(self::GROUPS, $groups) as $group) {
+            try {
+                StepDispatcher::dispatch($group);
+            } catch (Throwable $exception) {
+                report($exception);
+            }
         }
     }
 }

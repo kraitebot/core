@@ -135,8 +135,8 @@ final class PreparePositionDataJob extends BaseQueueableJob
     /**
      * Calculate margin with subscription cap, direction-aware.
      *
-     * Formula: balance × (margin_percentage_<direction> / 100)
-     * Cap: subscription.max_balance (if not unlimited)
+     * Formula: min(balance, subscription.max_balance) ×
+     *          (margin_percentage_<direction> / 100)
      *
      * @param  'LONG'|'SHORT'  $direction
      */
@@ -144,6 +144,14 @@ final class PreparePositionDataJob extends BaseQueueableJob
     {
         // Balance was stored by VerifyMinAccountBalanceJob earlier in the chain.
         $balance = $account->balanceForTrading();
+
+        // A subscription's max_balance is a portfolio ceiling, not a
+        // per-position margin ceiling. Bound the sizing basis before applying
+        // the account's direction-aware percentage.
+        $maxBalance = $account->user?->subscription?->max_balance;
+        if ($maxBalance !== null && Math::gt($balance, $maxBalance)) {
+            $balance = $maxBalance;
+        }
 
         // Direction-aware percent — LONG and SHORT sizing are tuned
         // independently on the account. Fallback 5.00 matches the
@@ -153,17 +161,6 @@ final class PreparePositionDataJob extends BaseQueueableJob
             : ($account->margin_percentage_long ?? '5.00');
 
         $margin = Math::mul($balance, Math::div((string) $pct, '100'));
-
-        // Check subscription cap — null-safe chain so unit tests (and
-        // the occasional account with a detached user relation) don't
-        // NPE before reaching the cap decision.
-        $subscription = $account->user?->subscription;
-        if ($subscription && ! $subscription->hasUnlimitedBalance()) {
-            $maxBalance = $subscription->max_balance;
-            if (Math::gt($margin, $maxBalance)) {
-                $margin = $maxBalance;
-            }
-        }
 
         return $margin;
     }

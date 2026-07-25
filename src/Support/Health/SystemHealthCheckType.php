@@ -12,6 +12,7 @@ enum SystemHealthCheckType: string
     case IndicatorFreshness = 'checkIndicatorFreshness';
     case AccountBalanceFreshness = 'checkAccountBalanceFreshness';
     case DaemonHeartbeat = 'checkDaemonHeartbeat';
+    case DispatcherTickRate = 'checkDispatcherTickRate';
     case SchedulerLiveness = 'checkSchedulerLiveness';
     case FailedJobsOverflow = 'checkFailedJobsOverflow';
     case DatabaseConnection = 'checkDatabaseConnection';
@@ -21,6 +22,7 @@ enum SystemHealthCheckType: string
     case DiskPressure = 'checkDiskPressure';
     case StaleSyncingPositions = 'checkStaleSyncingPositions';
     case UserDataDeadLetters = 'checkUserDataDeadLetters';
+    case UserDataStreamDispatchMode = 'checkUserDataStreamDispatchMode';
     case FleetMetricsSilence = 'checkFleetMetricsSilence';
     case MaintenanceModeStuck = 'checkMaintenanceModeStuck';
 
@@ -51,6 +53,7 @@ enum SystemHealthCheckType: string
             self::IndicatorFreshness => $probe->checkIndicatorFreshness(),
             self::AccountBalanceFreshness => $probe->checkAccountBalanceFreshness(),
             self::DaemonHeartbeat => $probe->checkDaemonHeartbeat(),
+            self::DispatcherTickRate => $probe->checkDispatcherTickRate(),
             self::SchedulerLiveness => $probe->checkSchedulerLiveness(),
             self::FailedJobsOverflow => $probe->checkFailedJobsOverflow(),
             self::DatabaseConnection => $probe->checkDatabaseConnection(),
@@ -60,6 +63,7 @@ enum SystemHealthCheckType: string
             self::DiskPressure => $probe->checkDiskPressure(),
             self::StaleSyncingPositions => $probe->checkStaleSyncingPositions(),
             self::UserDataDeadLetters => $probe->checkUserDataDeadLetters(),
+            self::UserDataStreamDispatchMode => $probe->checkUserDataStreamDispatchMode(),
             self::FleetMetricsSilence => $probe->checkFleetMetricsSilence(),
             self::MaintenanceModeStuck => $probe->checkMaintenanceModeStuck(),
         };

@@ -141,7 +141,7 @@ final class PlaceProfitOrderJob extends BaseApiableJob
             throw new RuntimeException("Failed to fetch mark price for {$exchangeSymbol->parsed_trading_pair}");
         }
 
-        $exchangeSymbol->updateSaving(['mark_price' => $markPrice]);
+        $exchangeSymbol->storeMarkPriceSnapshot($markPrice);
 
         // Calculate profit order data (re-anchor TP if mark price already passed it)
         $profitData = Kraite::calculateProfitOrder(

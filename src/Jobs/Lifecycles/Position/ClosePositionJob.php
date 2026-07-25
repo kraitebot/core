@@ -21,8 +21,8 @@ use StepDispatcher\Models\Step;
  *
  * Flow (8 steps):
  * 1. UpdatePositionStatusJob → status='closing'
- * 2. CancelPositionOpenOrdersJob → cancel all open orders FIRST (orderly exit)
- * 3. ClosePositionAtomicallyJob → close on exchange
+ * 2. ClosePositionAtomicallyJob → close exposure on exchange
+ * 3. CancelPositionOpenOrdersJob → remove residual reduce-only protection
  * 4. SyncPositionOrdersJob → sync orders from exchange
  * 5. QueryAccountPositionsJob → get positions snapshot
  * 6. VerifyPositionResidualAmountJob → check residual
@@ -31,9 +31,8 @@ use StepDispatcher\Models\Step;
  *
  * resolve-exception: UpdatePositionStatusJob → status='failed'
  *
- * Key difference from CancelPositionJob:
- * - Close cancels orders FIRST then closes (orderly exit)
- * - Cancel closes THEN cancels orders (exit at any price)
+ * Exposure is always removed before protection. If the exchange close fails,
+ * the existing stop-loss and take-profit remain armed.
  */
 final class ClosePositionJob extends BaseApiableJob
 {
@@ -103,16 +102,7 @@ final class ClosePositionJob extends BaseApiableJob
                     workflowId: null
                 );
 
-            // Step 2: Cancel all open orders FIRST (key difference from cancel workflow)
-            $cancelOrdersLifecycleClass = $resolver->resolve(CancelPositionOpenOrdersJob::class);
-            $cancelOrdersLifecycle = new $cancelOrdersLifecycleClass($this->position);
-            $nextIndex = $cancelOrdersLifecycle->dispatch(
-                blockUuid: $blockUuid,
-                startIndex: $nextIndex,
-                workflowId: null
-            );
-
-            // Step 3: Close position on exchange unless two independent reads
+            // Step 2: Close position on exchange unless two independent reads
             // already confirmed it flat. A redundant Bitget UTA flash-close can
             // return the ambiguous 25239 failure even though no exposure exists.
             if (! $this->positionConfirmedFlat) {
@@ -124,6 +114,16 @@ final class ClosePositionJob extends BaseApiableJob
                     workflowId: null
                 );
             }
+
+            // Step 3: Only remove protection after exposure is gone. A failed
+            // exchange close must leave the existing TP/SL armed.
+            $cancelOrdersLifecycleClass = $resolver->resolve(CancelPositionOpenOrdersJob::class);
+            $cancelOrdersLifecycle = new $cancelOrdersLifecycleClass($this->position);
+            $nextIndex = $cancelOrdersLifecycle->dispatch(
+                blockUuid: $blockUuid,
+                startIndex: $nextIndex,
+                workflowId: null
+            );
 
             // Step 4: Sync orders from exchange
             $syncOrdersLifecycleClass = $resolver->resolve(SyncPositionOrdersLifecycle::class);

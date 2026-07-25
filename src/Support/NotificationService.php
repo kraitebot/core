@@ -6,6 +6,7 @@ namespace Kraite\Core\Support;
 
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Foundation\Auth\User as AuthUser;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
@@ -35,6 +36,8 @@ use Throwable;
  */
 final class NotificationService
 {
+    private const NOTIFICATION_CACHE_TTL_SECONDS = 60;
+
     /**
      * In-process cache for `Notification` model lookups by canonical.
      *
@@ -46,7 +49,7 @@ final class NotificationService
      * Cleared between requests in worker processes via long-running PHP
      * boot, or `Once::flush()` in tests.
      *
-     * @var array<string, ?Notification>
+     * @var array<string, array{notification: ?Notification, expires_at: Carbon}>
      */
     private static array $notificationCache = [];
 
@@ -88,11 +91,18 @@ final class NotificationService
 
     private static function resolveNotification(string $canonical): ?Notification
     {
-        if (! array_key_exists($canonical, self::$notificationCache)) {
-            self::$notificationCache[$canonical] = Notification::where('canonical', $canonical)->first();
+        $cached = self::$notificationCache[$canonical] ?? null;
+
+        if ($cached === null || $cached['expires_at']->isPast()) {
+            $cached = [
+                'notification' => Notification::where('canonical', $canonical)->first(),
+                'expires_at' => now()->addSeconds(self::NOTIFICATION_CACHE_TTL_SECONDS),
+            ];
+
+            self::$notificationCache[$canonical] = $cached;
         }
 
-        return self::$notificationCache[$canonical];
+        return $cached['notification'];
     }
 
     /**
@@ -166,41 +176,31 @@ final class NotificationService
             }
         }
 
-        // Throttle check: only if throttleDuration is set and > 0
-        if ($throttleDuration !== null && $throttleDuration > 0) {
-            if ($builtCacheKey) {
-                // Cache-based throttling with atomic operation
-                // Cache::add() only sets the key if it doesn't exist (atomic SETNX operation in Redis)
-                // Returns true if key was successfully set (we won the race), false if key already exists
-                if (! Cache::add($builtCacheKey, true, $throttleDuration)) {
-                    // Key already existed - another worker got here first
-                    // This prevents race conditions across multiple worker servers
-                    return false;
-                }
-                // Key was set successfully - we won the race, continue to send notification
-            } else {
-                // Database-based throttling (default fallback)
-                // Use $relatable if provided, otherwise use $user as the throttle relatable
-                $throttleRelatable = $relatable ?? $user;
+        // Database throttle check. Cache-based throttling is claimed immediately
+        // before delivery so held, invalid, opted-out, or failed notifications
+        // never occupy a successful-delivery window.
+        if ($throttleDuration !== null && $throttleDuration > 0 && ! $builtCacheKey) {
+            // Database-based throttling (default fallback)
+            // Use $relatable if provided, otherwise use $user as the throttle relatable
+            $throttleRelatable = $relatable ?? $user;
 
-                // Only actually-delivered rows count toward the throttle window.
-                // This is a no-op for non-threshold notifications (every row they
-                // write is passed_threshold=true), but it stops a threshold's
-                // recorded-only "held" rows from being mistaken for a recent
-                // delivery — otherwise a notification with both a throttle window
-                // and a threshold could never accumulate enough to breach.
-                $isThrottled = NotificationLog::query()
-                    ->where('canonical', $canonical)
-                    ->where('relatable_type', get_class($throttleRelatable))
-                    ->where('relatable_id', $throttleRelatable->id)
-                    ->where('passed_threshold', true)
-                    ->where('created_at', '>', now()->subSeconds($throttleDuration))
-                    ->exists();
+            // Only actually-delivered rows count toward the throttle window.
+            // This is a no-op for non-threshold notifications (every row they
+            // write is passed_threshold=true), but it stops a threshold's
+            // recorded-only "held" rows from being mistaken for a recent
+            // delivery — otherwise a notification with both a throttle window
+            // and a threshold could never accumulate enough to breach.
+            $isThrottled = NotificationLog::query()
+                ->where('canonical', $canonical)
+                ->where('relatable_type', get_class($throttleRelatable))
+                ->where('relatable_id', $throttleRelatable->id)
+                ->where('passed_threshold', true)
+                ->where('created_at', '>', now()->subSeconds($throttleDuration))
+                ->exists();
 
-                if ($isThrottled) {
-                    // Still within throttle window - skip sending
-                    return false;
-                }
+            if ($isThrottled) {
+                // Still within throttle window - skip sending
+                return false;
             }
         }
 
@@ -255,6 +255,22 @@ final class NotificationService
             return false;
         }
 
+        if ($builtCacheKey && $throttleDuration !== null && $throttleDuration > 0) {
+            try {
+                if (! Cache::add($builtCacheKey, true, $throttleDuration)) {
+                    return false;
+                }
+            } catch (Throwable $e) {
+                Log::warning('[NotificationService] Failed to claim throttle window; swallowed to protect the caller', [
+                    'canonical' => $canonical,
+                    'cache_error' => $e->getMessage(),
+                    'cache_exception' => $e::class,
+                ]);
+
+                return false;
+            }
+        }
+
         // Build additional parameters with action URL if provided
         $additionalParameters = [];
         if ($messageData['actionUrl']) {
@@ -299,6 +315,18 @@ final class NotificationService
                 )
             );
         } catch (Throwable $e) {
+            if ($builtCacheKey) {
+                try {
+                    Cache::forget($builtCacheKey);
+                } catch (Throwable $cacheException) {
+                    Log::warning('[NotificationService] Failed to release throttle claim after delivery failure', [
+                        'canonical' => $canonical,
+                        'cache_error' => $cacheException->getMessage(),
+                        'cache_exception' => $cacheException::class,
+                    ]);
+                }
+            }
+
             Log::warning('[NotificationService] notify() failed; swallowed to protect the caller', [
                 'canonical' => $canonical,
                 'recipient_id' => $user->id ?? null,
@@ -308,9 +336,6 @@ final class NotificationService
 
             return false;
         }
-
-        // Cache key already set atomically before sending (for cache-based throttling)
-        // No need to set it again here
 
         return true;
     }

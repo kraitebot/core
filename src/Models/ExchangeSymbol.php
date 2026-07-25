@@ -199,6 +199,19 @@ final class ExchangeSymbol extends BaseModel
         return $this->hasOne(ExchangeSymbolPrice::class);
     }
 
+    public function storeMarkPriceSnapshot(string $markPrice): void
+    {
+        $priceRow = $this->priceRow()->updateOrCreate(
+            [],
+            [
+                'mark_price' => $markPrice,
+                'mark_price_synced_at' => now(),
+            ],
+        );
+
+        $this->setRelation('priceRow', $priceRow);
+    }
+
     /**
      * Read mark_price from the sidecar table when present; fall
      * back to the legacy column on `exchange_symbols` otherwise.

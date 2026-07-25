@@ -76,13 +76,8 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
         // Step 3: Assign Best Tokens to Position Slots
         $tokenSelection = TokenSelection::forAccount($this->account);
         $assignedTokens = $tokenSelection->assign();
+        $this->assignedCount = $tokenSelection->assignedCount();
         $this->deletedCount = $tokenSelection->deletedCount();
-
-        // Count how many positions were successfully assigned
-        $this->assignedCount = $this->account->positions()
-            ->where('status', 'new')
-            ->whereNotNull('exchange_symbol_id')
-            ->count();
 
         // Determine stop_reason if no tokens were assigned
         $stopReason = $this->determineStopReason($btcContext, $assignedTokens);

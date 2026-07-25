@@ -297,6 +297,17 @@ abstract class BaseWebsocketClient
         $this->loop->run();
     }
 
+    /**
+     * A completed handshake is not forward progress: a bad endpoint can
+     * connect and immediately close forever. Reset reconnect escalation only
+     * after the peer proves the transport is alive with a ping or data frame.
+     */
+    protected function markConnectionHealthy(): void
+    {
+        $this->reconnectAttempt = 0;
+        $this->reconnectStormAlertRaised = false;
+    }
+
     private function registerCallbacks(string $url, array $callback): void
     {
         if (FreezeMode::isActive()) {
@@ -311,8 +322,6 @@ abstract class BaseWebsocketClient
         $this->createWSConnection($url)->then(
             function (WebSocket $conn) use ($callback, $url) {
                 $this->wsConnection = $conn;
-                $this->reconnectAttempt = 0;
-                $this->reconnectStormAlertRaised = false;
                 $this->connectedAt = microtime(true);
                 $this->lastFrameAt = microtime(true);
                 $this->framesReceived = 0;
@@ -346,11 +355,13 @@ abstract class BaseWebsocketClient
                     if ($this->pingsCountAsAlive) {
                         $this->lastFrameAt = microtime(true);
                     }
+                    $this->markConnectionHealthy();
                     $conn->send(new Frame('', true, Frame::OP_PONG));
                 });
 
                 $conn->on('message', function ($msg) use ($conn, $callback) {
                     $this->lastFrameAt = microtime(true);
+                    $this->markConnectionHealthy();
                     // Real data frame — advance the no-data clock. This is
                     // the ONLY place lastDataFrameAt moves (never on connect
                     // or ping) so it ages correctly through a reconnect flap.

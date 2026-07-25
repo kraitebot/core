@@ -24,11 +24,11 @@ use Throwable;
  * placed on the exchange.
  *
  * Must run AFTER PreparePositionDataJob (margin, leverage, total_limit_orders must be set).
- * Must run BEFORE PlaceMarketOrderJob (sets mark_price on exchange symbol).
+ * Must run BEFORE PlaceMarketOrderJob (stores a fresh mark-price snapshot).
  *
  * Flow:
  * 1. Fetch mark price from exchange API
- * 2. Update exchange symbol with latest mark_price
+ * 2. Store the latest mark price in the sidecar
  * 3. Calculate market order notional using divider formula
  * 4. Validate market-order notional meets symbol minimum
  * 5. Simulate the full limit ladder against mark_price + market_order_quantity
@@ -98,8 +98,8 @@ final class VerifyOrderNotionalForMarketOrderJob extends BaseApiableJob
             throw new RuntimeException("Failed to fetch mark price for {$exchangeSymbol->parsed_trading_pair}");
         }
 
-        // 2. Update exchange symbol with mark price (used by PlaceMarketOrderJob)
-        $exchangeSymbol->updateSaving(['mark_price' => $markPrice]);
+        // 2. Store the REST snapshot in the sidecar read by all price computations.
+        $exchangeSymbol->storeMarkPriceSnapshot($markPrice);
 
         // 3. Calculate market order notional using divider formula
         // divider = 2^(totalLimitOrders + 1) e.g., 4 limits = 32

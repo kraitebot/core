@@ -65,7 +65,8 @@ trait HasGetters
     // If total limit orders are filled for this position.
     public function allLimitOrdersFilled(): bool
     {
-        return $this->totalLimitOrdersFilled() === $this->total_limit_orders;
+        return $this->total_limit_orders !== null
+            && $this->totalLimitOrdersFilled() >= $this->total_limit_orders;
     }
 
     /**

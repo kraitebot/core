@@ -9,6 +9,7 @@ use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
+use Kraite\Core\Trading\Kraite;
 use RuntimeException;
 use Throwable;
 
@@ -126,7 +127,7 @@ final class PlaceMarketOrderJob extends BaseApiableJob
         $margin = (string) $this->position->margin;
         $notional = Math::div(Math::mul($margin, $leverage), $divider);
 
-        $quantity = $exchangeSymbol->getQuantityForAmount($notional, respectMinNotional: false);
+        $quantity = $exchangeSymbol->getQuantityForAmount($notional, respectMinNotional: true);
 
         if ($quantity === '0') {
             throw new RuntimeException(
@@ -134,12 +135,11 @@ final class PlaceMarketOrderJob extends BaseApiableJob
             );
         }
 
-        $side = $direction === 'LONG' ? 'BUY' : 'SELL';
-        $markPrice = api_format_price((string) $exchangeSymbol->mark_price, $exchangeSymbol);
-
         // Reuse any Order row an aborted prior attempt left behind (no
         // exchange_order_id means it never reached the exchange). Prevents
         // orphan rows accumulating on retries.
+        $side = $direction === 'LONG' ? 'BUY' : 'SELL';
+
         if ($this->marketOrder === null) {
             $this->marketOrder = Order::create([
                 'position_id' => $this->position->id,
@@ -151,20 +151,39 @@ final class PlaceMarketOrderJob extends BaseApiableJob
             ]);
         }
 
+        $placedQuantity = (string) $this->marketOrder->quantity;
+
+        if ($exchangeSymbol->isQuantityBelowMinNotional($placedQuantity)) {
+            throw new RuntimeException(
+                "Market order quantity {$placedQuantity} fell below minimum notional at the latest mark price"
+            );
+        }
+
+        Kraite::calculateLimitOrdersData(
+            totalLimitOrders: $this->position->total_limit_orders,
+            direction: (string) $direction,
+            referencePrice: (string) $exchangeSymbol->mark_price,
+            marketOrderQty: $placedQuantity,
+            exchangeSymbol: $exchangeSymbol,
+            limitQuantityMultipliers: $exchangeSymbol->limit_quantity_multipliers,
+        );
+
+        $markPrice = api_format_price((string) $exchangeSymbol->mark_price, $exchangeSymbol);
         $apiResponse = $this->marketOrder->apiPlace();
 
-        // Calculate actual notional for response
-        $actualNotional = $exchangeSymbol->getAmountForQuantity($quantity);
+        // An interrupted prior attempt may have persisted a quantity calculated
+        // from an older mark price. Report the quantity actually sent.
+        $actualNotional = $exchangeSymbol->getAmountForQuantity($placedQuantity);
 
         return [
             'position_id' => $this->position->id,
             'order_id' => $this->marketOrder->id,
             'trading_pair' => $exchangeSymbol->parsed_trading_pair,
             'direction' => $direction,
-            'side' => $side,
-            'quantity' => $quantity,
+            'side' => $this->marketOrder->side,
+            'quantity' => $placedQuantity,
             'estimated_price' => $markPrice,
-            'margin' => Math::div($notional, $leverage),
+            'margin' => $margin,
             'notional' => $actualNotional,
             'message' => 'Market order placed on exchange',
             'exchange_order_id' => $apiResponse->result['orderId'] ?? null,

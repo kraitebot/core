@@ -6,10 +6,11 @@ namespace Kraite\Core\Commands\Cronjobs;
 
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
+use Kraite\Core\Jobs\Atomic\Order\RecreateCancelledOrderJob;
+use Kraite\Core\Jobs\Lifecycles\Position\PreparePositionReplacementJob;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Models\ApiRequestLog;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
@@ -23,7 +24,10 @@ use Kraite\Core\Support\Health\Remediation\WapRemediator;
 use Kraite\Core\Support\MaintenanceMode;
 use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\PositionSafety;
+use StepDispatcher\Models\Step;
+use StepDispatcher\States\Failed;
 use StepDispatcher\Support\BaseCommand;
+use StepDispatcher\Support\Steps;
 use Throwable;
 
 /**
@@ -761,6 +765,12 @@ final class CheckDriftsCommand extends BaseCommand
                 continue;
             }
 
+            if ($this->replacementIsInProgress($position)) {
+                $this->verboseComment("  Position #{$position->id}: order replacement in progress — skipping transient structure check.");
+
+                continue;
+            }
+
             $missing = $this->detectMissingStructure($position);
 
             if ($missing === []) {
@@ -786,7 +796,8 @@ final class CheckDriftsCommand extends BaseCommand
     /**
      * Scope 4 — trading-engine health. Deterministic money-danger signals
      * beyond structure/drift: a burst of failed positions, a storm of
-     * failed trading steps, or rapid-fire exchange errors in the log. Any
+     * failed trading steps, or rapid-fire exchange errors in the request
+     * ledger. Any
      * one over its (conservative, config-driven) threshold enters cooldown.
      * The LLM narrator never decides this — it only documents it after.
      */
@@ -816,10 +827,13 @@ final class CheckDriftsCommand extends BaseCommand
         // Signal B — failed trading-step storm. The engine choking on the
         // money path. Threshold sits well above benign TAAPI/kline noise.
         $stepThreshold = (int) config('kraite.guard.failed_steps_threshold', 25);
-        $failedSteps = DB::table('trading_steps')
-            ->where('state', 'StepDispatcher\\States\\Failed')
-            ->where('updated_at', '>', $since)
-            ->count();
+        $failedSteps = Steps::usingPrefix(
+            'trading',
+            fn (): int => Step::query()
+                ->where('state', Failed::class)
+                ->where('updated_at', '>', $since)
+                ->count(),
+        );
 
         if ($failedSteps >= $stepThreshold) {
             $this->enterCooldown('failed_steps_storm', [
@@ -831,10 +845,11 @@ final class CheckDriftsCommand extends BaseCommand
             return;
         }
 
-        // Signal C — rapid-fire exchange errors in the Laravel log. Counting
-        // matching lines is deterministic; the LLM narrates, never decides.
+        // Signal C — rapid-fire exchange API errors in the request ledger.
+        // Counting persisted request outcomes is deterministic; the LLM
+        // narrates, never decides.
         $exchangeErrorThreshold = (int) config('kraite.guard.exchange_error_log_threshold', 15);
-        $exchangeErrors = $this->countRecentExchangeErrorsInLog($since);
+        $exchangeErrors = $this->countRecentExchangeApiErrors($since);
 
         if ($exchangeErrors >= $exchangeErrorThreshold) {
             $this->enterCooldown('exchange_error_storm', [
@@ -846,42 +861,24 @@ final class CheckDriftsCommand extends BaseCommand
     }
 
     /**
-     * Count exchange-facing API error lines in today's Laravel log within
-     * the window. Deliberately simple + defensive: reads only the tail,
-     * never throws (a log-read failure must never break the safety cron).
+     * Count exchange-facing API failures persisted within the guard window.
+     * HTTP failures carry a 4xx/5xx response code. Vendor failures returned
+     * inside HTTP 200 responses are recorded through error_message.
      */
-    private function countRecentExchangeErrorsInLog(Carbon $since): int
+    private function countRecentExchangeApiErrors(Carbon $since): int
     {
         try {
-            $logFile = storage_path('logs/laravel-'.Carbon::now()->format('Y-m-d').'.log');
-            if (! File::exists($logFile)) {
-                return 0;
-            }
-
-            // Read the last ~4000 lines only — a storm is recent and dense.
-            $lines = array_slice(file($logFile) ?: [], -4000);
-            $count = 0;
-
-            foreach ($lines as $line) {
-                // Only lines that look like a timestamped ERROR mentioning an
-                // exchange-side failure. Keep the pattern broad but anchored
-                // to error level so INFO/DEBUG noise never counts.
-                if (! str_contains($line, '.ERROR')) {
-                    continue;
-                }
-                if (preg_match('/binance|bybit|bitget|kucoin|exchange|api.?error|-\d{4}\b/i', $line) !== 1) {
-                    continue;
-                }
-                if (preg_match('/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/', $line, $m) === 1) {
-                    if (Carbon::parse($m[1])->greaterThan($since)) {
-                        $count++;
-                    }
-                }
-            }
-
-            return $count;
+            return ApiRequestLog::query()
+                ->where('created_at', '>', $since)
+                ->whereHas('apiSystem', fn ($query) => $query->where('is_exchange', true))
+                ->where(function ($query): void {
+                    $query
+                        ->where('http_response_code', '>=', 400)
+                        ->orWhereNotNull('error_message');
+                })
+                ->count();
         } catch (Throwable $e) {
-            Log::warning('[monitor-guard] exchange-error log scan failed; treating as 0', [
+            Log::warning('[monitor-guard] exchange API error count failed; treating as 0', [
                 'message' => $e->getMessage(),
             ]);
 
@@ -901,6 +898,17 @@ final class CheckDriftsCommand extends BaseCommand
             ->whereIn('type', ['PROFIT-LIMIT', 'PROFIT-MARKET', 'STOP-MARKET'])
             ->whereIn('status', ['FILLED', 'TRIGGERED'])
             ->isNotEmpty();
+    }
+
+    private function replacementIsInProgress(Position $position): bool
+    {
+        return (bool) Steps::usingPrefix(
+            'trading',
+            fn (): bool => Step::hasLiveWorkflow($position, [
+                PreparePositionReplacementJob::class,
+                RecreateCancelledOrderJob::class,
+            ]),
+        );
     }
 
     /**

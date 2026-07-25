@@ -10,7 +10,6 @@ use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Enums\BitgetAccountMode;
 use Kraite\Core\Models\Account;
-use Kraite\Core\Models\ExchangeSymbolPrice;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\TpSlResolver;
@@ -200,20 +199,7 @@ final class PlacePositionTpslJob extends BaseApiableJob
             throw new RuntimeException("Failed to fetch mark price for {$exchangeSymbol->parsed_trading_pair}");
         }
 
-        // Cutover (2026-05-04): mark-price storage moved to the
-        // exchange_symbol_prices sidecar so the daemon's hot
-        // write path no longer contends with parent-table writers.
-        // This Bitget-side single-row update writes through the
-        // same sidecar so the accessor on ExchangeSymbol returns
-        // the freshly-fetched value on subsequent reads.
-        ExchangeSymbolPrice::updateOrCreate(
-            ['exchange_symbol_id' => $exchangeSymbol->id],
-            ['mark_price' => $markPrice, 'mark_price_synced_at' => now()],
-        );
-
-        // Bust the in-memory relationship cache so the accessor
-        // re-reads the sidecar on the next access in this request.
-        $exchangeSymbol->unsetRelation('priceRow');
+        $exchangeSymbol->storeMarkPriceSnapshot($markPrice);
 
         // Calculate take-profit price (re-anchor TP if mark price already passed it)
         $profitData = Kraite::calculateProfitOrder(

@@ -166,6 +166,7 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
                 $expectedQty
             ));
         }
+        $this->capWapToOwnedExposure($expectedQty, $scale);
 
         // 4) Calculate target price
         $profitPct = (string) $this->position->profit_percentage;  // e.g. "0.350"
@@ -515,11 +516,69 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
      * a trustworthy breakEvenPrice. Short positions are represented by the
      * absolute quantity (same convention as $this->positionQty).
      */
-    private function expectedPositionQty(): string
+    protected function expectedPositionQty(): string
     {
         return (string) $this->position->orders()
             ->whereIn('type', ['MARKET', 'LIMIT'])
             ->where('status', 'FILLED')
             ->sum('quantity');
+    }
+
+    /**
+     * Never resize Kraite's TP to cover fills it does not own.
+     *
+     * Exchange position quantity and break-even price aggregate every fill on
+     * the symbol and side. When they exceed the local FILLED entry ledger,
+     * derive both values from Kraite's orders instead.
+     */
+    protected function capWapToOwnedExposure(string $expectedQty, int $scale): void
+    {
+        if ($this->positionQty === null
+            || $this->breakEvenPrice === null
+            || ! Math::gt($this->positionQty, $expectedQty, $scale)) {
+            return;
+        }
+
+        $filledEntries = $this->position->orders()
+            ->whereIn('type', ['MARKET', 'LIMIT'])
+            ->where('status', 'FILLED')
+            ->get(['price', 'quantity']);
+
+        $ownedQuantity = '0';
+        $ownedNotional = '0';
+
+        foreach ($filledEntries as $entry) {
+            $price = (string) ($entry->price ?? '0');
+            $quantity = (string) ($entry->quantity ?? '0');
+
+            if (! Math::gt($price, '0', $scale) || ! Math::gt($quantity, '0', $scale)) {
+                throw new RuntimeException(sprintf(
+                    'Cannot isolate Kraite-owned WAP for position #%d: FILLED entry #%d has invalid price=%s quantity=%s.',
+                    $this->position->id,
+                    $entry->id,
+                    $price,
+                    $quantity,
+                ));
+            }
+
+            $ownedQuantity = Math::add($ownedQuantity, $quantity, $scale);
+            $ownedNotional = Math::add(
+                $ownedNotional,
+                Math::mul($price, $quantity, $scale),
+                $scale,
+            );
+        }
+
+        if (! Math::equal($ownedQuantity, $expectedQty, $scale) || ! Math::gt($ownedQuantity, '0', $scale)) {
+            throw new RuntimeException(sprintf(
+                'Cannot isolate Kraite-owned WAP for position #%d: local filled quantity changed during calculation (expected=%s actual=%s).',
+                $this->position->id,
+                $expectedQty,
+                $ownedQuantity,
+            ));
+        }
+
+        $this->positionQty = $ownedQuantity;
+        $this->breakEvenPrice = Math::div($ownedNotional, $ownedQuantity, $scale);
     }
 }

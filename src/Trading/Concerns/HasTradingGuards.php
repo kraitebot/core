@@ -139,7 +139,7 @@ trait HasTradingGuards
         }
 
         // Shorts threshold rule
-        $shorts = $opened->onlyShorts()->get(['id', 'direction', 'total_limit_orders']);
+        $shorts = (clone $opened)->onlyShorts()->get(['id', 'direction', 'total_limit_orders']);
         $totalShorts = $shorts->count();
         $thresholdShort = intdiv($totalShorts, 2);
 
@@ -158,7 +158,7 @@ trait HasTradingGuards
         }
 
         // Longs threshold rule
-        $longs = $opened->onlyLongs()->get(['id', 'direction', 'total_limit_orders']);
+        $longs = (clone $opened)->onlyLongs()->get(['id', 'direction', 'total_limit_orders']);
         $totalLongs = $longs->count();
         $thresholdLong = intdiv($totalLongs, 2);
 

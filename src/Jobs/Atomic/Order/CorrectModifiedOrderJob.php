@@ -58,28 +58,29 @@ class CorrectModifiedOrderJob extends BaseApiableJob
      */
     public function startOrFail(): bool
     {
-        // Position must be in an active status
-        if (! in_array($this->position->status, $this->position->activeStatuses(), true)) {
-            return false;
-        }
-
         // Order must belong to this position
         if ($this->order->position_id !== $this->position->id) {
             return false;
         }
 
-        // Order must be active (NEW or PARTIALLY_FILLED)
-        if (! in_array($this->order->status, ['NEW', 'PARTIALLY_FILLED'], true)) {
-            return false;
-        }
-
-        // Order must NOT be algo (algo orders require cancel+recreate)
+        // Algo orders require cancel + recreate, never in-place correction.
         if ($this->order->is_algo) {
             return false;
         }
 
-        // Must have reference values to restore
-        if ($this->order->reference_price === null && $this->order->reference_quantity === null) {
+        // Missing reference values means the correction request itself is invalid.
+        return $this->order->reference_price !== null
+            || $this->order->reference_quantity !== null;
+    }
+
+    public function startOrSkip(): bool
+    {
+        if (! in_array($this->position->status, $this->position->activeStatuses(), true)) {
+            return false;
+        }
+
+        // Order must be active (NEW or PARTIALLY_FILLED)
+        if (! in_array($this->order->status, ['NEW', 'PARTIALLY_FILLED'], true)) {
             return false;
         }
 
@@ -96,11 +97,7 @@ class CorrectModifiedOrderJob extends BaseApiableJob
             && $this->order->quantity !== null
             && ! Math::equal($this->order->quantity, $this->order->reference_quantity);
 
-        if (! $hasPriceDrift && ! $hasQuantityDrift) {
-            return false;
-        }
-
-        return true;
+        return $hasPriceDrift || $hasQuantityDrift;
     }
 
     /**

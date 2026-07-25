@@ -8,6 +8,7 @@ use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\MarketRegime\Bscs;
 use Kraite\Core\Support\Math;
+use RuntimeException;
 
 /**
  * DetermineLeverageJob (Atomic)
@@ -150,8 +151,18 @@ final class DetermineLeverageJob extends BaseQueueableJob
      */
     public function getMaxLeverageForMargin(string $margin, array $brackets, int $accountMaxLeverage): array
     {
+        $this->validateLeverageBrackets($brackets);
+
         // Sort brackets by notionalCap descending (largest cap / lowest leverage first)
-        usort($brackets, function ($a, $b) {
+        usort($brackets, function (array $a, array $b): int {
+            if ($a['notionalCap'] === null) {
+                return $b['notionalCap'] === null ? 0 : -1;
+            }
+
+            if ($b['notionalCap'] === null) {
+                return 1;
+            }
+
             return Math::cmp((string) $b['notionalCap'], (string) $a['notionalCap']);
         });
 
@@ -166,10 +177,10 @@ final class DetermineLeverageJob extends BaseQueueableJob
             // Use the minimum of account's max and bracket's max
             $leverage = min($accountMaxLeverage, $bracketMaxLev);
             $notional = Math::mul($margin, (string) $leverage);
-            $cap = (string) $bracket['notionalCap'];
+            $cap = $bracket['notionalCap'];
 
             // Check if notional fits under this bracket's cap
-            if (Math::lt($notional, $cap)) {
+            if ($cap === null || Math::lte($notional, (string) $cap)) {
                 $bestLeverage = $leverage;
                 $bestNotional = $notional;
                 $bestBracket = (int) $bracket['bracket'];
@@ -195,5 +206,26 @@ final class DetermineLeverageJob extends BaseQueueableJob
             'bracket' => $bestBracket,
             'reason' => $reason,
         ];
+    }
+
+    private function validateLeverageBrackets(array $brackets): void
+    {
+        foreach ($brackets as $index => $bracket) {
+            $hasRequiredKeys = is_array($bracket)
+                && array_key_exists('bracket', $bracket)
+                && array_key_exists('initialLeverage', $bracket)
+                && array_key_exists('notionalCap', $bracket);
+
+            if (! $hasRequiredKeys
+                || ! is_numeric($bracket['bracket'])
+                || (int) $bracket['bracket'] < 1
+                || ! is_numeric($bracket['initialLeverage'])
+                || (int) $bracket['initialLeverage'] < 1
+                || ($bracket['notionalCap'] !== null
+                    && (! is_numeric($bracket['notionalCap'])
+                        || Math::lte((string) $bracket['notionalCap'], '0')))) {
+                throw new RuntimeException("Invalid leverage bracket at index {$index}.");
+            }
+        }
     }
 }

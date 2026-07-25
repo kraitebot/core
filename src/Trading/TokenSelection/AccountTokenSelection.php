@@ -65,12 +65,9 @@ final class AccountTokenSelection
      */
     private string $tokens = '';
 
-    private int $deletedCount = 0;
+    private int $assignedCount = 0;
 
-    /*
-     * Current position being processed.
-     */
-    private Position $positionReference;
+    private int $deletedCount = 0;
 
     public function __construct(
         private readonly Account $account,
@@ -150,6 +147,11 @@ final class AccountTokenSelection
         return $this->deletedCount;
     }
 
+    public function assignedCount(): int
+    {
+        return $this->assignedCount;
+    }
+
     /**
      * Expand a collection of tokens to include all equivalent tokens via TokenMapper.
      *
@@ -175,6 +177,7 @@ final class AccountTokenSelection
     {
         // Reset tokens string for each call
         $this->tokens = '';
+        $this->assignedCount = 0;
         $this->deletedCount = 0;
 
         $this->availableExchangeSymbols = $this->candidatePoolBuilder->build($this->account);
@@ -283,7 +286,6 @@ final class AccountTokenSelection
         $batchPicks1dCorrelation = [];
 
         foreach ($newPositions as $position) {
-            $this->positionReference = $position;
             $direction = $position->direction;
             $bestToken = null;
 
@@ -381,6 +383,7 @@ final class AccountTokenSelection
                 'parsed_trading_pair' => $bestToken->parsed_trading_pair,
                 'was_fast_traded' => $wasFastTracked,
             ]);
+            $this->assignedCount++;
 
             $batchExclusions[] = $bestToken->id;
 
@@ -732,7 +735,8 @@ final class AccountTokenSelection
                 'score' => $bestScore,
                 'timeframe' => $bestTimeframe,
             ];
-        });
+        })->filter(static fn (array $scoredSymbol): bool => $scoredSymbol['timeframe'] !== null
+            && $scoredSymbol['score'] > 0.0);
 
         $best = $scoredSymbols->sortByDesc('score')->first();
 

@@ -14,6 +14,7 @@ use Kraite\Core\Abstracts\BaseModel;
  * @property string $listen_key
  * @property Carbon|null $last_created_at
  * @property Carbon|null $last_keep_alive_at
+ * @property Carbon|null $last_frame_at
  * @property string|null $last_keep_alive_status
  * @property int $failure_count
  * @property Carbon|null $created_at
@@ -25,7 +26,7 @@ use Kraite\Core\Abstracts\BaseModel;
  * is encrypted at rest because anyone with it can subscribe to the
  * account's order/balance events on Binance's edge.
  */
-class BinanceListenKey extends BaseModel
+final class BinanceListenKey extends BaseModel
 {
     protected $table = 'binance_listen_keys';
 
@@ -35,6 +36,7 @@ class BinanceListenKey extends BaseModel
         'listen_key' => 'encrypted',
         'last_created_at' => 'datetime',
         'last_keep_alive_at' => 'datetime',
+        'last_frame_at' => 'datetime',
         'failure_count' => 'integer',
     ];
 

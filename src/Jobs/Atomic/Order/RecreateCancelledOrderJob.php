@@ -67,23 +67,22 @@ final class RecreateCancelledOrderJob extends BaseApiableJob
      */
     public function startOrFail(): bool
     {
-        // Position must be in an active status
-        if (! in_array($this->position->status, $this->position->activeStatuses(), true)) {
-            return false;
-        }
-
-        // Order must be in a terminal non-fill state.
-        if (! in_array($this->cancelledOrder->status, ['CANCELLED', 'EXPIRED', 'REJECTED'], true)) {
-            return false;
-        }
-
         // Order must belong to this position
         if ($this->cancelledOrder->position_id !== $this->position->id) {
             return false;
         }
 
         // Order must have a price (LIMIT, PROFIT-LIMIT, STOP-MARKET)
-        if ($this->cancelledOrder->price === null) {
+        return $this->cancelledOrder->price !== null;
+    }
+
+    public function startOrSkip(): bool
+    {
+        if (! in_array($this->position->status, $this->position->activeStatuses(), true)) {
+            return false;
+        }
+
+        if (! in_array($this->cancelledOrder->status, ['CANCELLED', 'EXPIRED', 'REJECTED'], true)) {
             return false;
         }
 

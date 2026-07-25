@@ -52,10 +52,14 @@ final class RecoveryApiThrottle
         $loops = 0;
 
         while ($loops++ < self::MAX_LOOPS) {
-            $waitMs = max(
-                $throttler::isSafeToDispatch($accountId, $stepId),
-                $throttler::canDispatch(0, $accountId, $stepId),
-            );
+            $waitMs = $throttler::isSafeToDispatch($accountId, $stepId);
+
+            // Atomic throttlers reserve inside canDispatch(). Do not call it
+            // while the exchange-specific gate is already asking us to wait,
+            // otherwise every wait-loop iteration consumes a request slot.
+            if ($waitMs <= 0) {
+                $waitMs = $throttler::canDispatch(0, $accountId, $stepId);
+            }
 
             if ($waitMs <= 0) {
                 break;

@@ -52,9 +52,9 @@ use Throwable;
  * a daemon restart.
  *
  * Reconnect: BaseWebsocketClient's per-instance idle watchdog +
- * exponential-backoff reconnect handles transient network blips. The
- * close handler also schedules a re-init through the framework so a
- * dropped connection does not need the discovery sweep to recover.
+ * exponential-backoff reconnect handles transient network blips on the
+ * existing listen key. Discovery only replaces slots that are genuinely
+ * absent; intentional rotation/expiry/reap paths close and replace a slot.
  *
  * listenKeyExpired: if the WS pushes a listenKeyExpired frame, the
  * existing key row is deleted and the account is re-initialised with
@@ -250,17 +250,6 @@ final class StreamBinanceUserDataCommand extends Command
         return self::SUCCESS;
     }
 
-    private function stopForFreeze(): void
-    {
-        foreach ($this->accountClients as $slot) {
-            $slot['client']->close();
-        }
-
-        $this->accountClients = [];
-        $this->spawning = [];
-        $this->loop->stop();
-    }
-
     /**
      * Close the Pawl connection for an account slot and remove the slot
      * from the in-memory map.
@@ -350,6 +339,17 @@ final class StreamBinanceUserDataCommand extends Command
         $accountCount = max(1, count($this->accountClients));
 
         return self::MEMORY_BASE_BYTES + (self::MEMORY_PER_ACCOUNT_BYTES * $accountCount);
+    }
+
+    private function stopForFreeze(): void
+    {
+        foreach ($this->accountClients as $slot) {
+            $slot['client']->close();
+        }
+
+        $this->accountClients = [];
+        $this->spawning = [];
+        $this->loop->stop();
     }
 
     /**
@@ -470,34 +470,7 @@ final class StreamBinanceUserDataCommand extends Command
             'idle_timeout_seconds' => self::IDLE_TIMEOUT_SECONDS,
         ]);
 
-        $client->subscribeToUserStreamAsync($listenKey, [
-            'message' => function ($conn, $raw) use ($account) {
-                $this->onMessage($account, (string) $raw);
-            },
-            'close' => function () use ($account) {
-                Log::channel('user-data')->warning('[USER-DATA] connection closed', [
-                    'account_id' => $account->id,
-                ]);
-                // Drop the slot so discoverNewAccounts() (which skips
-                // accounts already in $accountClients) can re-spawn
-                // this account on the next discovery tick. Pre-fix,
-                // close just logged — the slot stayed populated, the
-                // socket was dead, and the daemon never re-init'd
-                // until a listen-key rotation, daemon restart, or
-                // manual intervention.
-                $this->closeAndUnsetSlot($account->id);
-            },
-            'error' => function ($conn, Throwable $exception) use ($account) {
-                Log::channel('user-data')->error('[USER-DATA] connection error', [
-                    'account_id' => $account->id,
-                    'error' => $exception->getMessage(),
-                ]);
-                // Same rationale as the close handler: clear the slot
-                // so the next discovery tick can re-spawn instead of
-                // assuming a healthy connection that's actually dead.
-                $this->closeAndUnsetSlot($account->id);
-            },
-        ]);
+        $client->subscribeToUserStreamAsync($listenKey, $this->connectionCallbacks($account));
 
         $this->accountClients[$account->id] = [
             'client' => $client,
@@ -517,6 +490,39 @@ final class StreamBinanceUserDataCommand extends Command
             'account_id' => $account->id,
             'account_name' => $account->name,
         ]);
+    }
+
+    /**
+     * Keep unexpected transport failures inside BaseWebsocketClient's
+     * immediate backoff loop. Removing or closing the slot here disables that
+     * loop and makes discovery wait up to 60 seconds before reconnecting.
+     *
+     * Protocol pings count as per-account activity so the persisted heartbeat
+     * remains useful even when a quiet account has no order events for hours.
+     *
+     * @return array<string, callable>
+     */
+    private function connectionCallbacks(Account $account): array
+    {
+        return [
+            'message' => function ($conn, $raw) use ($account) {
+                $this->onMessage($account, (string) $raw);
+            },
+            'ping' => function () use ($account): void {
+                $this->maybePersistFrameHeartbeat($account);
+            },
+            'close' => function () use ($account) {
+                Log::channel('user-data')->warning('[USER-DATA] connection closed', [
+                    'account_id' => $account->id,
+                ]);
+            },
+            'error' => function ($conn, Throwable $exception) use ($account) {
+                Log::channel('user-data')->error('[USER-DATA] connection error', [
+                    'account_id' => $account->id,
+                    'error' => $exception->getMessage(),
+                ]);
+            },
+        ];
     }
 
     /**
@@ -552,6 +558,8 @@ final class StreamBinanceUserDataCommand extends Command
 
         if (($payload['e'] ?? null) === 'listenKeyExpired') {
             $this->handleListenKeyExpired($account);
+            // Continue into Step::create intentionally. The worker records the
+            // expiry frame for audit but has no order-side effect for it.
         }
 
         // Step::create can throw on transient DB unavailability,

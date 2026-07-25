@@ -67,31 +67,35 @@ final class BinanceThrottler extends BaseApiThrottler
         $minDelayMs = (int) config('kraite.throttlers.binance.min_delay_ms', 0);
 
         if ($minDelayMs > 0) {
-            // Two possible sources for the "last request happened" stamp:
-            // `last_request` is a unix-seconds integer written by
-            // recordResponseHeaders (second-precision only), while
-            // `:last_dispatch` is a Carbon with millisecond precision
-            // written by the base-class canDispatch when it reserves a slot.
-            // Prefer whichever is most recent.
-            $lastRequestTs = Cache::get("binance:{$ip}:last_request");
-            $lastDispatch = Cache::get($prefix.':last_dispatch');
+            try {
+                // Two possible sources for the "last request happened" stamp:
+                // `last_request` is a unix-seconds integer written by
+                // recordResponseHeaders (second-precision only), while
+                // `:last_dispatch` is a Carbon with millisecond precision
+                // written by the base-class canDispatch when it reserves a slot.
+                // Prefer whichever is most recent.
+                $lastRequestTs = Cache::get("binance:{$ip}:last_request");
+                $lastDispatch = Cache::get($prefix.':last_dispatch');
 
-            $nowMs = (int) round(now()->getPreciseTimestamp(3));
-            $elapsedMs = PHP_INT_MAX;
+                $nowMs = (int) round(now()->getPreciseTimestamp(3));
+                $elapsedMs = PHP_INT_MAX;
 
-            if ($lastRequestTs) {
-                $elapsedMs = min($elapsedMs, ($nowMs / 1000 - (int) $lastRequestTs) * 1000);
-            }
+                if ($lastRequestTs) {
+                    $elapsedMs = min($elapsedMs, ($nowMs / 1000 - (int) $lastRequestTs) * 1000);
+                }
 
-            if ($lastDispatch instanceof \Illuminate\Support\Carbon) {
-                $elapsedMs = min(
-                    $elapsedMs,
-                    abs(now()->diffInMilliseconds($lastDispatch, false))
-                );
-            }
+                if ($lastDispatch instanceof \Illuminate\Support\Carbon) {
+                    $elapsedMs = min(
+                        $elapsedMs,
+                        abs(now()->diffInMilliseconds($lastDispatch, false))
+                    );
+                }
 
-            if ($elapsedMs < $minDelayMs) {
-                return $minDelayMs - (int) $elapsedMs;
+                if ($elapsedMs < $minDelayMs) {
+                    return $minDelayMs - (int) $elapsedMs;
+                }
+            } catch (Throwable $exception) {
+                return self::cacheFailureBackoffMs($exception, 'minimum-delay');
             }
         }
 
@@ -153,7 +157,9 @@ final class BinanceThrottler extends BaseApiThrottler
                 Cache::put($key, $data['value'], $ttl);
             }
         } catch (Throwable $e) {
-            // Fail silently - don't break the application if Cache fails
+            Log::channel('jobs')->warning('[BinanceThrottler] response-header ledger write failed', [
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 
@@ -200,7 +206,10 @@ final class BinanceThrottler extends BaseApiThrottler
                 $retryAfterSeconds
             );
         } catch (Throwable $e) {
-            // Fail silently - failing to record ban shouldn't break the app
+            Log::channel('jobs')->critical('[BinanceThrottler] failed to record exchange IP ban', [
+                'retry_after_seconds' => $retryAfterSeconds,
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 
@@ -215,9 +224,13 @@ final class BinanceThrottler extends BaseApiThrottler
     protected static function getRateLimitConfig(): array
     {
         return [
-            'requests_per_window' => config('kraite.throttlers.binance.requests_per_window', 10000),
+            'requests_per_window' => config('kraite.throttlers.binance.requests_per_window', 2040),
             'window_seconds' => config('kraite.throttlers.binance.window_seconds', 60),
             'min_delay_between_requests_ms' => config('kraite.throttlers.binance.min_delay_ms', 0),
+            'safety_threshold' => 1.0,
+            'atomic_reservation' => true,
+            'cache_failure_backoff_ms' => config('kraite.throttlers.binance.cache_failure_backoff_ms', 30000),
+            'reservation_contention_backoff_ms' => config('kraite.throttlers.binance.reservation_contention_backoff_ms', 50),
         ];
     }
 
@@ -241,7 +254,7 @@ final class BinanceThrottler extends BaseApiThrottler
 
             return 0;
         } catch (Throwable $e) {
-            return 0;
+            return (int) ceil(self::cacheFailureBackoffMs($e, 'ban-lift') / 1000);
         }
     }
 
@@ -282,15 +295,14 @@ final class BinanceThrottler extends BaseApiThrottler
                 $current = Cache::get($key) ?? 0;
                 $percentage = $limit > 0 ? ($current / $limit) : 0;
 
-                if ($percentage > $safetyThreshold) {
+                if ($percentage >= $safetyThreshold) {
                     return self::calculateWindowResetTime($interval) * 1000;
                 }
             }
 
             return 0;
         } catch (Throwable $e) {
-            // Fail safe - if Cache fails, allow the request
-            return 0;
+            return self::cacheFailureBackoffMs($e, 'rate-limit-proximity');
         }
     }
 
@@ -312,8 +324,9 @@ final class BinanceThrottler extends BaseApiThrottler
                 default => 60,
             };
 
-            // Return time until current window expires (conservative estimate)
-            return min($seconds, 60); // Max 60 seconds wait
+            $secondsUntilReset = $seconds - (now()->timestamp % $seconds);
+
+            return max(1, min($secondsUntilReset, 60));
         }
 
         return 5; // Default conservative wait
@@ -387,5 +400,21 @@ final class BinanceThrottler extends BaseApiThrottler
     protected static function getCurrentIp(): string
     {
         return \Kraite\Core\Models\Kraite::ip();
+    }
+
+    private static function cacheFailureBackoffMs(Throwable $exception, string $check): int
+    {
+        $backoffMs = max(
+            1000,
+            (int) config('kraite.throttlers.binance.cache_failure_backoff_ms', 30000),
+        );
+
+        Log::channel('jobs')->warning('[BinanceThrottler] cache coordination failed — backing off', [
+            'check' => $check,
+            'error' => $exception->getMessage(),
+            'backoff_ms' => $backoffMs,
+        ]);
+
+        return $backoffMs;
     }
 }

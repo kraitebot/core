@@ -518,9 +518,7 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
         return Position::query()
             ->where('account_id', $this->accountId)
             ->where('status', 'active')
-            ->get()
-            ->first(function (Position $position) use ($upper): bool {
-                return mb_strtoupper(mb_trim((string) $position->parsed_trading_pair)) === $upper;
-            });
+            ->where('parsed_trading_pair', $upper)
+            ->first();
     }
 }

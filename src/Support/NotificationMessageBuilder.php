@@ -222,7 +222,7 @@ final class NotificationMessageBuilder
             })(),
 
             'stale_priority_steps_detected' => (static function () use ($context, $hostname) {
-                // Extract stale step details - CRITICAL: steps stuck even after promotion
+                // Extract stale step details - CRITICAL: steps stuck even after recovery
                 $count = is_int($context['count'] ?? null) ? $context['count'] : 0;
                 $oldestStepId = is_int($context['oldest_step_id'] ?? null) ? $context['oldest_step_id'] : 0;
                 $oldestCanonical = is_string($context['oldest_canonical'] ?? null) ? $context['oldest_canonical'] : 'N/A';
@@ -233,9 +233,9 @@ final class NotificationMessageBuilder
 
                 return [
                     'severity' => NotificationSeverity::Critical,
-                    'title' => 'Priority Steps Still Stuck - Manual Action Required',
-                    'emailMessage' => "🚨 CRITICAL: {$count} step(s) still stuck after promotion to priority queue!\n\n".
-                        "Self-healing FAILED. These steps were promoted to high priority but are still not being processed.\n\n".
+                    'title' => 'Recovered Steps Still Stuck - Manual Action Required',
+                    'emailMessage' => "🚨 CRITICAL: {$count} step(s) are stuck again after recovery!\n\n".
+                        "Self-healing did not hold. These steps were requeued at high priority on their original worker lanes but are still not being processed.\n\n".
                         "Oldest stuck step:\n\n".
                         "• Step ID: {$oldestStepId}\n".
                         "• Class: {$oldestCanonical}\n".
@@ -245,11 +245,11 @@ final class NotificationMessageBuilder
                         "• Dispatched At: {$oldestDispatchedAt}\n".
                         "• Server: {$hostname}\n\n".
                         "MANUAL INTERVENTION REQUIRED:\n\n".
-                        "• Check priority queue workers: supervisorctl status\n".
+                        "• Check the affected queue workers: supervisorctl status\n".
                         "• Check Redis connection\n".
                         "• Check circuit breaker (can_dispatch_steps)\n".
                         '• Consider resetting steps to Pending state',
-                    'pushoverMessage' => "🚨 CRITICAL: {$count} step(s) STILL stuck after promotion!\n".
+                    'pushoverMessage' => "🚨 CRITICAL: {$count} step(s) STILL stuck after recovery!\n".
                         "Self-healing FAILED\n".
                         "Oldest: Step #{$oldestStepId}\n".
                         "Stuck: {$oldestMinutesStuck}m\n".
@@ -275,7 +275,7 @@ final class NotificationMessageBuilder
                     'title' => 'Stale Dispatched Steps Detected',
                     'emailMessage' => "{$count} step(s) stuck in Dispatched state for over 5 minutes.\n\n".
                         "✅ SELF-HEALING APPLIED:\n\n".
-                        "{$promotedCount} step(s) promoted to high priority queue.\n\n".
+                        "{$promotedCount} step(s) raised to high priority and requeued on their original worker lanes.\n\n".
                         "Oldest stuck step:\n\n".
                         "• Step ID: {$oldestStepId}\n".
                         "• Class: {$oldestCanonical}\n".
@@ -286,10 +286,10 @@ final class NotificationMessageBuilder
                         "• Server: {$hostname}\n\n".
                         "If issue persists, check:\n\n".
                         "• Redis connection\n".
-                        "• Priority queue workers (supervisorctl status)\n".
+                        "• The affected queue workers (supervisorctl status)\n".
                         '• Circuit breaker (can_dispatch_steps)',
                     'pushoverMessage' => "{$count} step(s) stuck in Dispatched\n".
-                        "Self-healing: {$promotedCount} promoted to priority queue\n".
+                        "Self-healing: {$promotedCount} requeued at high priority\n".
                         "Oldest: Step #{$oldestStepId}\n".
                         "Stuck: {$oldestMinutesStuck}m",
                     'actionUrl' => null,
@@ -940,10 +940,17 @@ final class NotificationMessageBuilder
 
             'market_shock_circuit_breaker' => (function () use ($context) {
                 $rules = (string) ($context['rules'] ?? 'unknown');
-                $btc15m = (float) ($context['btc_15m_pct'] ?? 0.0);
-                $btc1h = (float) ($context['btc_1h_pct'] ?? 0.0);
-                $altBasket = (float) ($context['alt_basket_1h_pct'] ?? 0.0);
-                $corr = (float) ($context['corr_1h'] ?? 0.0);
+                $formatMetric = static function (mixed $value, bool $percentage = false): string {
+                    if (! is_numeric($value)) {
+                        return 'unavailable';
+                    }
+
+                    return (string) (float) $value.($percentage ? '%' : '');
+                };
+                $btc15m = $formatMetric($context['btc_15m_pct'] ?? null, true);
+                $btc1h = $formatMetric($context['btc_1h_pct'] ?? null, true);
+                $altBasket = $formatMetric($context['alt_basket_1h_pct'] ?? null, true);
+                $corr = $formatMetric($context['corr_1h'] ?? null);
                 $hours = (int) ($context['cooldown_hours'] ?? 24);
                 $hostname = is_string($context['hostname'] ?? null) ? $context['hostname'] : (string) gethostname();
 
@@ -951,13 +958,13 @@ final class NotificationMessageBuilder
                     'severity' => NotificationSeverity::High,
                     'title' => "Market shock detected — opens paused {$hours}h",
                     'emailMessage' => "MarketShockCircuitBreaker fired ({$rules}).\n\n".
-                        "BTC 15m: {$btc15m}%   BTC 1h: {$btc1h}%   Alt basket 1h: {$altBasket}%   Corr 1h: {$corr}\n\n".
+                        "BTC 15m: {$btc15m}   BTC 1h: {$btc1h}   Alt basket 1h: {$altBasket}   Corr 1h: {$corr}\n\n".
                         "New position opens paused for {$hours} hours via the shared BSCS cooldown gate. ".
                         "Existing positions untouched.\n\n".
                         'Detector cadence is 1 minute on 15m klines for BTC + 4 alts; this is faster than the hourly BSCS compute would have noticed. '.
                         "Cooldown will release automatically; if cascade keeps firing, the next detector run is silent (no spam).\n\n".
                         "Server: {$hostname}",
-                    'pushoverMessage' => "Market shock ({$rules}) — opens paused {$hours}h. BTC 15m {$btc15m}% / 1h {$btc1h}%",
+                    'pushoverMessage' => "Market shock ({$rules}) — opens paused {$hours}h. BTC 15m {$btc15m} / 1h {$btc1h}",
                     'actionUrl' => null,
                     'actionLabel' => null,
                     'priority' => 1,
@@ -1554,10 +1561,28 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'binance_listen_key_stale' => (function () use ($context) {
+                $accountId = (string) ($context['account_id'] ?? 'unknown');
+                $accountName = (string) ($context['account_name'] ?? 'unknown');
+                $reason = (string) ($context['reason'] ?? 'unknown');
+                $detail = (string) ($context['detail'] ?? '(no detail)');
+                $body = "Binance user-data health is degraded for `{$accountName}` (account #{$accountId}).\n\nSignal: {$reason}\nDetail: {$detail}\n\nOrder updates may be falling back to polling until this is healthy.";
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'title' => "Binance user-data heartbeat stale — {$accountName}",
+                    'emailMessage' => $body,
+                    'pushoverMessage' => $body,
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 1,
+                ];
+            })(),
+
             'registration_welcome' => (static function () use ($context, $exchangeTitle, $user) {
                 $dashboardUrl = is_string($context['dashboard_url'] ?? null)
                     ? $context['dashboard_url']
-                    : rtrim((string) config('kraite.admin_url'), '/');
+                    : mb_rtrim((string) config('kraite.admin_url'), '/');
                 $hasExistingActivity = ($context['has_existing_activity'] ?? false) === true;
                 $greeting = $user !== null && filled($user->name)
                     ? "Welcome to Kraite, {$user->name}!"

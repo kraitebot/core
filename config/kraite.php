@@ -450,6 +450,15 @@ return [
             'HEALTH_WATCHDOG_MAINTENANCE_STUCK_MINUTES',
             45
         ),
+
+        // An active step prefix should complete group ticks every second.
+        // Thirty seconds tolerates transient DB pressure while detecting a
+        // dead or severely degraded dispatch daemon well before the deeper
+        // ten-minute group-progress watchdog.
+        'dispatcher_tick_stale_seconds' => (int) env(
+            'HEALTH_WATCHDOG_DISPATCHER_TICK_STALE_SECONDS',
+            30
+        ),
     ],
 
     /*
@@ -523,11 +532,18 @@ return [
             // Minimum delay between requests in milliseconds
             'min_delay_ms' => (int) env('BINANCE_THROTTLER_MIN_DELAY_MS', 200),
 
-            // Safety threshold: stop making requests when reaching this percentage of limit (0.0-1.0)
-            // 0.85 = stop at 85% to leave 15% buffer before hitting the limit
-            // Higher values = more aggressive (use more of available capacity)
-            // Lower values = more conservative (larger safety buffer)
-            'safety_threshold' => (float) env('BINANCE_THROTTLER_SAFETY_THRESHOLD', 0.85),
+            // The rate-limit rows below already include 15% headroom.
+            // Apply that reduced profile once rather than multiplying it by
+            // another 0.85 and stopping around 72% of Binance's ceiling.
+            'safety_threshold' => (float) env('BINANCE_THROTTLER_SAFETY_THRESHOLD', 1.0),
+
+            // Atomic per-IP fallback request reservation. Header-derived
+            // weights remain authoritative; this closes the concurrent
+            // check-then-record gap while header state is unavailable.
+            'requests_per_window' => (int) env('BINANCE_THROTTLER_REQUESTS_PER_WINDOW', 2040),
+            'window_seconds' => (int) env('BINANCE_THROTTLER_WINDOW_SECONDS', 60),
+            'cache_failure_backoff_ms' => (int) env('BINANCE_THROTTLER_CACHE_FAILURE_BACKOFF_MS', 30000),
+            'reservation_contention_backoff_ms' => (int) env('BINANCE_THROTTLER_RESERVATION_CONTENTION_BACKOFF_MS', 50),
 
             // Rate limit definitions for pre-flight safety checks
             // These are checked against response header values stored in Cache
@@ -895,6 +911,9 @@ return [
         ],
 
         'shock' => [
+            // The newest 15m fallback candle must be no older than two
+            // intervals. Older series are unavailable, never "calm".
+            'kline_max_age_seconds' => (int) env('MARKET_SHOCK_KLINE_MAX_AGE', 1800),
             'thresholds' => [
                 'btc_15m_pct' => (float) env('MARKET_SHOCK_BTC_15M_PCT', -3.0),
                 'btc_1h_pct' => (float) env('MARKET_SHOCK_BTC_1H_PCT', -5.0),

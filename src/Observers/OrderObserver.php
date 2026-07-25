@@ -55,11 +55,25 @@ final readonly class OrderObserver
 
     public function updating(Order $model): void
     {
-        // TRIGGERED is immutable exchange truth. A later empty sync response
-        // must not downgrade an order whose trigger already fired.
-        if ($model->getOriginal('status') === OrderStatus::Triggered->value
-            && $model->status !== OrderStatus::Triggered->value) {
-            $model->status = OrderStatus::Triggered->value;
+        // Shared-queue concurrency can deliver an older working frame after a
+        // terminal event. FILLED/TRIGGERED are immutable execution truth.
+        // CANCELLED/EXPIRED/REJECTED may still advance to a later execution
+        // truth, but must never regress to NEW/PARTIALLY_FILLED.
+        $persistedStatus = $model->getOriginal('status');
+        $isImmutableExecution = in_array(
+            $persistedStatus,
+            [OrderStatus::Filled->value, OrderStatus::Triggered->value],
+            strict: true,
+        );
+        $isTerminalRegressingToWorking = in_array(
+            $persistedStatus,
+            OrderStatus::terminalWithoutFillValues(),
+            strict: true,
+        ) && in_array($model->status, OrderStatus::workingValues(), strict: true);
+
+        if (($isImmutableExecution && $model->status !== $persistedStatus)
+            || $isTerminalRegressingToWorking) {
+            $model->status = $persistedStatus;
         }
 
         if ($model->status === OrderStatus::Filled->value && $model->filled_at === null) {

@@ -89,10 +89,7 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseCalculateWapAndModif
         // breakEvenPrice is just as vulnerable to the "exchange hasn't yet
         // absorbed our triggering LIMIT fill" race as Binance's. Without
         // this, the TP would be computed against a stale breakeven.
-        $expectedQty = (string) $this->position->orders()
-            ->whereIn('type', ['MARKET', 'LIMIT'])
-            ->where('status', 'FILLED')
-            ->sum('quantity');
+        $expectedQty = $this->expectedPositionQty();
 
         if (Math::lt($this->positionQty, $expectedQty, $scale)) {
             throw new RuntimeException(sprintf(
@@ -102,6 +99,7 @@ final class CalculateWapAndModifyProfitOrderJob extends BaseCalculateWapAndModif
                 $expectedQty
             ));
         }
+        $this->capWapToOwnedExposure($expectedQty, $scale);
 
         $profitPct = (string) $this->position->profit_percentage;
         $fraction = Math::div($profitPct, '100', $scale);

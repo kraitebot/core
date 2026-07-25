@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Support\MarketRegime;
 
+use InvalidArgumentException;
 use Kraite\Core\Support\Math;
 
 /**
@@ -22,7 +23,7 @@ use Kraite\Core\Support\Math;
  *   2. btc_1h        — BTC dropped >= 5% across the last 4 × 15m bars.
  *   3. alt_basket_1h — mean of ETH/SOL/BNB/XRP 1h moves <= -7%.
  *   4. corr_magnitude— BTC + 4 alts off-diagonal mean Pearson >= 0.85
- *                      AND |BTC 1h move| >= 3%.
+ *                      AND BTC dropped >= 3% over 1h.
  *
  * Pure-PHP, no DB, no HTTP. The job layer feeds it from the `candles`
  * table after the `--reference-set --timeframe=15m` cron lands fresh
@@ -67,10 +68,10 @@ final class MarketShockCircuitBreaker
      * @return array{
      *   fired: bool,
      *   rules_triggered: list<string>,
-     *   btc_15m_pct: float,
-     *   btc_1h_pct: float,
-     *   alt_basket_1h_pct: float,
-     *   corr_1h: float,
+     *   btc_15m_pct: ?float,
+     *   btc_1h_pct: ?float,
+     *   alt_basket_1h_pct: ?float,
+     *   corr_1h: ?float,
      *   thresholds: array<string, float>
      * }
      */
@@ -83,6 +84,7 @@ final class MarketShockCircuitBreaker
         int $corrWindow = 12,
     ): array {
         $thresholds ??= self::defaultThresholds();
+        self::validateThresholds($thresholds);
 
         $btc15m = self::priorBarPct($btcBars, $shortOffset);
         $btc1h = self::priorBarPct($btcBars, $longOffset);
@@ -112,7 +114,7 @@ final class MarketShockCircuitBreaker
         if ($corr1h !== null
             && $btc1h !== null
             && $corr1h >= $thresholds['corr_1h']
-            && abs($btc1h) >= $thresholds['magnitude_pct']
+            && $btc1h <= -$thresholds['magnitude_pct']
         ) {
             $rulesTriggered[] = 'corr_magnitude';
         }
@@ -120,12 +122,34 @@ final class MarketShockCircuitBreaker
         return [
             'fired' => $rulesTriggered !== [],
             'rules_triggered' => $rulesTriggered,
-            'btc_15m_pct' => $btc15m ?? 0.0,
-            'btc_1h_pct' => $btc1h ?? 0.0,
-            'alt_basket_1h_pct' => $altBasket1h ?? 0.0,
-            'corr_1h' => $corr1h ?? 0.0,
+            'btc_15m_pct' => $btc15m,
+            'btc_1h_pct' => $btc1h,
+            'alt_basket_1h_pct' => $altBasket1h,
+            'corr_1h' => $corr1h,
             'thresholds' => $thresholds,
         ];
+    }
+
+    /**
+     * @param  array{btc_15m_pct: float, btc_1h_pct: float, alt_basket_1h_pct: float, corr_1h: float, magnitude_pct: float}  $thresholds
+     */
+    private static function validateThresholds(array $thresholds): void
+    {
+        foreach (['btc_15m_pct', 'btc_1h_pct', 'alt_basket_1h_pct'] as $key) {
+            if (! is_finite($thresholds[$key]) || $thresholds[$key] >= 0.0) {
+                throw new InvalidArgumentException("Market shock threshold {$key} must be a finite negative percentage.");
+            }
+        }
+
+        if (! is_finite($thresholds['corr_1h'])
+            || $thresholds['corr_1h'] < -1.0
+            || $thresholds['corr_1h'] > 1.0) {
+            throw new InvalidArgumentException('Market shock threshold corr_1h must be between -1 and 1.');
+        }
+
+        if (! is_finite($thresholds['magnitude_pct']) || $thresholds['magnitude_pct'] <= 0.0) {
+            throw new InvalidArgumentException('Market shock threshold magnitude_pct must be a finite positive percentage.');
+        }
     }
 
     /**
@@ -184,7 +208,12 @@ final class MarketShockCircuitBreaker
         $pairs = 0;
         for ($i = 0; $i < $n; $i++) {
             for ($j = $i + 1; $j < $n; $j++) {
-                $sum += self::pearson($series[$tokens[$i]], $series[$tokens[$j]]);
+                $correlation = self::pearson($series[$tokens[$i]], $series[$tokens[$j]]);
+                if ($correlation === null) {
+                    continue;
+                }
+
+                $sum += $correlation;
                 $pairs++;
             }
         }
@@ -231,17 +260,18 @@ final class MarketShockCircuitBreaker
     }
 
     /**
-     * Pearson correlation of two equal-length series. Returns 0.0 if
-     * either series has zero variance (constant).
+     * Pearson correlation of two equal-length series. Returns null if
+     * either series has zero variance (constant) and therefore cannot
+     * contribute a meaningful pair.
      *
      * @param  list<float>  $x
      * @param  list<float>  $y
      */
-    private static function pearson(array $x, array $y): float
+    private static function pearson(array $x, array $y): ?float
     {
         $n = count($x);
         if ($n === 0 || $n !== count($y)) {
-            return 0.0;
+            return null;
         }
 
         $meanX = array_sum($x) / $n;
@@ -259,7 +289,7 @@ final class MarketShockCircuitBreaker
         }
 
         if ($varX <= 0.0 || $varY <= 0.0) {
-            return 0.0;
+            return null;
         }
 
         return $cov / sqrt($varX * $varY);

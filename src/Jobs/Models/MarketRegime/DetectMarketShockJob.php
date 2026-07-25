@@ -335,7 +335,7 @@ final class DetectMarketShockJob extends BaseQueueableJob
     // ------------------------------------------------------------------
 
     /**
-     * @param  array{rules_triggered: list<string>, btc_15m_pct: float, btc_1h_pct: float, alt_basket_1h_pct: float, corr_1h: float}  $result
+     * @param  array{rules_triggered: list<string>, btc_15m_pct: ?float, btc_1h_pct: ?float, alt_basket_1h_pct: ?float, corr_1h: ?float}  $result
      */
     public function armCooldown(array $result, string $source): void
     {
@@ -348,6 +348,11 @@ final class DetectMarketShockJob extends BaseQueueableJob
         ]);
 
         $this->notifyShock($result, $hours, $source);
+    }
+
+    private static function notificationMetric(?float $value, int $precision): float|string
+    {
+        return $value === null ? 'unavailable' : round($value, $precision);
     }
 
     /**
@@ -386,6 +391,13 @@ final class DetectMarketShockJob extends BaseQueueableJob
             return null;
         }
 
+        $maxAgeSeconds = (int) config('kraite.market_regime.shock.kline_max_age_seconds', 1800);
+        $newestTimestamp = (int) $rows->first()->timestamp;
+
+        if ($maxAgeSeconds < 1 || $newestTimestamp < now()->subSeconds($maxAgeSeconds)->getTimestamp()) {
+            return null;
+        }
+
         // DB returned newest-first; calculator expects newest-LAST.
         return $rows->reverse()->values()->map(static fn ($row) => [
             'close' => (string) $row->close,
@@ -412,7 +424,7 @@ final class DetectMarketShockJob extends BaseQueueableJob
     }
 
     /**
-     * @param  array{rules_triggered: list<string>, btc_15m_pct: float, btc_1h_pct: float, alt_basket_1h_pct: float, corr_1h: float}  $result
+     * @param  array{rules_triggered: list<string>, btc_15m_pct: ?float, btc_1h_pct: ?float, alt_basket_1h_pct: ?float, corr_1h: ?float}  $result
      */
     private function notifyShock(array $result, int $hours, string $source): void
     {
@@ -423,10 +435,10 @@ final class DetectMarketShockJob extends BaseQueueableJob
                 referenceData: [
                     'rules' => implode(', ', $result['rules_triggered']),
                     'source' => $source,
-                    'btc_15m_pct' => round($result['btc_15m_pct'], 2),
-                    'btc_1h_pct' => round($result['btc_1h_pct'], 2),
-                    'alt_basket_1h_pct' => round($result['alt_basket_1h_pct'], 2),
-                    'corr_1h' => round($result['corr_1h'], 3),
+                    'btc_15m_pct' => self::notificationMetric($result['btc_15m_pct'], 2),
+                    'btc_1h_pct' => self::notificationMetric($result['btc_1h_pct'], 2),
+                    'alt_basket_1h_pct' => self::notificationMetric($result['alt_basket_1h_pct'], 2),
+                    'corr_1h' => self::notificationMetric($result['corr_1h'], 3),
                     'cooldown_hours' => $hours,
                 ],
             );

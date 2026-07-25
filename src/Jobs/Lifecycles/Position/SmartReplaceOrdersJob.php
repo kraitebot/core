@@ -49,7 +49,7 @@ final class SmartReplaceOrdersJob extends BaseQueueableJob
     /**
      * Verify position is ready for smart replacement.
      */
-    public function startOrFail(): bool
+    public function startOrSkip(): bool
     {
         // Position must be in an active status
         if (! in_array($this->position->status, $this->position->activeStatuses(), true)) {
@@ -59,12 +59,7 @@ final class SmartReplaceOrdersJob extends BaseQueueableJob
         // Find orders that need recreation
         $this->ordersToRecreate = $this->findOrdersNeedingRecreation();
 
-        // Nothing to do if no orders need recreation
-        if ($this->ordersToRecreate->isEmpty()) {
-            return false;
-        }
-
-        return true;
+        return $this->ordersToRecreate->isNotEmpty();
     }
 
     public function compute()

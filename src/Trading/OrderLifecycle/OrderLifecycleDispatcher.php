@@ -86,6 +86,14 @@ final class OrderLifecycleDispatcher
         }
 
         $this->forLockedActivePosition($position, function (Position $locked) use ($order): void {
+            // The opening lifecycle still owns the position and validates every
+            // opening order before activation. Starting an independent WAP
+            // workflow here would fail its active-to-waping transition and
+            // falsely acknowledge the fill before opening resolves it.
+            if ($locked->status === 'opening') {
+                return;
+            }
+
             if (Step::hasLiveWorkflow($locked, ApplyWapJob::class)) {
                 return;
             }

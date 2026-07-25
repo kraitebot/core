@@ -32,7 +32,11 @@ use Throwable;
  *      `binance_listen_key_keepalive_failed`, but THIS check covers
  *      the case where the cron isn't even running).
  *
- * Either signal fires `binance_listen_key_stale` Pushover with the
+ *   3. A recent `last_frame_at` transport heartbeat. The daemon persists
+ *      protocol pings as well as data frames, so a quiet account remains
+ *      healthy while a half-open or reconnecting socket becomes visible.
+ *
+ * Any signal fires `binance_listen_key_stale` Pushover with the
  * affected account + reason. Threshold defaults to 30 minutes — well
  * below Binance's 60-minute hard expiry, so we have time to respond
  * before the WS dies.
@@ -45,6 +49,8 @@ final class CheckBinanceListenKeysStaleCommand extends BaseCommand
 {
     private const DEFAULT_STALENESS_THRESHOLD_MINUTES = 30;
 
+    private const DEFAULT_FRAME_STALENESS_THRESHOLD_MINUTES = 15;
+
     /**
      * Grace window before "missing row" alert fires. A freshly-activated
      * account may take up to one discovery sweep (60s) for the daemon
@@ -54,22 +60,24 @@ final class CheckBinanceListenKeysStaleCommand extends BaseCommand
 
     protected $signature = 'kraite:cron-check-binance-listen-keys-stale
                             {--max-staleness-minutes= : Threshold above which a listenKey is considered stale (default: 30)}
+                            {--max-frame-staleness-minutes= : Threshold above which per-account socket activity is stale (default: 15)}
                             {--output : Display command output (silent by default)}';
 
-    protected $description = 'Alert (Pushover) when an active Binance account is missing a listenKey row OR the keepalive timestamp is older than the threshold.';
+    protected $description = 'Alert when an active Binance account is missing a listenKey row, has stale keepalive, or has stale socket activity.';
 
     public function handle(): int
     {
         $thresholdMinutes = (int) ($this->option('max-staleness-minutes')
             ?: self::DEFAULT_STALENESS_THRESHOLD_MINUTES);
+        $frameThresholdMinutes = (int) ($this->option('max-frame-staleness-minutes')
+            ?: self::DEFAULT_FRAME_STALENESS_THRESHOLD_MINUTES);
 
         $threshold = now()->subMinutes($thresholdMinutes);
+        $frameThreshold = now()->subMinutes($frameThresholdMinutes);
         $missingGrace = now()->subSeconds(self::MISSING_ROW_GRACE_SECONDS);
 
         $eligibleAccounts = Account::query()
-            ->whereHas('apiSystem', fn ($q) => $q->canonical('binance'))
-            ->where('is_active', true)
-            ->whereNotNull('binance_api_key')
+            ->eligibleForBinanceUserDataStream()
             ->get(['id', 'name', 'created_at', 'updated_at']);
 
         if ($eligibleAccounts->isEmpty()) {
@@ -80,7 +88,7 @@ final class CheckBinanceListenKeysStaleCommand extends BaseCommand
 
         $existingRows = BinanceListenKey::query()
             ->whereIn('account_id', $eligibleAccounts->pluck('id'))
-            ->get(['account_id', 'last_keep_alive_at'])
+            ->get(['account_id', 'last_created_at', 'last_keep_alive_at', 'last_frame_at'])
             ->keyBy('account_id');
 
         $alerts = [];
@@ -122,11 +130,31 @@ final class CheckBinanceListenKeysStaleCommand extends BaseCommand
                         ? 'last_keep_alive_at is NULL — keepalive cron has never refreshed this row.'
                         : "last_keep_alive_at is {$minutesStale}min old (threshold: {$thresholdMinutes}min).",
                 ];
+
+                continue;
+            }
+
+            $frameGraceElapsed = $row->last_created_at === null
+                || $row->last_created_at < $frameThreshold;
+
+            if ($frameGraceElapsed && ($row->last_frame_at === null || $row->last_frame_at < $frameThreshold)) {
+                $minutesStale = $row->last_frame_at === null
+                    ? null
+                    : (int) now()->diffInMinutes($row->last_frame_at, true);
+
+                $alerts[] = [
+                    'account_id' => $account->id,
+                    'account_name' => $account->name,
+                    'reason' => 'stale_frame_heartbeat',
+                    'detail' => $minutesStale === null
+                        ? "last_frame_at is NULL after the {$frameThresholdMinutes}min connection grace — no protocol ping or data frame was persisted."
+                        : "last_frame_at is {$minutesStale}min old (threshold: {$frameThresholdMinutes}min) while keepalive remains fresh.",
+                ];
             }
         }
 
         if ($alerts === []) {
-            $this->verboseInfo("All {$eligibleAccounts->count()} eligible Binance account(s) have fresh listenKey rows — no alert.");
+            $this->verboseInfo("All {$eligibleAccounts->count()} eligible Binance account(s) have fresh listenKey and socket heartbeats — no alert.");
 
             return self::SUCCESS;
         }

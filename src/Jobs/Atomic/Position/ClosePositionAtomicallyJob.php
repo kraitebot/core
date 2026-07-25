@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Atomic\Position;
 
-use Carbon\Carbon;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Sleep;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
@@ -30,6 +30,12 @@ use Throwable;
  */
 final class ClosePositionAtomicallyJob extends BaseApiableJob
 {
+    private const FLAT_CONFIRMATION_CONFIRMED = 'confirmed';
+
+    private const FLAT_CONFIRMATION_NOT_FLAT = 'not_flat';
+
+    private const FLAT_CONFIRMATION_PENDING = 'pending';
+
     public Position $position;
 
     public function __construct(int $positionId)
@@ -55,6 +61,7 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
         $exchangeSymbol = $position->exchangeSymbol;
         $pumpCooldownTriggered = false;
         $cooldownDetails = [];
+        $tradeableAt = null;
 
         // Pump cooldown check
         $spikeThreshold = $exchangeSymbol->disable_on_price_spike_percentage;
@@ -66,7 +73,9 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
             // Get 1D candle close price from IndicatorHistory
             $dailyIndicator = IndicatorHistory::where('exchange_symbol_id', $exchangeSymbol->id)
                 ->where('timeframe', '1d')
+                ->whereHas('indicator', fn ($query) => $query->where('canonical', 'candle'))
                 ->orderByDesc('timestamp')
+                ->orderByDesc('id')
                 ->first();
 
             if ($dailyIndicator && $currentPrice) {
@@ -85,15 +94,12 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
 
                 if ($closePrice && Math::gt((string) $closePrice, '0')) {
                     // Calculate price change percentage: |current - close| / close * 100
-                    $diff = Math::subtract((string) $currentPrice, (string) $closePrice);
-                    $absDiff = Math::lt($diff, '0') ? Math::multiply($diff, '-1') : $diff;
-                    $changePercent = Math::multiply(Math::divide($absDiff, (string) $closePrice), '100');
+                    $diff = Math::sub((string) $currentPrice, (string) $closePrice);
+                    $absDiff = Math::lt($diff, '0') ? Math::mul($diff, '-1') : $diff;
+                    $changePercent = Math::mul(Math::div($absDiff, (string) $closePrice), '100');
 
                     if (Math::gte($changePercent, (string) $spikeThreshold)) {
-                        // Price spike detected - set cooldown
                         $tradeableAt = now()->addHours($cooldownHours ?? 4);
-                        $exchangeSymbol->updateSaving(['tradeable_at' => $tradeableAt]);
-
                         $pumpCooldownTriggered = true;
                         $cooldownDetails = [
                             'current_price' => $currentPrice,
@@ -102,16 +108,6 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
                             'threshold' => $spikeThreshold,
                             'tradeable_at' => $tradeableAt->toDateTimeString(),
                         ];
-
-                        // Notify admins about pump cooldown
-                        $this->notifyPumpCooldown(
-                            $exchangeSymbol,
-                            $changePercent,
-                            (string) $spikeThreshold,
-                            $currentPrice,
-                            (string) $closePrice,
-                            $tradeableAt
-                        );
                     }
                 }
             }
@@ -122,6 +118,10 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
         // Reconcile only after an exchange rejection.
         try {
             $apiResponse = $position->apiClose();
+
+            if (isset($this->step) && $this->hasPendingFlatConfirmation()) {
+                $this->step->update(['response' => null]);
+            }
         } catch (Throwable $e) {
             $message = $e->getMessage();
             $binanceReduceOnlyRejected = $position->account->apiSystem->canonical === 'binance'
@@ -131,10 +131,24 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
                 || str_contains($message, 'No position to close')
                 || str_contains($message, '(code 25227)')
                 || str_contains($message, 'No position available to close');
+            $flatConfirmation = $binanceReduceOnlyRejected
+                ? $this->confirmBinancePositionFlat($position)
+                : self::FLAT_CONFIRMATION_NOT_FLAT;
             $confirmedFlat = $exchangeExplicitlyReportsNoPosition
-                || ($binanceReduceOnlyRejected && $this->confirmBinancePositionFlat($position));
+                || $flatConfirmation === self::FLAT_CONFIRMATION_CONFIRMED;
+
+            if ($flatConfirmation === self::FLAT_CONFIRMATION_PENDING) {
+                return [
+                    'position_id' => $position->id,
+                    'symbol' => $position->parsed_trading_pair,
+                    'confirmation_pending' => true,
+                    'message' => 'Binance flat confirmation rescheduled',
+                ];
+            }
 
             if ($confirmedFlat) {
+                $this->applyPumpCooldown($exchangeSymbol, $cooldownDetails, $tradeableAt);
+
                 return [
                     'position_id' => $position->id,
                     'symbol' => $position->parsed_trading_pair,
@@ -151,6 +165,8 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
             throw $e;
         }
 
+        $this->applyPumpCooldown($exchangeSymbol, $cooldownDetails, $tradeableAt);
+
         // Count filled limit orders for notification (used by UpdateRemainingClosingDataJob)
         $filledLimitCount = $position->totalLimitOrdersFilled();
 
@@ -165,18 +181,41 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
         ];
     }
 
-    private function confirmBinancePositionFlat(Position $position): bool
+    private function confirmBinancePositionFlat(Position $position): string
     {
-        $initialSnapshot = PositionSnapshot::fromApiResponse(
+        $snapshot = PositionSnapshot::fromApiResponse(
             $position->account,
             $position->account->apiQueryPositions(),
         );
 
-        if (! $initialSnapshot->isValid()
-            || $initialSnapshot->presenceOf($position) !== PositionPresence::Flat) {
-            return false;
+        if (! $snapshot->isValid()
+            || $snapshot->presenceOf($position) !== PositionPresence::Flat) {
+            if (isset($this->step) && $this->hasPendingFlatConfirmation()) {
+                $this->step->update(['response' => null]);
+            }
+
+            return self::FLAT_CONFIRMATION_NOT_FLAT;
         }
 
+        if (isset($this->step)) {
+            if ($this->hasPendingFlatConfirmation()) {
+                $this->step->update(['response' => null]);
+
+                return self::FLAT_CONFIRMATION_CONFIRMED;
+            }
+
+            $this->step->update([
+                'response' => ['binance_flat_confirmation_started_at' => now()->toIso8601String()],
+            ]);
+            $this->rescheduleWithoutRetry(now()->addSeconds(
+                (int) config('kraite.position_safety.flat_confirmation_delay_seconds', 20),
+            ));
+
+            return self::FLAT_CONFIRMATION_PENDING;
+        }
+
+        // Direct calls outside Step Dispatcher retain the synchronous
+        // confirmation used by recovery tools and focused tests.
         Sleep::for(
             (int) config('kraite.position_safety.flat_confirmation_delay_seconds', 20),
         )->seconds();
@@ -187,7 +226,39 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
         );
 
         return $confirmationSnapshot->isValid()
-            && $confirmationSnapshot->presenceOf($position) === PositionPresence::Flat;
+            && $confirmationSnapshot->presenceOf($position) === PositionPresence::Flat
+                ? self::FLAT_CONFIRMATION_CONFIRMED
+                : self::FLAT_CONFIRMATION_NOT_FLAT;
+    }
+
+    private function hasPendingFlatConfirmation(): bool
+    {
+        return is_array($this->step->response)
+            && isset($this->step->response['binance_flat_confirmation_started_at']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $cooldownDetails
+     */
+    private function applyPumpCooldown(
+        ExchangeSymbol $exchangeSymbol,
+        array $cooldownDetails,
+        ?CarbonInterface $tradeableAt,
+    ): void {
+        if ($tradeableAt === null || $cooldownDetails === []) {
+            return;
+        }
+
+        $exchangeSymbol->updateSaving(['tradeable_at' => $tradeableAt]);
+
+        $this->notifyPumpCooldown(
+            $exchangeSymbol,
+            (string) $cooldownDetails['change_percent'],
+            (string) $cooldownDetails['threshold'],
+            (string) $cooldownDetails['current_price'],
+            (string) $cooldownDetails['daily_close'],
+            $tradeableAt,
+        );
     }
 
     /**
@@ -202,7 +273,7 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
         string $threshold,
         string $currentPrice,
         string $dailyClose,
-        Carbon $tradeableAt,
+        CarbonInterface $tradeableAt,
     ): void {
         NotificationService::send(
             user: Kraite::admin(),

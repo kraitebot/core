@@ -32,7 +32,7 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
      *
      * @var string
      */
-    protected $description = 'Triggers atomic workflow to conclude trading direction for all exchange symbols. Runs hourly at :10 to allow candles to settle.';
+    protected $description = 'Triggers atomic workflow to conclude trading direction for all exchange symbols. Runs hourly at :30 to allow candles to settle.';
 
     /**
      * Execute the console command.
@@ -42,6 +42,15 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
         if ($this->option('clean') && ! app()->environment(['local', 'testing'])) {
             $this->error(sprintf(
                 '[CONCLUDE-SYMBOLS-DIRECTION] --clean refused: current environment is "%s". This flag only runs in local or testing.',
+                app()->environment()
+            ));
+
+            return self::FAILURE;
+        }
+
+        if ($this->option('reset') && ! app()->environment(['local', 'testing'])) {
+            $this->error(sprintf(
+                '[CONCLUDE-SYMBOLS-DIRECTION] --reset refused: current environment is "%s". This flag only runs in local or testing.',
                 app()->environment()
             ));
 
@@ -74,7 +83,6 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
             DB::table('steps')->truncate();
             DB::table('api_request_logs')->truncate();
             DB::table('indicator_histories')->truncate();
-            DB::table('forbidden_hostnames')->truncate();
             DB::table('notification_logs')->truncate();
 
             DB::statement('SET FOREIGN_KEY_CHECKS=1;');
@@ -137,25 +145,17 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
         // Track symbols skipped due to missing timeframes
         $skippedCount = 0;
 
-        // Wrap workflow creation in transaction to prevent race conditions
-        // if command runs concurrently
-        DB::transaction(function () use ($symbolsToProcess, $progressBar, &$skippedCount) {
-            $timeframes = Kraite::timeframes();
+        $timeframes = Kraite::timeframes();
 
-            if (empty($timeframes)) {
-                $skippedCount = $symbolsToProcess->count();
-                $progressBar?->advance($skippedCount);
-
-                return;
-            }
-
+        if (empty($timeframes)) {
+            $skippedCount = $symbolsToProcess->count();
+            $progressBar?->advance($skippedCount);
+        } else {
             foreach ($symbolsToProcess as $exchangeSymbol) {
-
-                $startingTimeframe = $timeframes[0];
-                $this->createWorkflowForSymbol($exchangeSymbol->id, $startingTimeframe);
+                $this->createWorkflowForSymbol($exchangeSymbol->id, $timeframes[0]);
                 $progressBar?->advance();
             }
-        });
+        }
 
         $progressBar?->finish();
         $this->verboseNewLine(2);
@@ -179,41 +179,42 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
      */
     private function createWorkflowForSymbol(int $symbolId, string $startingTimeframe): string
     {
-        $blockUuid = Str::uuid()->toString();
-        $group = StepsDispatcher::getNextGroup();
-        $now = now();
+        return DB::transaction(function () use ($symbolId, $startingTimeframe): string {
+            $blockUuid = Str::uuid()->toString();
+            $group = StepsDispatcher::getNextGroup();
 
-        // INDEX 1: QuerySymbolIndicatorsJob
-        Step::create([
-            'class' => QuerySymbolIndicatorsJob::class,
-            'queue' => 'indicators',
-            'block_uuid' => $blockUuid,
-            'group' => $group,
-            'index' => 1,
-            'arguments' => [
-                'exchangeSymbolId' => $symbolId,
-                'timeframe' => $startingTimeframe,
-                'previousConclusions' => [],
-            ],
-        ]);
+            // INDEX 1: QuerySymbolIndicatorsJob
+            Step::create([
+                'class' => QuerySymbolIndicatorsJob::class,
+                'queue' => 'indicators',
+                'block_uuid' => $blockUuid,
+                'group' => $group,
+                'index' => 1,
+                'arguments' => [
+                    'exchangeSymbolId' => $symbolId,
+                    'timeframe' => $startingTimeframe,
+                    'previousConclusions' => [],
+                ],
+            ]);
 
-        // INDEX 2: ConcludeSymbolDirectionAtTimeframeJob
-        Step::create([
-            'class' => ConcludeSymbolDirectionAtTimeframeJob::class,
-            'queue' => 'indicators',
-            'block_uuid' => $blockUuid,
-            'group' => $group,
-            'index' => 2,
-            'arguments' => [
-                'exchangeSymbolId' => $symbolId,
-                'timeframe' => $startingTimeframe,
-                'previousConclusions' => [],
-            ],
-        ]);
+            // INDEX 2: ConcludeSymbolDirectionAtTimeframeJob
+            Step::create([
+                'class' => ConcludeSymbolDirectionAtTimeframeJob::class,
+                'queue' => 'indicators',
+                'block_uuid' => $blockUuid,
+                'group' => $group,
+                'index' => 2,
+                'arguments' => [
+                    'exchangeSymbolId' => $symbolId,
+                    'timeframe' => $startingTimeframe,
+                    'previousConclusions' => [],
+                ],
+            ]);
 
-        // Finalization steps are created dynamically
-        // by ConcludeSymbolDirectionAtTimeframeJob only when a direction is successfully concluded
+            // Finalization steps are created dynamically
+            // by ConcludeSymbolDirectionAtTimeframeJob only when a direction is successfully concluded
 
-        return $blockUuid;
+            return $blockUuid;
+        });
     }
 }

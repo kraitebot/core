@@ -21,6 +21,7 @@ use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Fleet\FleetMetricsRepository;
+use Kraite\Core\Support\FreezeMode;
 use Kraite\Core\Support\Health\AccountActivityFlagSync;
 use Kraite\Core\Support\Health\Contracts\SystemHealthProbe;
 use Kraite\Core\Support\Health\ForeignActivityDetector;
@@ -34,7 +35,10 @@ use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\StepRouter;
 use StepDispatcher\Models\Step;
+use StepDispatcher\Models\StepsDispatcher;
 use StepDispatcher\Support\BaseCommand;
+use StepDispatcher\Support\StepDispatcher;
+use StepDispatcher\Support\Steps;
 use Throwable;
 
 /**
@@ -584,6 +588,60 @@ final class CheckSystemHealthCommand extends BaseCommand implements SystemHealth
     }
 
     /**
+     * Detect a stopped or severely degraded dispatch daemon while it owns
+     * active work. Idle prefixes are healthy without ticks; paused/frozen
+     * dispatchers are intentionally excluded. The existing ten-minute group
+     * watchdog remains the deeper per-group stall detector.
+     */
+    public function checkDispatcherTickRate(): int
+    {
+        if (FreezeMode::isActive() || ! config('kraite.can_dispatch_steps')) {
+            return 0;
+        }
+
+        $thresholdSeconds = (int) config(
+            'kraite.health_watchdog.dispatcher_tick_stale_seconds',
+            30,
+        );
+        $threshold = now()->subSeconds($thresholdSeconds);
+        $alerts = 0;
+
+        foreach (['' => 'default', 'trading' => 'trading'] as $prefix => $label) {
+            if (MaintenanceMode::isStepsDispatchPaused($prefix)) {
+                continue;
+            }
+
+            $snapshot = Steps::usingPrefix($prefix, static fn (): array => [
+                'active' => StepDispatcher::hasActiveSteps(),
+                'last_tick_completed' => StepsDispatcher::query()->max('last_tick_completed'),
+            ]);
+
+            if (! $snapshot['active']) {
+                continue;
+            }
+
+            $lastTick = $snapshot['last_tick_completed'];
+            if ($lastTick !== null && CarbonImmutable::parse($lastTick)->gte($threshold)) {
+                continue;
+            }
+
+            $ageLabel = $lastTick === null
+                ? 'never completed'
+                : ((int) now()->diffInSeconds(CarbonImmutable::parse($lastTick), true)).'s ago';
+
+            $this->emit(
+                signal: "dispatcher_tick_stale_{$label}",
+                severity: 'critical',
+                title: ucfirst($label).' dispatcher ticks are stale',
+                detail: "The {$label} step prefix has active Pending/Dispatched/Running work, but its latest completed dispatcher tick was {$ageLabel} (threshold: {$thresholdSeconds}s). The dispatch daemon is stopped, blocked in a slow group, or severely degraded; queued workflows are not advancing normally.",
+            );
+            $alerts++;
+        }
+
+        return $alerts;
+    }
+
+    /**
      * #5 — Scheduler liveness. We use the keepalive cron's footprint
      * (`binance_listen_keys.last_keep_alive_at`) as a proxy: that cron
      * runs every minute, so if the newest row's keepalive timestamp
@@ -710,41 +768,6 @@ final class CheckSystemHealthCommand extends BaseCommand implements SystemHealth
         }
 
         return $alerts;
-    }
-
-    /**
-     * Extract the exception class FQN from the `exception` text column.
-     * The column stores `ClassName: message\n#0 stack-trace...`.
-     * Returns "unknown" on any unexpected shape.
-     */
-    private function extractExceptionClass(string $exception): string
-    {
-        $firstLine = strtok($exception, "\n");
-        if ($firstLine === false) {
-            return 'unknown';
-        }
-
-        $colonPos = mb_strpos($firstLine, ':');
-        if ($colonPos === false) {
-            return mb_trim($firstLine) ?: 'unknown';
-        }
-
-        return mb_trim(mb_substr($firstLine, 0, $colonPos)) ?: 'unknown';
-    }
-
-    /**
-     * Extract the job class FQN from the JSON `payload`. Standard
-     * Laravel queue payload exposes `displayName`. Returns "unknown"
-     * if the payload is malformed.
-     */
-    private function extractJobClass(string $payload): string
-    {
-        $decoded = json_decode($payload, true);
-        if (! is_array($decoded)) {
-            return 'unknown';
-        }
-
-        return (string) ($decoded['displayName'] ?? 'unknown');
     }
 
     /**
@@ -951,6 +974,306 @@ final class CheckSystemHealthCommand extends BaseCommand implements SystemHealth
         }
 
         return $alerts;
+    }
+
+    /**
+     * Stale-`syncing` positions wedge detector.
+     *
+     * SyncPositionOrdersJob flips a position to `syncing` inside computeApiable
+     * and only flips it back to `active` in complete() on the success path.
+     * If every order's sync throws, the framework's exception/retry chain
+     * runs and intentionally leaves the position in `syncing` for visibility
+     * (see SyncPositionOrdersJob.php:65-72). When the retry chain exhausts
+     * (MaxRetriesReached → step Failed) the position stays in `syncing`
+     * indefinitely — the reactive cron's PrepareSyncOrdersJob early-returns
+     * because the position isn't `active`, and the 5-minute drift spotter
+     * also only audits `active` positions. The wedge has no automated
+     * recovery surface; operators have to notice and intervene manually.
+     *
+     * This check finds those wedged rows and alerts. We deliberately do NOT
+     * auto-flip back to `active` — if the underlying orders are genuinely
+     * broken, an auto-flip just re-wedges on the next sync. Surfacing the
+     * problem to ops is the right action; recovery is operator-driven.
+     *
+     * Filter: position.status = 'syncing' AND updated_at older than
+     * STALE_SYNCING_POSITION_MINUTES AND no live (non-terminal)
+     * PrepareSyncOrdersJob/SyncPositionOrdersJob step exists for that
+     * position. The "no live step" predicate distinguishes a long-running
+     * legitimate sync (still progressing) from a wedge with no in-flight
+     * worker.
+     */
+    public function checkStaleSyncingPositions(): int
+    {
+        $threshold = now()->subMinutes(self::STALE_SYNCING_POSITION_MINUTES);
+
+        $candidates = Position::query()
+            ->where('status', 'syncing')
+            ->where('updated_at', '<', $threshold)
+            ->get(['id', 'account_id', 'updated_at']);
+
+        if ($candidates->isEmpty()) {
+            return 0;
+        }
+
+        $candidateClasses = [PrepareSyncOrdersJob::class, AtomicSyncPositionOrdersJob::class];
+
+        $alerts = 0;
+
+        foreach ($candidates as $position) {
+            if (Step::hasLiveWorkflow($position, $candidateClasses)) {
+                continue;
+            }
+
+            $age = (int) now()->diffInMinutes($position->updated_at, true);
+
+            $this->emit(
+                signal: "stale_syncing_position_{$position->id}",
+                severity: 'high',
+                title: "Position #{$position->id} wedged in 'syncing'",
+                detail: "Position #{$position->id} (account #{$position->account_id}) has been in 'syncing' for {$age}min (threshold: ".self::STALE_SYNCING_POSITION_MINUTES.'min) with no live PrepareSyncOrdersJob/SyncPositionOrdersJob step. The reactive sync cron and drift spotter both skip non-active positions, so this row will not auto-recover. Operator action required: investigate the failed sync chain and either flip the position back to active (if orders are healthy) or run a targeted recovery.',
+            );
+            $alerts++;
+        }
+
+        return $alerts;
+    }
+
+    /**
+     * User-data daemon dead-letter alert.
+     *
+     * `StreamBinanceUserDataCommand::stashFrameToDisk` writes a JSONL line
+     * to `storage/logs/user-data-deadletter-YYYY-MM-DD.log` whenever
+     * Step::create throws inside the ReactPHP message handler (DB blip,
+     * observer-thrown exception, validation error). The current code logs
+     * to the `user-data` channel and continues — the operator only sees
+     * the failure if they grep logs.
+     *
+     * This check converts the silent log entry into a Pushover-grade
+     * alert. Today's file existing AND non-empty fires
+     * `user_data_deadletter_active` — the throttle key (5-min per-signal
+     * cache) bounds the noise even if a single bug produces many
+     * dead-letter entries in one cycle. Operator decides whether to
+     * inspect the JSONL and replay (no replay command yet — the file is
+     * idempotent-safe to manually replay through `api_data_stream.idempotency_key`).
+     */
+    public function checkUserDataDeadLetters(): int
+    {
+        $path = storage_path('logs/user-data-deadletter-'.now()->format('Y-m-d').'.log');
+
+        if (! is_file($path)) {
+            return 0;
+        }
+
+        $size = (int) (@filesize($path) ?: 0);
+        if ($size === 0) {
+            return 0;
+        }
+
+        // Approximate entry count via line count; capped read so a huge
+        // file doesn't pull bytes into memory. Any non-zero size proves
+        // at least one frame failed to dispatch — that's the operational
+        // signal we care about.
+        $lineCount = 0;
+        $handle = @fopen($path, 'r');
+        if (is_resource($handle)) {
+            while (($line = fgets($handle)) !== false) {
+                if (mb_trim($line) !== '') {
+                    $lineCount++;
+                }
+                if ($lineCount >= 1000) {
+                    break;
+                }
+            }
+            fclose($handle);
+        }
+
+        $countLabel = $lineCount >= 1000 ? '1000+' : (string) $lineCount;
+
+        $this->emit(
+            signal: 'user_data_deadletter_active',
+            severity: 'high',
+            title: 'User-data daemon dead-lettered frame(s) today',
+            detail: "Today's deadletter file ({$path}) has {$countLabel} entries (~{$size} bytes). The user-data daemon failed to dispatch one or more frames into Step::create — root cause is in user-data channel logs (DB blip / observer throw / validation). Each line is a JSONL with timestamp + account_id + payload + error; replay is idempotent via `api_data_stream.idempotency_key` once the underlying issue is fixed.",
+        );
+
+        return 1;
+    }
+
+    /**
+     * Alert when the Binance private stream is connected but configured to
+     * record every execution without applying any event to local orders.
+     * That shadow mode is useful during a staged rollout, but it must never
+     * masquerade as a live reactive trading path in normal operation.
+     */
+    public function checkUserDataStreamDispatchMode(): int
+    {
+        $executions = array_values(array_filter(
+            (array) config('kraite.user_data_stream.binance.dispatched_executions', []),
+            static fn (mixed $execution): bool => is_string($execution) && mb_trim($execution) !== '',
+        ));
+
+        if ($executions !== []) {
+            return 0;
+        }
+
+        $this->emit(
+            signal: 'user_data_stream_record_only_binance',
+            severity: 'high',
+            title: 'Binance user-data stream is record-only',
+            detail: 'No execution types are configured in kraite.user_data_stream.binance.dispatched_executions. The daemon can remain connected and healthy while fills, cancellations and exits wait for polling instead of updating local orders immediately. Configure USER_DATA_STREAM_BINANCE_DISPATCHED_EXECUTIONS and restart the application workers.',
+        );
+
+        return 1;
+    }
+
+    /**
+     * #13 — Fleet-metrics silence. Each box writes a vitals heartbeat to a
+     * Redis key every few minutes; this check reads the
+     * `kraite.fleet.servers` registry joined against those keys and alerts on
+     * any box that is `missing` (registered but never reported — warmup seed
+     * missed, Horizon never came up, or decommissioned without cleaning the
+     * registry) or `stale` (key present but `reported_at` aged past the
+     * threshold — box offline, Horizon/heartbeat wedged, or mid-reboot beyond
+     * the grace window).
+     *
+     * The staleness threshold (`fleet_metrics.stale_after_seconds`) sits well
+     * above a clean reboot, so a box bouncing through a deploy does not page;
+     * only a box that fails to come back trips it. Redis-only, so it stays
+     * accurate even while the steps dispatcher is paused.
+     *
+     * Alert lifecycle: a `missing` box still inside the provisioning grace
+     * window (`fleet_metrics.provisioning_grace_seconds` after its `servers`
+     * row was first registered) is skipped — a box is normally seeded into
+     * the roster hours before its Horizon warms up, and paging on that gap
+     * every run is pure noise. `stale` is never graced: that box HAS reported
+     * before, so silence is always a real signal. Once alertable, the signal
+     * re-pages every `fleet_metrics.alert_throttle_seconds` (not every check
+     * run — the default canonical throttle is shorter than the check cadence,
+     * which would page on every single tick while a box is down).
+     */
+    public function checkFleetMetricsSilence(): int
+    {
+        $silent = app(FleetMetricsRepository::class)->silentHosts();
+
+        $graceSeconds = (int) config('kraite.fleet_metrics.provisioning_grace_seconds', 86400);
+        $alertThrottleSeconds = (int) config('kraite.fleet_metrics.alert_throttle_seconds', 3600);
+
+        $alerts = 0;
+
+        foreach ($silent as $row) {
+            $hostname = (string) $row['hostname'];
+            $status = (string) $row['status'];
+            $type = $row['type'] ?? 'unknown';
+            $ip = $row['ip_address'] ?? 'unknown';
+
+            if ($status === 'missing' && $this->withinProvisioningGrace($row, $graceSeconds)) {
+                continue;
+            }
+
+            // `age_seconds` is null when the key exists but its `reported_at`
+            // is absent or unparseable (corrupt payload, rogue writer) — name
+            // that state instead of interpolating a null into the sentence.
+            $staleFor = $row['age_seconds'] !== null
+                ? "{$row['age_seconds']}s stale"
+                : 'stale with an unreadable reported_at stamp';
+
+            $detail = $status === 'missing'
+                ? "No fleet-metrics heartbeat key for {$hostname} ({$type}, {$ip}). The box is in the kraite.fleet.servers registry but has never reported — its heartbeat loop never started (warmup seed missed, Horizon down since provisioning) or it was decommissioned without cleaning the registry."
+                : "Fleet-metrics heartbeat for {$hostname} ({$type}, {$ip}) is {$staleFor} (threshold: ".config('kraite.fleet_metrics.stale_after_seconds').'s). The box stopped reporting — Horizon / heartbeat wedged, the box is offline, or it is mid-reboot beyond the grace window.';
+
+            $this->emit(
+                signal: "fleet_box_silent_{$hostname}",
+                severity: 'high',
+                title: "Fleet box {$hostname} {$status} — no live metrics",
+                detail: $detail,
+                throttleSeconds: $alertThrottleSeconds,
+            );
+            $alerts++;
+        }
+
+        return $alerts;
+    }
+
+    /**
+     * Stuck-maintenance detector — the only check that runs while the
+     * app is down (see handle()'s early branch).
+     *
+     * Age is read from the `storage/framework/down` marker's mtime —
+     * the file driver is the only maintenance driver this fleet uses,
+     * and the payload itself carries no activation timestamp. An
+     * active-but-unreadable marker fails open (alertable): better one
+     * page too many than a silently parked box hidden behind a stat
+     * failure — same posture as withinProvisioningGrace().
+     *
+     * Threshold sits above a full release's cooldown → deploy → warmup
+     * span so healthy deploys never page; a box past it has been
+     * forgotten. Re-pages every 30 minutes while the condition holds.
+     */
+    public function checkMaintenanceModeStuck(): int
+    {
+        $thresholdMinutes = (int) config('kraite.health_watchdog.maintenance_stuck_minutes', 45);
+
+        $ageMinutes = null;
+        $downFile = storage_path('framework/down');
+        if (is_file($downFile)) {
+            $mtime = @filemtime($downFile);
+            if ($mtime !== false) {
+                $ageMinutes = (int) floor((time() - $mtime) / 60);
+            }
+        }
+
+        if ($ageMinutes !== null && $ageMinutes < $thresholdMinutes) {
+            return 0;
+        }
+
+        $ageLabel = $ageMinutes !== null
+            ? "{$ageMinutes}min"
+            : 'an unknown time (down marker unreadable)';
+
+        $this->emit(
+            signal: 'maintenance_mode_stuck',
+            severity: 'critical',
+            title: 'Server stuck in maintenance mode',
+            detail: "This box has been in maintenance mode for {$ageLabel} (threshold: {$thresholdMinutes}min). The scheduler skips every cron while the app is down — listen-key keepalive, sync fallback, DB backups and all other scheduled work are dead until `php artisan up` runs (a release warmup was likely interrupted before reaching this box).",
+            throttleSeconds: 1800,
+        );
+
+        return 1;
+    }
+
+    /**
+     * Extract the exception class FQN from the `exception` text column.
+     * The column stores `ClassName: message\n#0 stack-trace...`.
+     * Returns "unknown" on any unexpected shape.
+     */
+    private function extractExceptionClass(string $exception): string
+    {
+        $firstLine = strtok($exception, "\n");
+        if ($firstLine === false) {
+            return 'unknown';
+        }
+
+        $colonPos = mb_strpos($firstLine, ':');
+        if ($colonPos === false) {
+            return mb_trim($firstLine) ?: 'unknown';
+        }
+
+        return mb_trim(mb_substr($firstLine, 0, $colonPos)) ?: 'unknown';
+    }
+
+    /**
+     * Extract the job class FQN from the JSON `payload`. Standard
+     * Laravel queue payload exposes `displayName`. Returns "unknown"
+     * if the payload is malformed.
+     */
+    private function extractJobClass(string $payload): string
+    {
+        $decoded = json_decode($payload, true);
+        if (! is_array($decoded)) {
+            return 'unknown';
+        }
+
+        return (string) ($decoded['displayName'] ?? 'unknown');
     }
 
     /**
@@ -1357,197 +1680,6 @@ final class CheckSystemHealthCommand extends BaseCommand implements SystemHealth
     }
 
     /**
-     * Stale-`syncing` positions wedge detector.
-     *
-     * SyncPositionOrdersJob flips a position to `syncing` inside computeApiable
-     * and only flips it back to `active` in complete() on the success path.
-     * If every order's sync throws, the framework's exception/retry chain
-     * runs and intentionally leaves the position in `syncing` for visibility
-     * (see SyncPositionOrdersJob.php:65-72). When the retry chain exhausts
-     * (MaxRetriesReached → step Failed) the position stays in `syncing`
-     * indefinitely — the reactive cron's PrepareSyncOrdersJob early-returns
-     * because the position isn't `active`, and the 5-minute drift spotter
-     * also only audits `active` positions. The wedge has no automated
-     * recovery surface; operators have to notice and intervene manually.
-     *
-     * This check finds those wedged rows and alerts. We deliberately do NOT
-     * auto-flip back to `active` — if the underlying orders are genuinely
-     * broken, an auto-flip just re-wedges on the next sync. Surfacing the
-     * problem to ops is the right action; recovery is operator-driven.
-     *
-     * Filter: position.status = 'syncing' AND updated_at older than
-     * STALE_SYNCING_POSITION_MINUTES AND no live (non-terminal)
-     * PrepareSyncOrdersJob/SyncPositionOrdersJob step exists for that
-     * position. The "no live step" predicate distinguishes a long-running
-     * legitimate sync (still progressing) from a wedge with no in-flight
-     * worker.
-     */
-    public function checkStaleSyncingPositions(): int
-    {
-        $threshold = now()->subMinutes(self::STALE_SYNCING_POSITION_MINUTES);
-
-        $candidates = Position::query()
-            ->where('status', 'syncing')
-            ->where('updated_at', '<', $threshold)
-            ->get(['id', 'account_id', 'updated_at']);
-
-        if ($candidates->isEmpty()) {
-            return 0;
-        }
-
-        $candidateClasses = [PrepareSyncOrdersJob::class, AtomicSyncPositionOrdersJob::class];
-
-        $alerts = 0;
-
-        foreach ($candidates as $position) {
-            if (Step::hasLiveWorkflow($position, $candidateClasses)) {
-                continue;
-            }
-
-            $age = (int) now()->diffInMinutes($position->updated_at, true);
-
-            $this->emit(
-                signal: "stale_syncing_position_{$position->id}",
-                severity: 'high',
-                title: "Position #{$position->id} wedged in 'syncing'",
-                detail: "Position #{$position->id} (account #{$position->account_id}) has been in 'syncing' for {$age}min (threshold: ".self::STALE_SYNCING_POSITION_MINUTES.'min) with no live PrepareSyncOrdersJob/SyncPositionOrdersJob step. The reactive sync cron and drift spotter both skip non-active positions, so this row will not auto-recover. Operator action required: investigate the failed sync chain and either flip the position back to active (if orders are healthy) or run a targeted recovery.',
-            );
-            $alerts++;
-        }
-
-        return $alerts;
-    }
-
-    /**
-     * User-data daemon dead-letter alert.
-     *
-     * `StreamBinanceUserDataCommand::stashFrameToDisk` writes a JSONL line
-     * to `storage/logs/user-data-deadletter-YYYY-MM-DD.log` whenever
-     * Step::create throws inside the ReactPHP message handler (DB blip,
-     * observer-thrown exception, validation error). The current code logs
-     * to the `user-data` channel and continues — the operator only sees
-     * the failure if they grep logs.
-     *
-     * This check converts the silent log entry into a Pushover-grade
-     * alert. Today's file existing AND non-empty fires
-     * `user_data_deadletter_active` — the throttle key (5-min per-signal
-     * cache) bounds the noise even if a single bug produces many
-     * dead-letter entries in one cycle. Operator decides whether to
-     * inspect the JSONL and replay (no replay command yet — the file is
-     * idempotent-safe to manually replay through `api_data_stream.idempotency_key`).
-     */
-    public function checkUserDataDeadLetters(): int
-    {
-        $path = storage_path('logs/user-data-deadletter-'.now()->format('Y-m-d').'.log');
-
-        if (! is_file($path)) {
-            return 0;
-        }
-
-        $size = (int) (@filesize($path) ?: 0);
-        if ($size === 0) {
-            return 0;
-        }
-
-        // Approximate entry count via line count; capped read so a huge
-        // file doesn't pull bytes into memory. Any non-zero size proves
-        // at least one frame failed to dispatch — that's the operational
-        // signal we care about.
-        $lineCount = 0;
-        $handle = @fopen($path, 'r');
-        if (is_resource($handle)) {
-            while (($line = fgets($handle)) !== false) {
-                if (mb_trim($line) !== '') {
-                    $lineCount++;
-                }
-                if ($lineCount >= 1000) {
-                    break;
-                }
-            }
-            fclose($handle);
-        }
-
-        $countLabel = $lineCount >= 1000 ? '1000+' : (string) $lineCount;
-
-        $this->emit(
-            signal: 'user_data_deadletter_active',
-            severity: 'high',
-            title: 'User-data daemon dead-lettered frame(s) today',
-            detail: "Today's deadletter file ({$path}) has {$countLabel} entries (~{$size} bytes). The user-data daemon failed to dispatch one or more frames into Step::create — root cause is in user-data channel logs (DB blip / observer throw / validation). Each line is a JSONL with timestamp + account_id + payload + error; replay is idempotent via `api_data_stream.idempotency_key` once the underlying issue is fixed.",
-        );
-
-        return 1;
-    }
-
-    /**
-     * #13 — Fleet-metrics silence. Each box writes a vitals heartbeat to a
-     * Redis key every few minutes; this check reads the
-     * `kraite.fleet.servers` registry joined against those keys and alerts on
-     * any box that is `missing` (registered but never reported — warmup seed
-     * missed, Horizon never came up, or decommissioned without cleaning the
-     * registry) or `stale` (key present but `reported_at` aged past the
-     * threshold — box offline, Horizon/heartbeat wedged, or mid-reboot beyond
-     * the grace window).
-     *
-     * The staleness threshold (`fleet_metrics.stale_after_seconds`) sits well
-     * above a clean reboot, so a box bouncing through a deploy does not page;
-     * only a box that fails to come back trips it. Redis-only, so it stays
-     * accurate even while the steps dispatcher is paused.
-     *
-     * Alert lifecycle: a `missing` box still inside the provisioning grace
-     * window (`fleet_metrics.provisioning_grace_seconds` after its `servers`
-     * row was first registered) is skipped — a box is normally seeded into
-     * the roster hours before its Horizon warms up, and paging on that gap
-     * every run is pure noise. `stale` is never graced: that box HAS reported
-     * before, so silence is always a real signal. Once alertable, the signal
-     * re-pages every `fleet_metrics.alert_throttle_seconds` (not every check
-     * run — the default canonical throttle is shorter than the check cadence,
-     * which would page on every single tick while a box is down).
-     */
-    public function checkFleetMetricsSilence(): int
-    {
-        $silent = app(FleetMetricsRepository::class)->silentHosts();
-
-        $graceSeconds = (int) config('kraite.fleet_metrics.provisioning_grace_seconds', 86400);
-        $alertThrottleSeconds = (int) config('kraite.fleet_metrics.alert_throttle_seconds', 3600);
-
-        $alerts = 0;
-
-        foreach ($silent as $row) {
-            $hostname = (string) $row['hostname'];
-            $status = (string) $row['status'];
-            $type = $row['type'] ?? 'unknown';
-            $ip = $row['ip_address'] ?? 'unknown';
-
-            if ($status === 'missing' && $this->withinProvisioningGrace($row, $graceSeconds)) {
-                continue;
-            }
-
-            // `age_seconds` is null when the key exists but its `reported_at`
-            // is absent or unparseable (corrupt payload, rogue writer) — name
-            // that state instead of interpolating a null into the sentence.
-            $staleFor = $row['age_seconds'] !== null
-                ? "{$row['age_seconds']}s stale"
-                : 'stale with an unreadable reported_at stamp';
-
-            $detail = $status === 'missing'
-                ? "No fleet-metrics heartbeat key for {$hostname} ({$type}, {$ip}). The box is in the kraite.fleet.servers registry but has never reported — its heartbeat loop never started (warmup seed missed, Horizon down since provisioning) or it was decommissioned without cleaning the registry."
-                : "Fleet-metrics heartbeat for {$hostname} ({$type}, {$ip}) is {$staleFor} (threshold: ".config('kraite.fleet_metrics.stale_after_seconds').'s). The box stopped reporting — Horizon / heartbeat wedged, the box is offline, or it is mid-reboot beyond the grace window.';
-
-            $this->emit(
-                signal: "fleet_box_silent_{$hostname}",
-                severity: 'high',
-                title: "Fleet box {$hostname} {$status} — no live metrics",
-                detail: $detail,
-                throttleSeconds: $alertThrottleSeconds,
-            );
-            $alerts++;
-        }
-
-        return $alerts;
-    }
-
-    /**
      * True while a roster row is younger than the provisioning grace window —
      * the seeded-but-not-yet-warmed phase of a new box. An unreadable
      * registration stamp fails open (alertable): better one page too many
@@ -1568,53 +1700,6 @@ final class CheckSystemHealthCommand extends BaseCommand implements SystemHealth
         } catch (Throwable) {
             return false;
         }
-    }
-
-    /**
-     * Stuck-maintenance detector — the only check that runs while the
-     * app is down (see handle()'s early branch).
-     *
-     * Age is read from the `storage/framework/down` marker's mtime —
-     * the file driver is the only maintenance driver this fleet uses,
-     * and the payload itself carries no activation timestamp. An
-     * active-but-unreadable marker fails open (alertable): better one
-     * page too many than a silently parked box hidden behind a stat
-     * failure — same posture as withinProvisioningGrace().
-     *
-     * Threshold sits above a full release's cooldown → deploy → warmup
-     * span so healthy deploys never page; a box past it has been
-     * forgotten. Re-pages every 30 minutes while the condition holds.
-     */
-    public function checkMaintenanceModeStuck(): int
-    {
-        $thresholdMinutes = (int) config('kraite.health_watchdog.maintenance_stuck_minutes', 45);
-
-        $ageMinutes = null;
-        $downFile = storage_path('framework/down');
-        if (is_file($downFile)) {
-            $mtime = @filemtime($downFile);
-            if ($mtime !== false) {
-                $ageMinutes = (int) floor((time() - $mtime) / 60);
-            }
-        }
-
-        if ($ageMinutes !== null && $ageMinutes < $thresholdMinutes) {
-            return 0;
-        }
-
-        $ageLabel = $ageMinutes !== null
-            ? "{$ageMinutes}min"
-            : 'an unknown time (down marker unreadable)';
-
-        $this->emit(
-            signal: 'maintenance_mode_stuck',
-            severity: 'critical',
-            title: 'Server stuck in maintenance mode',
-            detail: "This box has been in maintenance mode for {$ageLabel} (threshold: {$thresholdMinutes}min). The scheduler skips every cron while the app is down — listen-key keepalive, sync fallback, DB backups and all other scheduled work are dead until `php artisan up` runs (a release warmup was likely interrupted before reaching this box).",
-            throttleSeconds: 1800,
-        );
-
-        return 1;
     }
 
     /**

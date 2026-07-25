@@ -135,8 +135,6 @@ final class DispatchLimitOrdersJob extends BaseQueueableJob
         // never-completing zombie.
         if (count($ladder) > 0) {
             $this->buildChildChainOnce(function (string $blockUuid) use ($ladder, $side, $direction, $resolver): void {
-                // Observer silently rejects excess orders (returns false
-                // from creating()), so filter removes blocked creations.
                 $this->limitOrders = collect($ladder)
                     ->map(function (array $rung) use ($side, $direction): Order {
                         return Order::create([
@@ -149,8 +147,6 @@ final class DispatchLimitOrdersJob extends BaseQueueableJob
                             'quantity' => $rung['quantity'],
                         ]);
                     })
-                    ->filter()
-                    ->values()
                     ->all();
 
                 collect($this->limitOrders)

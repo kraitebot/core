@@ -14,6 +14,8 @@ interface SystemHealthProbe
 
     public function checkDaemonHeartbeat(): int;
 
+    public function checkDispatcherTickRate(): int;
+
     public function checkSchedulerLiveness(): int;
 
     public function checkFailedJobsOverflow(): int;
@@ -31,6 +33,8 @@ interface SystemHealthProbe
     public function checkStaleSyncingPositions(): int;
 
     public function checkUserDataDeadLetters(): int;
+
+    public function checkUserDataStreamDispatchMode(): int;
 
     public function checkFleetMetricsSilence(): int;
 
