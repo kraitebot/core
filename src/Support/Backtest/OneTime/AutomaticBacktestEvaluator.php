@@ -166,6 +166,7 @@ final class AutomaticBacktestEvaluator
             $lockedSymbol->forceFill([
                 'was_backtesting_approved' => true,
                 'backtesting_review_status' => 'approved',
+                'backtesting_reviewed_at' => now(),
                 'is_manually_enabled' => true,
                 'percentage_gap_long' => $configuration['gap_long_percent'],
                 'percentage_gap_short' => $configuration['gap_short_percent'],

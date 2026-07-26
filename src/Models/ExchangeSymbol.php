@@ -125,6 +125,7 @@ final class ExchangeSymbol extends BaseModel
     protected $casts = [
         'is_manually_enabled' => 'boolean',
         'was_backtesting_approved' => 'boolean',
+        'backtesting_reviewed_at' => 'datetime',
         'has_no_indicator_data' => 'boolean',
         'has_price_trend_misalignment' => 'boolean',
         'has_early_direction_change' => 'boolean',

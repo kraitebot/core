@@ -311,6 +311,7 @@ final class ExchangeSymbolObserver
         $siblings = $model->getOthersFromExchanges();
         $newApproved = (bool) $model->was_backtesting_approved;
         $newStatus = $model->backtesting_review_status;
+        $newReviewedAt = $model->backtesting_reviewed_at;
 
         foreach ($siblings as $sibling) {
             $dirty = false;
@@ -322,6 +323,13 @@ final class ExchangeSymbolObserver
 
             if ($sibling->backtesting_review_status !== $newStatus) {
                 $sibling->backtesting_review_status = $newStatus;
+                $dirty = true;
+            }
+
+            // The decision date travels with the decision: a sibling showing
+            // "approved" with no date would read as an older, unrelated call.
+            if (optional($sibling->backtesting_reviewed_at)->toDateTimeString() !== optional($newReviewedAt)->toDateTimeString()) {
+                $sibling->backtesting_reviewed_at = $newReviewedAt;
                 $dirty = true;
             }
 
