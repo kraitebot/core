@@ -116,7 +116,9 @@ final class ConcludeSymbolsDirectionCommand extends BaseCommand
         if ($this->option('reset')) {
             $this->verboseInfo('Resetting all exchange symbols...');
 
-            $resetCount = ExchangeSymbol::query()->update([
+            // Renamed-away rows are sealed archives — the mass reset must
+            // not scrub their frozen indicator state.
+            $resetCount = ExchangeSymbol::query()->notRenamed()->update([
                 'has_no_indicator_data' => false,
                 'has_price_trend_misalignment' => false,
                 'has_early_direction_change' => false,

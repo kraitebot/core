@@ -53,7 +53,12 @@ trait HasAccessors
             return ExchangeSymbol::query()->whereRaw('1 = 0')->get();
         }
 
+        // Renamed-away rows share the successor's symbol_id but are
+        // sealed archives: fanning a backtesting verdict onto one would
+        // flip its frozen status and expose its irreplaceable pre-rename
+        // candles to the rejected-symbols purge.
         return ExchangeSymbol::query()
+            ->notRenamed()
             ->where('symbol_id', $this->symbol_id)
             ->where('id', '!=', $this->id)
             ->get();

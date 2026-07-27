@@ -5,11 +5,16 @@ declare(strict_types=1);
 namespace Kraite\Core\Jobs\Models\ExchangeSymbol;
 
 use GuzzleHttp\Exception\RequestException;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\ExchangeSymbol;
+use Kraite\Core\Models\Kraite;
+use Kraite\Core\Models\Position;
 use Kraite\Core\Models\Symbol;
+use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Trading\Exchange\Exchange;
 use SensitiveParameter;
 
@@ -52,6 +57,13 @@ final class DiscoverCMCTokenForExchangeSymbolJob extends BaseApiableJob
         'XZEC' => 'ZEC',     // Extended X-prefix format
         'XXMR' => 'XMR',     // Extended X-prefix format
     ];
+
+    /**
+     * A vanished listing older than this is not auto-linked to a new
+     * arrival — months-apart pairs get a "suspected rename" alert and a
+     * human decision instead.
+     */
+    private const RENAME_DETECTION_WINDOW_DAYS = 3;
 
     public ExchangeSymbol $exchangeSymbol;
 
@@ -327,6 +339,14 @@ final class DiscoverCMCTokenForExchangeSymbolJob extends BaseApiableJob
             $existingSymbol = Symbol::where('cmc_id', $cmcId)->first();
 
             if ($existingSymbol) {
+                // The CMC id is the coin's identity; the ticker is only a
+                // label. When CMC reports a different current ticker than
+                // our catalogue holds (TON → GRAM rebrand), refresh the
+                // label in place — this also disarms the recycled-ticker
+                // trap, since the abandoned name stops matching anything
+                // in future name lookups.
+                $this->refreshCatalogueLabel($existingSymbol, $cmcData);
+
                 return [
                     'symbol' => $existingSymbol,
                     'api_data' => [
@@ -369,6 +389,8 @@ final class DiscoverCMCTokenForExchangeSymbolJob extends BaseApiableJob
     {
         $this->exchangeSymbol->update(['symbol_id' => $symbol->id]);
 
+        $renameOutcome = $this->handlePossibleRename($symbol);
+
         $exchange = $this->exchangeSymbol->apiSystem->canonical ?? 'unknown';
         $originalToken = $this->exchangeSymbol->token;
         $matchedVia = $debug['matched_symbol'] ?? $symbol->token;
@@ -386,8 +408,126 @@ final class DiscoverCMCTokenForExchangeSymbolJob extends BaseApiableJob
             'matched_via' => $matchedVia,
             'source' => $source,
             'cmc_id' => $symbol->cmc_id,
+            'rename' => $renameOutcome,
             'message' => $message,
         ];
+    }
+
+    /**
+     * Keep the catalogue ticker/name current with CMC's record for the
+     * same coin identity (cmc_id). No-op when the label already matches.
+     */
+    private function refreshCatalogueLabel(Symbol $symbol, array $cmcData): void
+    {
+        $currentTicker = mb_strtoupper(mb_trim((string) ($cmcData['symbol'] ?? '')));
+
+        if ($currentTicker === '' || $currentTicker === $symbol->token) {
+            return;
+        }
+
+        $symbol->updateSaving([
+            'token' => $currentTicker,
+            'name' => $cmcData['name'] ?? $symbol->name,
+        ]);
+    }
+
+    /**
+     * Exchange-rename detection (TON → GRAM). Fires at the identity-link
+     * moment — the earliest point where the freshly created listing and
+     * the vanished one can be proven to be the same coin.
+     *
+     * Shape of a rename: a sibling row on the SAME exchange and quote,
+     * linked to the SAME coin identity, currently flagged missing from
+     * the exchange feed, and not yet retired. Recency decides handling:
+     *
+     *  - Flagged missing recently (within RENAME_DETECTION_WINDOW_DAYS,
+     *    proven from the append-only audit trail, not updated_at — the
+     *    pipelines keep touching rows and would fake freshness):
+     *    auto-process. Retire the old row (one-way `renamed` block),
+     *    thread the ancestry, alert the admin. Open positions on the
+     *    retired row are counted into the alert and left for a human —
+     *    never auto-migrated.
+     *
+     *  - Flagged missing long ago (or no audit record): a months-apart
+     *    disappear/appear pair can be a real delisting plus an unrelated
+     *    relisting, so nothing is blocked or linked — the admin gets a
+     *    "suspected rename" alert and decides.
+     */
+    private function handlePossibleRename(Symbol $symbol): ?array
+    {
+        $retired = ExchangeSymbol::query()
+            ->where('symbol_id', $symbol->id)
+            ->where('api_system_id', $this->exchangeSymbol->api_system_id)
+            ->where('quote', $this->exchangeSymbol->quote)
+            ->where('id', '!=', $this->exchangeSymbol->id)
+            ->where('token', '!=', $this->exchangeSymbol->token)
+            ->where('is_marked_for_delisting', true)
+            ->whereNull('system_disabled_at')
+            ->orderByDesc('id')
+            ->first();
+
+        if (! $retired instanceof ExchangeSymbol) {
+            return null;
+        }
+
+        $flaggedMissingAt = DB::table('model_logs')
+            ->where('loggable_type', ExchangeSymbol::class)
+            ->where('loggable_id', $retired->id)
+            ->where('attribute_name', 'is_marked_for_delisting')
+            ->where('new_value', '1')
+            ->orderByDesc('id')
+            ->value('created_at');
+
+        $openPositions = Position::query()
+            ->where('exchange_symbol_id', $retired->id)
+            ->whereIn('status', (new Position)->openedStatuses())
+            ->count();
+
+        $exchange = $this->exchangeSymbol->apiSystem->canonical ?? 'unknown';
+
+        $referenceData = [
+            'old_token' => $retired->token,
+            'new_token' => $this->exchangeSymbol->token,
+            'quote' => $this->exchangeSymbol->quote,
+            'exchange' => $exchange,
+            'coin_name' => $symbol->name,
+            'cmc_id' => $symbol->cmc_id,
+            'retired_exchange_symbol_id' => $retired->id,
+            'successor_exchange_symbol_id' => $this->exchangeSymbol->id,
+            'open_positions' => $openPositions,
+        ];
+
+        $isRecent = $flaggedMissingAt !== null
+            && Carbon::parse((string) $flaggedMissingAt)->greaterThanOrEqualTo(
+                now()->subDays(self::RENAME_DETECTION_WINDOW_DAYS)
+            );
+
+        if (! $isRecent) {
+            NotificationService::send(
+                user: Kraite::admin(),
+                canonical: 'exchange_symbol_rename_suspected',
+                referenceData: $referenceData,
+                relatable: $this->exchangeSymbol,
+                cacheKeys: ['exchange_symbol' => $retired->id],
+            );
+
+            return ['status' => 'suspected_only', 'retired_id' => $retired->id];
+        }
+
+        $retired->applySystemBlock(ExchangeSymbol::SYSTEM_BLOCK_RENAMED);
+        $this->exchangeSymbol->updateSaving([
+            'renamed_from_exchange_symbol_id' => $retired->id,
+        ]);
+
+        NotificationService::send(
+            user: Kraite::admin(),
+            canonical: 'exchange_symbol_renamed',
+            referenceData: $referenceData,
+            relatable: $this->exchangeSymbol,
+            cacheKeys: ['exchange_symbol' => $retired->id],
+        );
+
+        return ['status' => 'renamed', 'retired_id' => $retired->id, 'open_positions' => $openPositions];
     }
 
     /**

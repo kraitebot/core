@@ -6,6 +6,7 @@ namespace Kraite\Core\Commands\Cronjobs;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Kraite\Core\Jobs\Atomic\ApiSystem\ReconcileSymbolLabelsWithCmcJob;
 use Kraite\Core\Jobs\Atomic\ApiSystem\UpsertExchangeSymbolsFromExchangeJob;
 use Kraite\Core\Jobs\Lifecycles\ApiSystem\DiscoverCMCTokensForOrphanedSymbolsJob;
 use Kraite\Core\Jobs\Lifecycles\ApiSystem\SyncLeverageBracketsJob;
@@ -142,6 +143,19 @@ final class RefreshExchangeSymbolsCommand extends BaseCommand
             // when the orchestrator's empty-work early-return fires.
             Step::create([
                 'class' => DiscoverCMCTokensForOrphanedSymbolsJob::class,
+                'queue' => 'cronjobs',
+                'arguments' => [],
+                'block_uuid' => $blockUuid,
+                'index' => $postSyncIndex,
+            ]);
+
+            // Catalogue label reconciliation: the CMC id is the identity,
+            // the ticker only a label. One batched sweep per refresh cycle
+            // keeps labels current for coins linked before a rebrand
+            // (TON → GRAM), which also keeps the name-based matchers from
+            // ever matching an abandoned ticker.
+            Step::create([
+                'class' => ReconcileSymbolLabelsWithCmcJob::class,
                 'queue' => 'cronjobs',
                 'arguments' => [],
                 'block_uuid' => $blockUuid,

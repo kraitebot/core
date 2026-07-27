@@ -38,6 +38,25 @@ enum OrderStatus: string
         return [self::Cancelled->value, self::Expired->value, self::Rejected->value];
     }
 
+    /**
+     * Lifecycle rank for monotonicity guards. Burst fills (large MARKET
+     * orders splitting into many partial executions within the same
+     * second) can deliver user-data frames out of order — a NEW or
+     * PARTIALLY_FILLED frame processed after the FILLED frame is stale,
+     * not a real transition. Comparing ranks lets appliers reject any
+     * frame that would move an order's lifecycle backwards. All terminal
+     * states share one rank so legitimate terminal-to-terminal rewrites
+     * keep applying exactly as before.
+     */
+    public static function rank(string $status): int
+    {
+        return match ($status) {
+            self::New->value => 0,
+            self::PartiallyFilled->value => 1,
+            default => 2,
+        };
+    }
+
     public function isWorkingOnExchange(): bool
     {
         return $this === self::New || $this === self::PartiallyFilled;

@@ -77,10 +77,6 @@ use Kraite\Core\Database\Factories\ExchangeSymbolFactory;
  */
 final class ExchangeSymbol extends BaseModel
 {
-    public const SYSTEM_BLOCK_OPENING_FAILED = 'position_opening_failed';
-
-    public const SYSTEM_BLOCK_NOT_ALLOW_LISTED = 'token_not_allow_listed';
-
     use HasAccessors;
     use HasFactory;
     use HasScopes;
@@ -88,6 +84,12 @@ final class ExchangeSymbol extends BaseModel
     use HasTradingComputations;
     use InteractsWithApis;
     use SendsNotifications;
+
+    public const SYSTEM_BLOCK_OPENING_FAILED = 'position_opening_failed';
+
+    public const SYSTEM_BLOCK_NOT_ALLOW_LISTED = 'token_not_allow_listed';
+
+    public const SYSTEM_BLOCK_RENAMED = 'renamed';
 
     /**
      * Attributes excluded from the model_logs audit trail (honoured by
@@ -184,6 +186,31 @@ final class ExchangeSymbol extends BaseModel
     public function apiSystem(): BelongsTo
     {
         return $this->belongsTo(ApiSystem::class);
+    }
+
+    /**
+     * The retired listing this row continues after an exchange rename
+     * (TON → GRAM). The ancestor keeps the pre-rename candle history —
+     * the only copy in existence — and is delete-protected while this
+     * reference exists.
+     *
+     * @return BelongsTo<ExchangeSymbol, $this>
+     */
+    public function renamedFrom(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'renamed_from_exchange_symbol_id');
+    }
+
+    /**
+     * The successor listing that continues this row after an exchange
+     * rename. Live safety checks translate a retired row to its current
+     * exchange ticker through this relation.
+     *
+     * @return HasOne<ExchangeSymbol, $this>
+     */
+    public function renamedTo(): HasOne
+    {
+        return $this->hasOne(self::class, 'renamed_from_exchange_symbol_id');
     }
 
     /**

@@ -318,12 +318,32 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
             return false;
         }
 
+        // Monotonicity guard. Burst fills deliver frames out of order —
+        // the TOSHIUSDT incident (2026-07-26) had NEW / PARTIALLY_FILLED
+        // frames applied AFTER the FILLED frame within the same second,
+        // regressing a filled MARKET order's price to the working frame's
+        // literal 0 and firing entry_price drift alerts for hours. The
+        // archive row above already persisted the stale frame for audit;
+        // the local order must never move backwards through its lifecycle.
+        if ($event->normalizedStatus !== null
+            && OrderStatus::rank($event->normalizedStatus) < OrderStatus::rank((string) $order->status)) {
+            return false;
+        }
+
         $isWorking = in_array($event->normalizedStatus, OrderStatus::workingValues(), true);
         $price = $isWorking
             ? $event->price
             : ($event->averagePrice !== null && Math::gt($event->averagePrice, '0')
                 ? $event->averagePrice
                 : $event->price);
+
+        // A zero price never carries information the local row lacks:
+        // MARKET frames report price=0 by design (truth lives in
+        // averagePrice), so overwriting an already-known positive price
+        // with 0 can only destroy state.
+        if ($price !== null && ! Math::gt($price, '0') && Math::gt((string) $order->price, '0')) {
+            $price = null;
+        }
 
         // `orders.quantity` holds the ORIGINAL placed quantity. WS
         // events carry `filledQuantity` (cumulative-executed) — which

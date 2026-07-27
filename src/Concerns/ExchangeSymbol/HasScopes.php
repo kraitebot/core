@@ -6,6 +6,7 @@ namespace Kraite\Core\Concerns\ExchangeSymbol;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Query\Builder as QueryBuilder;
+use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Trading\ExchangeSymbolTradability;
 
@@ -63,10 +64,29 @@ trait HasScopes
     {
         return $query
             ->onActiveApiSystem()
+            ->notRenamed()
             ->where('exchange_symbols.api_statuses->has_taapi_data', true)
             ->whereHas('apiSystem', static function ($q) {
                 $q->canonical('binance');
             });
+    }
+
+    /**
+     * Excludes rows retired by an exchange rename. A renamed-away row is
+     * a sealed archive: providers no longer serve data under its old
+     * ticker, and every pipeline write would only dirty the frozen
+     * biography (or, through sibling fan-out, flip its backtesting
+     * status to rejected and feed the candle purge — destroying the only
+     * copy of the coin's pre-rename history). Keyed narrowly on the
+     * `renamed` block reason so every other system-block keeps today's
+     * pipeline behaviour unchanged.
+     */
+    public function scopeNotRenamed(Builder $query): Builder
+    {
+        return $query->where(static function (Builder $query): void {
+            $query->whereNull('exchange_symbols.system_disabled_reason')
+                ->orWhere('exchange_symbols.system_disabled_reason', '!=', ExchangeSymbol::SYSTEM_BLOCK_RENAMED);
+        });
     }
 
     /**
@@ -89,7 +109,7 @@ trait HasScopes
     {
         $openedStatuses = (new Position)->openedStatuses();
 
-        return $query->where(static function (Builder $query) use ($openedStatuses): void {
+        return $query->notRenamed()->where(static function (Builder $query) use ($openedStatuses): void {
             $query->notDelisted()
                 ->orWhereExists(static fn (QueryBuilder $positions) => $positions
                     ->selectRaw('1')

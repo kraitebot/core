@@ -1174,6 +1174,65 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            // Exchange contract rename, auto-processed (TON → GRAM shape):
+            // the old listing was retired with the one-way `renamed` block,
+            // the successor recorded its ancestry and entered the standard
+            // evaluation funnel. Open positions on the retired listing are
+            // reported here and left for a human decision.
+            'exchange_symbol_renamed' => (static function () use ($context) {
+                $oldToken = is_string($context['old_token'] ?? null) ? $context['old_token'] : '?';
+                $newToken = is_string($context['new_token'] ?? null) ? $context['new_token'] : '?';
+                $quote = is_string($context['quote'] ?? null) ? $context['quote'] : '?';
+                $exchange = is_string($context['exchange'] ?? null) ? $context['exchange'] : 'exchange';
+                $coinName = is_string($context['coin_name'] ?? null) ? $context['coin_name'] : 'unknown coin';
+                $openPositions = isset($context['open_positions']) ? (int) $context['open_positions'] : 0;
+                $retiredId = isset($context['retired_exchange_symbol_id']) ? (int) $context['retired_exchange_symbol_id'] : null;
+                $successorId = isset($context['successor_exchange_symbol_id']) ? (int) $context['successor_exchange_symbol_id'] : null;
+
+                $positionsLine = $openPositions > 0
+                    ? "⚠ {$openPositions} OPEN position(s) still reference the retired listing. The exchange now reports them under {$newToken}{$quote} — review and handle manually; nothing was auto-migrated."
+                    : 'No open positions reference the retired listing.';
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'title' => 'Exchange Symbol Renamed',
+                    'emailMessage' => "{$coinName}: {$oldToken}{$quote} was renamed to {$newToken}{$quote} on {$exchange}.\n\n".
+                        "The old listing (#{$retiredId}) was retired — blocked with reason `renamed`, keeping its full candle history archived and out of every pipeline. ".
+                        "The new listing (#{$successorId}) recorded its ancestry and now re-earns tradability through the normal backtesting funnel; expect it to sit rejected until enough {$newToken} data accumulates.\n\n".
+                        "{$positionsLine}\n\n".
+                        "Inspect:\n[CMD]SELECT id, token, quote, system_disabled_reason, renamed_from_exchange_symbol_id FROM exchange_symbols WHERE id IN ({$retiredId}, {$successorId});[/CMD]",
+                    'pushoverMessage' => "Renamed: {$oldToken}→{$newToken} ({$exchange})".($openPositions > 0 ? " — {$openPositions} OPEN position(s) need review" : ' — no open positions'),
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => $openPositions > 0 ? 1 : 0,
+                ];
+            })(),
+
+            // Rename-shaped match outside the recency window: same coin
+            // identity, same exchange and quote, but the old listing
+            // vanished too long ago to auto-link. Nothing was blocked or
+            // threaded — the admin decides.
+            'exchange_symbol_rename_suspected' => (static function () use ($context) {
+                $oldToken = is_string($context['old_token'] ?? null) ? $context['old_token'] : '?';
+                $newToken = is_string($context['new_token'] ?? null) ? $context['new_token'] : '?';
+                $quote = is_string($context['quote'] ?? null) ? $context['quote'] : '?';
+                $exchange = is_string($context['exchange'] ?? null) ? $context['exchange'] : 'exchange';
+                $coinName = is_string($context['coin_name'] ?? null) ? $context['coin_name'] : 'unknown coin';
+                $retiredId = isset($context['retired_exchange_symbol_id']) ? (int) $context['retired_exchange_symbol_id'] : null;
+                $successorId = isset($context['successor_exchange_symbol_id']) ? (int) $context['successor_exchange_symbol_id'] : null;
+
+                return [
+                    'severity' => NotificationSeverity::Medium,
+                    'title' => 'Possible Exchange Symbol Rename',
+                    'emailMessage' => "{$coinName}: new listing {$newToken}{$quote} on {$exchange} resolves to the same coin as the delisted {$oldToken}{$quote} (#{$retiredId}) — but that listing vanished outside the detection window, so this could equally be a real delisting plus a later relisting or a contract migration.\n\n".
+                        "Nothing was auto-processed. If this IS a rename, retire the old listing manually (system block `renamed`) and set renamed_from_exchange_symbol_id = {$retiredId} on the new listing (#{$successorId}).",
+                    'pushoverMessage' => "Possible rename: {$oldToken}→{$newToken} ({$exchange}) — NOT auto-processed, review needed",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 0,
+                ];
+            })(),
+
             'position_drift_detected' => (static function () use ($context) {
                 $pair = is_string($context['pair'] ?? null) ? $context['pair'] : 'unknown';
                 $direction = is_string($context['direction'] ?? null) ? $context['direction'] : '?';
