@@ -888,7 +888,8 @@ return [
         // next :50 tick. When any rule fires, arms the SHARED
         // `bscs_cooldown_until` column for `cooldown_hours` (default
         // 1h — a short pause to ride out an in-progress cascade, then
-        // resume; the slow BSCS-score cooldown below stays 24h).
+        // resume; the slow BSCS-score cooldown below defaults to 12h
+        // and is runtime-overridable via kraite.bscs_cooldown_hours).
         // Notification: `market_shock_circuit_breaker` — fires once per
         // fresh arming, silent re-arm while a cooldown is already active
         // to avoid double-pinging.
@@ -954,7 +955,9 @@ return [
         // recovered → cooldown ends and `market_regime_recovered` fires.
         'cooldown' => [
             'threshold' => (int) env('MARKET_REGIME_COOLDOWN_THRESHOLD', 80),
-            'hours' => (int) env('MARKET_REGIME_COOLDOWN_HOURS', 24),
+            // Default window; kraite.bscs_cooldown_hours overrides at runtime
+            // (singleton column wins, NULL inherits this default).
+            'hours' => (int) env('MARKET_REGIME_COOLDOWN_HOURS', 12),
         ],
         // Three-tier freshness model (Phase 2.1B).
         //

@@ -73,7 +73,12 @@ final class BscsState
             freshnessMaxSeconds: (int) ($kraite?->bscs_freshness_max_seconds
                 ?? config()->integer('kraite.market_regime.freshness_max_seconds')),
             cooldownThreshold: isset($cooldownConfig['threshold']) ? (int) $cooldownConfig['threshold'] : null,
-            cooldownHours: isset($cooldownConfig['hours']) ? (int) $cooldownConfig['hours'] : null,
+            // Runtime-settings pattern: the singleton column wins, NULL
+            // inherits the config default. Governs the long score-cooldown
+            // window only — the fast shock breaker keeps its own short pause.
+            cooldownHours: (int) ($kraite?->bscs_cooldown_hours
+                ?? $cooldownConfig['hours']
+                ?? 12),
         );
     }
 
