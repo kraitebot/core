@@ -21,6 +21,12 @@ use Kraite\Core\Models\Account;
  * funding fees, exchange-side rebates, and any other non-trading
  * wallet movement that would otherwise paint a misleading picture.
  *
+ * Percentages are cash-flow-proof on both sides of the fraction: each
+ * day divides its trade PnL by the wallet that day actually opened
+ * with, and window ROI chains those daily rates geometrically
+ * (time-weighted return). A deposit therefore raises the euros the
+ * system can earn without ever inflating the rate it reports.
+ *
  * Wallet snapshots (`currentWallet`, `startWallet`, `endWallet`) stay
  * available as the anchor inputs for forward projections — that math
  * needs the live wallet to compound from "today's actual money", not
@@ -144,8 +150,10 @@ final class AccountFinancials
     }
 
     /**
-     * First wallet snapshot at or after `start`. Used as the
-     * "started window at" denominator anchor for ROI and daily %.
+     * First wallet snapshot at or after `start`. Reporting anchor for
+     * "the account opened this window with X" — ROI and the daily
+     * percentages no longer divide by it, they use each day's own
+     * opening wallet (see `dailyStartWallets()`).
      */
     public function startWallet(Window $window): ?string
     {
@@ -203,22 +211,101 @@ final class AccountFinancials
     }
 
     /**
-     * Realized ROI inside the window as a percentage. Numerator is
-     * trade-only PnL (immune to cash-flow noise); denominator is
-     * the start-of-window wallet anchor. Returns null when the
-     * window has no clean closes OR no wallet anchor (ratio
-     * undefined).
+     * Realized ROI inside the window as a percentage — the
+     * time-weighted return of the window's daily rates. Each day is
+     * scored against the capital that day actually traded and the
+     * results are chained, so a deposit or withdrawal mid-window moves
+     * the euros without ever moving the percentage. Returns null when
+     * the window has no scoreable day (no clean closes, or no wallet
+     * anchor to divide by).
      */
     public function realizedRoiPct(Window $window): ?float
     {
-        $start = $this->startWallet($window);
-        $delta = $this->realizedDelta($window);
+        return TimeWeightedReturn::fromDailyRates($this->dailyPercentages($window));
+    }
 
-        if ($start === null || $delta === null || bccomp($start, '0', self::SCALE) <= 0) {
-            return null;
+    /**
+     * Wallet anchor for every calendar day inside the window — the
+     * money the account actually opened that day with.
+     *
+     * Day one of the window anchors on its own first snapshot (nothing
+     * earlier is in scope); every later day anchors on the previous
+     * day's closing snapshot, carried forward across snapshot gaps.
+     * That is what makes the daily percentages deposit-proof: the day
+     * after a transfer already divides by the new capital instead of
+     * flattering the rate against a stale, smaller wallet.
+     *
+     * Known limitation: a transfer landing mid-day is invisible to that
+     * day's own anchor — the day opened on the old balance — so the
+     * transfer day itself can read slightly hot. It washes out from the
+     * next day onwards.
+     *
+     * @return array<string, string> YYYY-MM-DD → wallet at day open.
+     */
+    public function dailyStartWallets(Window $window): array
+    {
+        $dayBounds = DB::table('account_balance_history')
+            ->select(DB::raw('DATE(created_at) AS d'))
+            ->selectRaw('MIN(id) AS opening_id')
+            ->selectRaw('MAX(id) AS closing_id')
+            ->where('account_id', $this->account->id)
+            ->whereNotNull('total_wallet_balance')
+            ->whereBetween('created_at', [
+                $window->start->toDateTimeString(),
+                $window->end->toDateTimeString(),
+            ])
+            ->groupBy(DB::raw('DATE(created_at)'))
+            ->get();
+
+        if ($dayBounds->isEmpty()) {
+            return [];
         }
 
-        return (float) bcmul(bcdiv($delta, $start, self::SCALE), '100', 6);
+        $anchorIds = $dayBounds
+            ->flatMap(fn (object $row): array => [(int) $row->opening_id, (int) $row->closing_id])
+            ->all();
+
+        $balances = DB::table('account_balance_history')
+            ->whereIn('id', $anchorIds)
+            ->pluck('total_wallet_balance', 'id');
+
+        $opening = [];
+        $closing = [];
+
+        foreach ($dayBounds as $row) {
+            $openingId = (int) $row->opening_id;
+            $closingId = (int) $row->closing_id;
+
+            // Retention pruning can delete a snapshot between the two reads;
+            // a day whose anchor vanished is skipped rather than resolved to
+            // an empty string bcmath would reject.
+            if (! isset($balances[$openingId], $balances[$closingId])) {
+                continue;
+            }
+
+            $day = (string) $row->d;
+            $opening[$day] = (string) $balances[$openingId];
+            $closing[$day] = (string) $balances[$closingId];
+        }
+
+        $anchors = [];
+        $carry = null;
+        $cursor = $window->start->startOfDay();
+        $stop = $window->end->startOfDay();
+
+        while ($cursor->lte($stop)) {
+            $day = $cursor->toDateString();
+            $anchor = $carry ?? ($opening[$day] ?? null);
+
+            if ($anchor !== null) {
+                $anchors[$day] = $anchor;
+            }
+
+            $carry = $closing[$day] ?? $carry;
+            $cursor = $cursor->addDay();
+        }
+
+        return $anchors;
     }
 
     /**
@@ -235,25 +322,29 @@ final class AccountFinancials
     }
 
     /**
-     * Per-day percentage return — `dayTradePnl / startOfWindowWallet`.
-     * Constant denominator (start-of-window wallet) means the daily
-     * percentages stay comparable across the window without being
-     * skewed by a deposit / withdrawal mid-window. Days without
-     * clean closes are absent from the map.
+     * Per-day percentage return — `dayTradePnl / thatDaysOpeningWallet`.
+     * The denominator moves with the account, so every day is scored
+     * against the capital it actually traded: after a deposit the extra
+     * euros a bigger wallet earns are divided by that bigger wallet, and
+     * the rate stays honest instead of jumping by the transfer ratio.
+     * Days without clean closes — or without a wallet anchor — are
+     * absent from the map.
      *
      * @return array<string, string> YYYY-MM-DD → decimal pct (0.01 = 1%).
      */
     public function dailyPercentages(Window $window): array
     {
-        $start = $this->startWallet($window);
-
-        if ($start === null || bccomp($start, '0', self::SCALE) <= 0) {
-            return [];
-        }
+        $anchors = $this->dailyStartWallets($window);
 
         $out = [];
         foreach ($this->dailyTradePnl($window) as $day => $delta) {
-            $out[$day] = bcdiv($delta, $start, self::SCALE);
+            $anchor = $anchors[$day] ?? null;
+
+            if ($anchor === null || bccomp($anchor, '0', self::SCALE) <= 0) {
+                continue;
+            }
+
+            $out[$day] = bcdiv($delta, $anchor, self::SCALE);
         }
 
         return $out;
@@ -309,10 +400,15 @@ final class AccountFinancials
      * delivering at this scenario rate", not "if wallet keeps
      * drifting at this rate".
      *
+     * The realized half is trade PnL / the window's time-weighted
+     * return, the projected half is growth on today's wallet, so a
+     * deposit inside the window lifts the euros without ever lifting
+     * the percentage.
+     *
      * Window default = current calendar month.
      *
-     * Returns null when there is no scenario data, no start anchor,
-     * or a zero starting wallet (percentage would be undefined).
+     * Returns null when there is no scenario data, no wallet, or a
+     * zero wallet (percentage would be undefined).
      */
     public function projected(
         ProjectionScenario $scenario,
@@ -323,8 +419,9 @@ final class AccountFinancials
 
         return ProjectionCompounder::compute(
             scenarios: $this->scenarios($window),
-            startWallet: $this->startWallet($window),
             currentWallet: $this->currentWallet(),
+            realizedPct: $this->realizedRoiPct($window),
+            realizedAmount: $this->realizedDelta($window),
             scenario: $scenario,
             window: $window,
             format: $format,

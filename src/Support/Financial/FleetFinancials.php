@@ -22,6 +22,11 @@ use Kraite\Core\Models\Account;
  * every realized number immune to deposits, withdrawals, funding
  * fees, and any other non-trading wallet movement.
  *
+ * Percentages are cash-flow-proof on both sides of the fraction: each
+ * day divides fleet trade PnL by the fleet wallet that day opened
+ * with, and window ROI chains those daily rates geometrically
+ * (time-weighted return).
+ *
  * Wallet snapshots stay available as the anchor inputs for forward
  * projections — that math needs the live wallet to compound from
  * "today's actual money", not an idealised trade-only number.
@@ -36,6 +41,15 @@ final class FleetFinancials
 
     /** @var Collection<int, Account> */
     public readonly Collection $accounts;
+
+    /**
+     * Per-window memo for the day-anchor walk. Rebuilding it costs two
+     * queries per account, and a single stats payload asks for the same
+     * window from the rates, the ROI, and the sparkline.
+     *
+     * @var array<string, array<string, string>>
+     */
+    private array $dailyStartWalletsByWindow = [];
 
     /**
      * @param  Collection<int, Account>|null  $accounts  Defaults to active + tradeable.
@@ -88,8 +102,9 @@ final class FleetFinancials
 
     /**
      * Fleet "started window at" wallet — sum of every account's
-     * first snapshot inside the window. Denominator anchor for ROI
-     * and daily % calculations.
+     * first snapshot inside the window. Reporting anchor only; ROI and
+     * the daily percentages divide by each day's own opening wallet
+     * (see `dailyStartWallets()`).
      */
     public function totalStartWallet(Window $window): ?string
     {
@@ -131,20 +146,52 @@ final class FleetFinancials
     }
 
     /**
-     * Fleet realized ROI — trade-only PnL divided by the fleet's
-     * start-of-window wallet anchor. Aggregated (sum/sum), not
-     * median or mean of per-account ROIs.
+     * Fleet realized ROI — the time-weighted return of the fleet's
+     * daily rates. Aggregated (fleet PnL over fleet capital, per day,
+     * then chained), not the median or mean of per-account ROIs. A
+     * deposit into any account moves the fleet's euros without moving
+     * the fleet's reported percentage.
      */
     public function realizedRoiPct(Window $window): ?float
     {
-        $start = $this->totalStartWallet($window);
-        $delta = $this->realizedDelta($window);
+        return TimeWeightedReturn::fromDailyRates($this->dailyPercentages($window));
+    }
 
-        if ($start === null || $delta === null || bccomp($start, '0', self::SCALE) <= 0) {
-            return null;
+    /**
+     * Fleet wallet anchor per calendar day — the sum of every account's
+     * opening wallet for that day. Accounts that have no snapshot yet
+     * on a given day contribute their last known balance, so the
+     * denominator never dips just because one account's collector was
+     * late.
+     *
+     * @return array<string, string> YYYY-MM-DD → fleet wallet at day open.
+     */
+    public function dailyStartWallets(Window $window): array
+    {
+        $key = $window->start->toDateTimeString().'|'.$window->end->toDateTimeString();
+
+        return $this->dailyStartWalletsByWindow[$key] ??= $this->sumAccountDailyStartWallets($window);
+    }
+
+    /**
+     * Uncached fleet day-anchor walk — every account's per-day opening
+     * wallet summed into one series, oldest day first.
+     *
+     * @return array<string, string> YYYY-MM-DD → fleet wallet at day open.
+     */
+    private function sumAccountDailyStartWallets(Window $window): array
+    {
+        $anchors = [];
+
+        foreach ($this->accounts as $account) {
+            foreach ((new AccountFinancials($account))->dailyStartWallets($window) as $day => $wallet) {
+                $anchors[$day] = bcadd($anchors[$day] ?? '0', $wallet, self::SCALE);
+            }
         }
 
-        return (float) bcmul(bcdiv($delta, $start, self::SCALE), '100', 6);
+        ksort($anchors);
+
+        return $anchors;
     }
 
     /**
@@ -160,24 +207,27 @@ final class FleetFinancials
     }
 
     /**
-     * Per-day fleet pct map — `fleetTradePnl / fleetStartOfWindowWallet`.
-     * Constant denominator (start-of-window wallet) means the daily
-     * percentages stay comparable across the window without being
-     * skewed by a deposit / withdrawal mid-window.
+     * Per-day fleet pct map — `fleetTradePnl / fleetOpeningWalletThatDay`.
+     * The denominator tracks the fleet's real capital day by day, so a
+     * deposit into any account is absorbed by the rate instead of
+     * inflating it. Days without clean closes — or without a wallet
+     * anchor — are absent from the map.
      *
      * @return array<string, string> YYYY-MM-DD → decimal pct.
      */
     public function dailyPercentages(Window $window): array
     {
-        $start = $this->totalStartWallet($window);
-
-        if ($start === null || bccomp($start, '0', self::SCALE) <= 0) {
-            return [];
-        }
+        $anchors = $this->dailyStartWallets($window);
 
         $out = [];
         foreach ($this->dailyTradePnl($window) as $day => $delta) {
-            $out[$day] = bcdiv($delta, $start, self::SCALE);
+            $anchor = $anchors[$day] ?? null;
+
+            if ($anchor === null || bccomp($anchor, '0', self::SCALE) <= 0) {
+                continue;
+            }
+
+            $out[$day] = bcdiv($delta, $anchor, self::SCALE);
         }
 
         return $out;
@@ -226,9 +276,11 @@ final class FleetFinancials
     /**
      * Fleet-level realized + projected. Compounds today's aggregated
      * fleet wallet forward at the chosen scenario's daily pct from
-     * now until window's end. Scenario percentages are now trade-PnL
-     * derived, so the projection extrapolates trader-driven returns
-     * instead of cash-flow-contaminated wallet drift.
+     * now until window's end, then chains that onto what the window
+     * already realized. Scenario percentages are trade-PnL derived and
+     * the realized half is time-weighted, so the projection
+     * extrapolates trader-driven returns instead of
+     * cash-flow-contaminated wallet drift.
      *
      * Default window = current calendar month.
      */
@@ -241,8 +293,9 @@ final class FleetFinancials
 
         return ProjectionCompounder::compute(
             scenarios: $this->scenarios($window),
-            startWallet: $this->totalStartWallet($window),
             currentWallet: $this->totalCurrentWallet(),
+            realizedPct: $this->realizedRoiPct($window),
+            realizedAmount: $this->realizedDelta($window),
             scenario: $scenario,
             window: $window,
             format: $format,
@@ -377,16 +430,18 @@ final class FleetFinancials
 
     /**
      * Fixed-bar daily-percentage series for the marketing-site
-     * sparkline. Each bar = trade-PnL of that day / start-of-window
-     * wallet. Days with no clean closes render as `pct = 0` so the
-     * bar count stays stable across windows.
+     * sparkline. Each bar = trade-PnL of that day / the fleet wallet
+     * that day opened with — the same deposit-proof rate the headline
+     * percentages use, so a bar can never spike on transferred money.
+     * Days with no clean closes render as `pct = 0` so the bar count
+     * stays stable across windows.
      *
      * @return array<int, array{d: string, pct: float}>
      */
     public function dailySparkline(Window $window): array
     {
         $revenues = $this->dailyTradePnl($window);
-        $startWallet = $this->totalStartWallet($window);
+        $anchors = $this->dailyStartWallets($window);
 
         $cursor = $window->start->startOfDay();
         $stop = $window->end->startOfDay();
@@ -395,9 +450,10 @@ final class FleetFinancials
         while ($cursor->lte($stop)) {
             $iso = $cursor->toDateString();
             $delta = $revenues[$iso] ?? '0';
+            $anchor = $anchors[$iso] ?? null;
 
-            $pct = ($startWallet !== null && bccomp($startWallet, '0', self::SCALE) > 0)
-                ? (float) bcmul(bcdiv($delta, $startWallet, self::SCALE), '100', 6)
+            $pct = ($anchor !== null && bccomp($anchor, '0', self::SCALE) > 0)
+                ? (float) bcmul(bcdiv($delta, $anchor, self::SCALE), '100', 6)
                 : 0.0;
 
             $out[] = ['d' => $iso, 'pct' => round($pct, 4)];

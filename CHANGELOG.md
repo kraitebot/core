@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.91.0 - 2026-07-29
+
+### Transferred money is no longer reported as performance
+
+- [FIXED] Daily rates divide by the wallet each day actually opened with —
+  day one of a window anchors on its own opening snapshot, every later day on
+  the previous day's close. A deposit is absorbed from the next day instead
+  of inflating the rate by the transfer ratio.
+- [FIXED] Window ROI is the time-weighted return of those daily rates
+  (`TimeWeightedReturn`), replacing total PnL over one frozen opening
+  balance, which credited the trader with money that was merely paid in.
+- [FIXED] `ProjectionCompounder` chains what the window already delivered
+  with growth on today's wallet, so no figure compares a post-transfer
+  balance against a pre-transfer one. The fleet sparkline and scenario band
+  inherit the same anchors.
+- [FIXED] A realized return small enough for PHP to render in scientific
+  notation ("1.0E-6") no longer reaches bcmath, which rejects it outright.
+- [VERIFIED] Consumer regressions pass: admin 288 tests / 1,442 assertions,
+  kraite.com 85 tests / 430 assertions.
+
 ## 1.84.2 - 2026-07-25
 
 ### Deployment cooldown safety

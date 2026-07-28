@@ -10,19 +10,29 @@ use Kraite\Core\Enums\ProjectionScenario;
 
 /**
  * Pure compounding helper shared by AccountFinancials and FleetFinancials.
- * Given a scenarios bundle, the start/current wallets, the window, and
- * a format, returns the combined "realized + projected to window end"
- * result. No DB access — caller pre-resolves the inputs.
+ * Given a scenarios bundle, the realized result so far, the live wallet,
+ * the window, and a format, returns the combined "realized + projected to
+ * window end" figure. No DB access — caller pre-resolves the inputs.
+ *
+ * Both halves are cash-flow-proof by construction. The realized half is
+ * trade PnL (euros) or the window's time-weighted return (percent); the
+ * projected half only ever measures how much the live wallet grows from
+ * today onwards. Nothing anywhere compares a post-transfer balance to a
+ * pre-transfer one, so paying money in raises the euros on the table
+ * without inventing a percentage the trader never earned.
  */
 final class ProjectionCompounder
 {
     /**
      * @param  array{pessimistic_pct: ?string, neutral_pct: ?string, optimistic_pct: ?string, days_observed: int}  $scenarios
+     * @param  ?float  $realizedPct  Window-to-date time-weighted return, in percent.
+     * @param  ?string  $realizedAmount  Window-to-date realized trade PnL, in quote currency.
      */
     public static function compute(
         array $scenarios,
-        ?string $startWallet,
         ?string $currentWallet,
+        ?float $realizedPct,
+        ?string $realizedAmount,
         ProjectionScenario $scenario,
         Window $window,
         ProjectionFormat $format,
@@ -31,11 +41,11 @@ final class ProjectionCompounder
         $key = $scenario->value.'_pct';
         $dailyPct = $scenarios[$key] ?? null;
 
-        if ($dailyPct === null || $startWallet === null || $currentWallet === null) {
+        if ($dailyPct === null || $currentWallet === null) {
             return null;
         }
 
-        if (bccomp($startWallet, '0', $scale) <= 0) {
+        if (bccomp($currentWallet, '0', $scale) <= 0) {
             return null;
         }
 
@@ -47,15 +57,25 @@ final class ProjectionCompounder
             scale: $scale,
         );
 
-        $totalDelta = bcsub($endWallet, $startWallet, $scale);
-
         if ($format === ProjectionFormat::Amount) {
-            return $totalDelta;
+            $forwardGain = bcsub($endWallet, $currentWallet, $scale);
+
+            return bcadd($realizedAmount ?? '0', $forwardGain, $scale);
         }
 
-        $ratio = bcdiv($totalDelta, $startWallet, $scale);
+        // Chain what the window already delivered with what the rest of it
+        // should add — the same geometric linking the realized rates use.
+        // `sprintf` rather than a plain string cast: PHP renders a small float
+        // such as 0.000001 as "1.0E-6", which bcmath rejects outright.
+        $realizedFactor = bcadd(
+            '1',
+            bcdiv(sprintf('%.12F', $realizedPct ?? 0.0), '100', 16),
+            16,
+        );
+        $forwardFactor = bcdiv($endWallet, $currentWallet, 16);
+        $windowFactor = bcmul($realizedFactor, $forwardFactor, 16);
 
-        return (float) bcmul($ratio, '100', 6);
+        return (float) bcmul(bcsub($windowFactor, '1', 16), '100', 6);
     }
 
     /**
