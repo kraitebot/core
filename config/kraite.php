@@ -965,7 +965,7 @@ return [
             'threshold' => (int) env('MARKET_REGIME_COOLDOWN_THRESHOLD', 80),
             // Default window; kraite.bscs_cooldown_hours overrides at runtime
             // (singleton column wins, NULL inherits this default).
-            'hours' => (int) env('MARKET_REGIME_COOLDOWN_HOURS', 12),
+            'hours' => (int) env('MARKET_REGIME_COOLDOWN_HOURS', 4),
         ],
         // Three-tier freshness model (Phase 2.1B).
         //
