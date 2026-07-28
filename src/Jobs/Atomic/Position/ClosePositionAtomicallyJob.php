@@ -113,6 +113,30 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
             }
         }
 
+        // A rescheduled flat-confirmation pass checks its pending
+        // confirmation FIRST. Re-running the close before the check fired
+        // another doomed reduceOnly MARKET at an already-flat book on every
+        // 20-second re-pass — the self-inflicted rejections that tripped
+        // the exchange_error_storm monitor twice on 2026-07-27/28. When
+        // the snapshot turns out to have been a lag artefact (position
+        // live again), the marker is cleared and the normal close attempt
+        // below still runs — real exposure is never left unclosed.
+        if (isset($this->step) && $this->hasPendingFlatConfirmation()) {
+            if ($this->confirmBinancePositionFlat($position) === self::FLAT_CONFIRMATION_CONFIRMED) {
+                $this->applyPumpCooldown($exchangeSymbol, $cooldownDetails, $tradeableAt);
+
+                return [
+                    'position_id' => $position->id,
+                    'symbol' => $position->parsed_trading_pair,
+                    'filled_limit_count' => $position->totalLimitOrdersFilled(),
+                    'pump_cooldown_triggered' => $pumpCooldownTriggered,
+                    'cooldown_details' => $cooldownDetails,
+                    'result' => ['already_closed' => true],
+                    'message' => 'Position confirmed flat after Binance rejected the close order',
+                ];
+            }
+        }
+
         // Always attempt the close first. A pre-flight positions response can
         // lag exchange trade truth and previously skipped a required close.
         // Reconcile only after an exchange rejection.

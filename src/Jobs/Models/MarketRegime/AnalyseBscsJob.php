@@ -70,7 +70,7 @@ final class AnalyseBscsJob extends BaseQueueableJob
         }
 
         $threshold = (int) (config('kraite.market_regime.cooldown.threshold', 80));
-        // DB-override-first via BscsState::current() (kraite.bscs_cooldown_hours
+        // DB-override-first through the Bscs facade (kraite.bscs_cooldown_hours
         // wins, config default otherwise).
         $hours = (int) ($index->cooldownHours() ?? 12);
         $score = $index->score() ?? 0;

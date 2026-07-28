@@ -136,6 +136,24 @@ final class CheckDriftsCommand extends BaseCommand
         PositionDriftReport::STATUS_DB_ONLY,
     ];
 
+    /**
+     * The already-flat close-rejection family. These answers to a close
+     * order mean "there was nothing left to close" — routine when a
+     * take-profit fills moments before our close path runs. They are
+     * self-inflicted and benign, and on 2026-07-27/28 they alone
+     * manufactured two exchange_error_storm trips (15-16 rejections in
+     * 20 minutes during TP-fill bursts), each parking new openings until
+     * an operator cleared the latch. They must never feed the storm
+     * counter; genuine exchange degradation still does.
+     *
+     * @var list<string>
+     */
+    private const BENIGN_ALREADY_FLAT_SIGNATURES = [
+        'ReduceOnly Order is rejected',
+        'No position to close',
+        'No position available to close',
+    ];
+
     protected $signature = 'kraite:cron-check-drifts
                             {--account_id= : Limit the audit to a single account}
                             {--skip-structure-audit : Skip the active-position structural integrity scope (drift + orphan scopes still run)}
@@ -213,14 +231,25 @@ final class CheckDriftsCommand extends BaseCommand
 
         // Scopes 3 + 4 are the cooling detectors. Once the bot is already
         // cooled (an incident is open), they'd only re-detect the same
-        // thing — so we latch: skip them while cooled. This is the
-        // "alarm once, wait for Bruno" contract. Drift/orphan heals
+        // thing — so we latch: skip them while cooled. Drift/orphan heals
         // (Scopes 1 + 2) keep running — they maintain existing positions,
         // which still trade and close normally while opening is halted.
+        //
+        // Exception to "wait for Bruno": the guard's OWN
+        // exchange_error_storm latch auto-releases once the ledger has
+        // been clean for the recovery window (2026-07-28 requirement —
+        // both July storms parked openings for hours after the errors
+        // stopped). A successful release falls through into the cooling
+        // detectors again, so anything genuinely still wrong re-trips on
+        // the same tick. Every other trigger keeps the manual contract.
         if ($this->isCooled()) {
-            $this->verboseInfo('Cooling detectors skipped — already cooled (incident open, awaiting operator).');
+            $this->maybeReleaseErrorStormCooldown();
 
-            return self::SUCCESS;
+            if ($this->isCooled()) {
+                $this->verboseInfo('Cooling detectors skipped — already cooled (incident open, awaiting operator).');
+
+                return self::SUCCESS;
+            }
         }
 
         $coolingChecks = [];
@@ -864,8 +893,10 @@ final class CheckDriftsCommand extends BaseCommand
      * Count exchange-facing API failures persisted within the guard window.
      * HTTP failures carry a 4xx/5xx response code. Vendor failures returned
      * inside HTTP 200 responses are recorded through error_message.
+     * Already-flat close rejections are excluded — see
+     * BENIGN_ALREADY_FLAT_SIGNATURES.
      */
-    private function countRecentExchangeApiErrors(Carbon $since): int
+    public function countRecentExchangeApiErrors(Carbon $since): int
     {
         try {
             return ApiRequestLog::query()
@@ -875,6 +906,19 @@ final class CheckDriftsCommand extends BaseCommand
                     $query
                         ->where('http_response_code', '>=', 400)
                         ->orWhereNotNull('error_message');
+                })
+                ->where(function ($query): void {
+                    foreach (self::BENIGN_ALREADY_FLAT_SIGNATURES as $signature) {
+                        $query
+                            ->where(function ($row) use ($signature): void {
+                                $row->whereNull('response')
+                                    ->orWhere('response', 'not like', "%{$signature}%");
+                            })
+                            ->where(function ($row) use ($signature): void {
+                                $row->whereNull('error_message')
+                                    ->orWhere('error_message', 'not like', "%{$signature}%");
+                            });
+                    }
                 })
                 ->count();
         } catch (Throwable $e) {
@@ -973,6 +1017,43 @@ final class CheckDriftsCommand extends BaseCommand
     {
         if ($this->tradingCooldown->enter($reason, $evidence)) {
             $this->verboseComment("  Cooldown entered ({$reason}) — allow_opening_positions=false (global open halt).");
+        }
+    }
+
+    /**
+     * Auto-recovery for the guard's OWN exchange_error_storm latch.
+     * Scoped strictly: the latch must be active AND the open incident on
+     * file must carry the storm trigger — a latch set by hand, or by any
+     * other trigger, stays manual. Releases only once the exchange
+     * ledger has been completely clean (by the same storm counter, so
+     * benign already-flat rejections don't hold recovery hostage) for
+     * the full recovery window. 2026-07-27/28: two storm latches parked
+     * openings for hours after the errors had stopped, waiting for a
+     * human — recovery is now symmetric with the trip.
+     */
+    private function maybeReleaseErrorStormCooldown(): void
+    {
+        if (! $this->tradingCooldown->isActive()) {
+            return;
+        }
+
+        if ($this->tradingCooldown->activeIncidentTrigger() !== 'exchange_error_storm') {
+            return;
+        }
+
+        $recoveryMinutes = (int) config('kraite.guard.exchange_error_recovery_minutes', 30);
+        $recentErrors = $this->countRecentExchangeApiErrors(Carbon::now()->subMinutes($recoveryMinutes));
+
+        if ($recentErrors > 0) {
+            return;
+        }
+
+        $released = $this->tradingCooldown->release('exchange_error_storm_cleared', [
+            'clean_minutes' => $recoveryMinutes,
+        ]);
+
+        if ($released) {
+            $this->verboseComment('  Cooldown auto-released — exchange ledger clean for the full recovery window.');
         }
     }
 

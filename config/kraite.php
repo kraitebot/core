@@ -381,6 +381,14 @@ return [
         // narrates, it does not decide).
         'exchange_error_log_threshold' => (int) env('KRAITE_GUARD_EXCHANGE_ERRORS', 15),
 
+        // Auto-recovery for the guard's own exchange_error_storm latch:
+        // once the exchange ledger has been completely clean for this many
+        // minutes, openings resume automatically and the incident is
+        // archived (2026-07-28 requirement — both July storms parked
+        // openings for hours after the errors stopped). Other triggers
+        // keep the manual "alarm once, wait for the operator" contract.
+        'exchange_error_recovery_minutes' => (int) env('KRAITE_GUARD_EXCHANGE_ERROR_RECOVERY_MINUTES', 30),
+
         // The Haiku documentation layer (kraite:monitor-narrate). Cheapest
         // model, prompt fed on stdin. Binary + model are configurable so they
         // can be tuned after `claude login` on the server without a code
