@@ -44,6 +44,7 @@ use Kraite\Core\Commands\Cronjobs\RefreshExchangeSymbolsCommand;
 use Kraite\Core\Commands\Cronjobs\RenewSubscriptionsCommand;
 use Kraite\Core\Commands\Cronjobs\StoreAccountsBalancesCommand;
 use Kraite\Core\Commands\Cronjobs\SyncOrdersCommand;
+use Kraite\Core\Commands\Cronjobs\SyncAccountIncomesCommand;
 use Kraite\Core\Commands\Cronjobs\UpsertPnlsCommand;
 use Kraite\Core\Commands\Daemons\StreamBinancePricesCommand;
 use Kraite\Core\Commands\Daemons\StreamBinanceUserDataCommand;
@@ -150,6 +151,7 @@ final class CoreServiceProvider extends ServiceProvider
             StreamBinancePricesCommand::class,
             StreamBinanceUserDataCommand::class,
             SyncOrdersCommand::class,
+            SyncAccountIncomesCommand::class,
             UpsertPnlsCommand::class,
             RefreshBinanceListenKeysCommand::class,
             CheckBinanceListenKeysStaleCommand::class,
