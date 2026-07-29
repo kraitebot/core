@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 use Kraite\Core\Enums\ProjectionFormat;
 use Kraite\Core\Enums\ProjectionScenario;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Models\AccountIncome;
 
 /**
  * Per-account financial calculator. Single source of truth for every
@@ -155,6 +156,27 @@ final class AccountFinancials
             'missing_pnl_positions' => $missingPnlPositions,
             'is_complete' => $missingPnlPositions === 0,
         ];
+    }
+
+    /**
+     * How far back this account's income ledger is authoritative, as a
+     * comparable datetime string, or null when there is no ledger.
+     *
+     * Read off the account already in hand rather than re-queried: callers
+     * that hydrate an account without the column simply get the close-day
+     * fallback, which is the same answer they got before the ledger existed.
+     */
+    private function incomesSyncedFrom(): ?string
+    {
+        $syncedFrom = $this->account->incomes_synced_from ?? null;
+
+        if ($syncedFrom === null) {
+            return null;
+        }
+
+        return $syncedFrom instanceof \DateTimeInterface
+            ? $syncedFrom->format('Y-m-d H:i:s')
+            : (string) $syncedFrom;
     }
 
     /**
@@ -484,6 +506,75 @@ final class AccountFinancials
      * @return array<string, string> YYYY-MM-DD → bcmath-scaled per-day PnL.
      */
     private function dailyTradePnl(Window $window): array
+    {
+        $fromLedger = $this->dailyLedgerPnl($window);
+
+        return $fromLedger ?? $this->dailyClosePnl($window);
+    }
+
+    /**
+     * Per-day trade PnL from the exchange's own income ledger, booked on the
+     * day each fee and fill actually happened.
+     *
+     * This is what makes a day here mean the same as a day on the exchange
+     * statement: a position opened one evening and closed the next morning
+     * leaves its opening commission on the first day and its result on the
+     * second, and funding on a still-open position counts the moment it is
+     * charged rather than whenever that position eventually closes.
+     *
+     * Returns null when the ledger does not reach back to the start of the
+     * window — the caller then falls back to close-day grouping rather than
+     * reporting a month as empty because it predates the ledger.
+     *
+     * @return array<string, string>|null YYYY-MM-DD → bcmath-scaled PnL.
+     */
+    private function dailyLedgerPnl(Window $window): ?array
+    {
+        // The sync records how far back it actually asked the exchange for.
+        // Inferring coverage from the earliest stored record would misjudge a
+        // quiet period — a ledger whose first entry is Tuesday evening still
+        // covers Tuesday morning, there was simply nothing to book.
+        $syncedFrom = $this->incomesSyncedFrom();
+
+        if ($syncedFrom === null || $syncedFrom > $window->start->toDateTimeString()) {
+            return null;
+        }
+
+        $dayColumn = $this->dayExpression('occurred_at');
+
+        $rows = DB::table('account_incomes')
+            ->select(DB::raw($dayColumn.' AS d'))
+            ->selectRaw('SUM(income) AS pnl')
+            ->where('account_id', $this->account->id)
+            // Trading performance only. A deposit lands in this same ledger
+            // and is not profit.
+            ->whereIn('income_type', AccountIncome::TRADING_TYPES)
+            ->whereBetween('occurred_at', [
+                $window->start->toDateTimeString(),
+                $window->end->toDateTimeString(),
+            ])
+            ->groupBy(DB::raw($dayColumn))
+            ->orderBy('d')
+            ->get();
+
+        $out = [];
+        foreach ($rows as $row) {
+            if (! is_numeric($row->pnl)) {
+                continue;
+            }
+            $out[$row->d] = bcadd('0', (string) $row->pnl, self::SCALE);
+        }
+
+        return $out;
+    }
+
+    /**
+     * Per-day trade PnL from closed positions, filed under the day each trade
+     * closed. The only source available for windows older than the ledger.
+     *
+     * @return array<string, string>
+     */
+    private function dailyClosePnl(Window $window): array
     {
         $dayColumn = $this->dayExpression('closed_at');
 

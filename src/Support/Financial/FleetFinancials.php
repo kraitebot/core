@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Kraite\Core\Enums\ProjectionFormat;
 use Kraite\Core\Enums\ProjectionScenario;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Models\AccountIncome;
 
 /**
  * Cross-account ("fleet") financial calculator. Treats every live
@@ -184,6 +185,68 @@ final class FleetFinancials
         $key = $window->start->toDateTimeString().'|'.$window->end->toDateTimeString();
 
         return $this->dailyStartWalletsByWindow[$key] ??= $this->sumAccountDailyStartWallets($window);
+    }
+
+    /**
+     * Fleet per-day PnL from the exchange income ledger, booked on the day
+     * each fee and fill happened.
+     *
+     * All-or-nothing across the fleet: mixing a ledger-backed account with a
+     * close-day one would produce an aggregate whose days mean two different
+     * things. If any account's ledger does not reach the window's start, the
+     * whole fleet falls back to close-day grouping.
+     *
+     * @param  array<int, int>  $accountIds
+     * @return array<string, string>|null
+     */
+    private function dailyLedgerPnl(array $accountIds, Window $window): ?array
+    {
+        $latestStart = null;
+
+        foreach ($this->accounts as $account) {
+            $syncedFrom = $account->incomes_synced_from ?? null;
+
+            // One unsynced account is enough to fall back: half a fleet on
+            // event time and half on close time is not a number anyone can read.
+            if ($syncedFrom === null) {
+                return null;
+            }
+
+            $syncedFrom = $syncedFrom instanceof \DateTimeInterface
+                ? $syncedFrom->format('Y-m-d H:i:s')
+                : (string) $syncedFrom;
+
+            $latestStart = $latestStart === null ? $syncedFrom : max($latestStart, $syncedFrom);
+        }
+
+        if ($latestStart === null || $latestStart > $window->start->toDateTimeString()) {
+            return null;
+        }
+
+        $dayColumn = $this->dayExpression('occurred_at');
+
+        $rows = DB::table('account_incomes')
+            ->select(DB::raw($dayColumn.' AS d'))
+            ->selectRaw('SUM(income) AS pnl')
+            ->whereIn('account_id', $accountIds)
+            ->whereIn('income_type', AccountIncome::TRADING_TYPES)
+            ->whereBetween('occurred_at', [
+                $window->start->toDateTimeString(),
+                $window->end->toDateTimeString(),
+            ])
+            ->groupBy(DB::raw($dayColumn))
+            ->orderBy('d')
+            ->get();
+
+        $out = [];
+        foreach ($rows as $row) {
+            if (! is_numeric($row->pnl)) {
+                continue;
+            }
+            $out[$row->d] = bcadd('0', (string) $row->pnl, self::SCALE);
+        }
+
+        return $out;
     }
 
     /**
@@ -511,6 +574,12 @@ final class FleetFinancials
         // price-true `(close − open) × quantity` (overstated by the omitted
         // round-trip cost) which itself superseded `profit_percentage / 100
         // × margin` (margin = per-slot allocation, not notional → ~4× high).
+        $fromLedger = $this->dailyLedgerPnl($accountIds, $window);
+
+        if ($fromLedger !== null) {
+            return $fromLedger;
+        }
+
         $dayColumn = $this->dayExpression('closed_at');
 
         $rows = DB::table('positions')

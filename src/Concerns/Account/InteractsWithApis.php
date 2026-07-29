@@ -87,6 +87,11 @@ trait InteractsWithApis
         return Exchange::forAccount($this)->apiQueryIncome($symbol, $incomeType, $startTime, $endTime);
     }
 
+    public function apiQueryAccountIncome(int $startTime, int $endTime, int $limit = 1000): ApiResponse
+    {
+        return Exchange::forAccount($this)->apiQueryAccountIncome($startTime, $endTime, $limit);
+    }
+
     public function apiQueryHistoryPositions(
         string $productType,
         ?string $symbol = null,

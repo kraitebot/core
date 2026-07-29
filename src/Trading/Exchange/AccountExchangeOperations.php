@@ -253,6 +253,34 @@ final class AccountExchangeOperations
     }
 
     /**
+     * Account-wide income history for a time range — realized PnL, commission
+     * and funding for every symbol, in one paginated call.
+     *
+     * Binance returns at most `limit` records ordered by time, so a caller
+     * walks forward by advancing `startTime` past the last record it received.
+     */
+    public function apiQueryAccountIncome(int $startTime, int $endTime, int $limit = 1000): ApiResponse
+    {
+        $this->apiProperties = new ApiProperties;
+        $this->apiProperties->set('account', $this->account);
+        $this->apiProperties->set('options.startTime', $startTime);
+        $this->apiProperties->set('options.endTime', $endTime);
+        $this->apiProperties->set('options.limit', $limit);
+        $this->apiProperties->set('options.timestamp', now()->getTimestampMs());
+
+        $this->apiResponse = $this->withApi()->incomeHistory($this->apiProperties);
+
+        $decoded = $this->apiResponse instanceof Response
+            ? json_decode((string) $this->apiResponse->getBody(), true)
+            : (is_array($this->apiResponse) ? $this->apiResponse : []);
+
+        return new ApiResponse(
+            response: $this->apiResponse instanceof Response ? $this->apiResponse : null,
+            result: is_array($decoded) ? $decoded : []
+        );
+    }
+
+    /**
      * Query historical closed positions from Bitget with exchange-computed PnL.
      */
     public function apiQueryHistoryPositions(

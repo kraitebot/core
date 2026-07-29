@@ -75,6 +75,8 @@ final class Account extends BaseModel
     use SoftDeletes;
 
     protected $casts = [
+        'incomes_synced_from' => 'datetime',
+
         'can_trade' => 'boolean',
         'is_active' => 'boolean',
         'on_hedge_mode' => 'boolean',

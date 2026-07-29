@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.93.0 - 2026-07-29
+
+### Daily figures are booked when the exchange booked them
+
+- [ADDED] `account_incomes` mirrors the exchange income ledger — realised PnL,
+  commission and funding — each stamped with the moment the exchange charged
+  it, filled by `kraite:cron-sync-account-incomes`. The sync asks for a whole
+  account in one paginated call; the per-symbol shape tripped Binance's
+  2,400/minute per-IP limit, which the trading engine shares.
+- [ADDED] `accounts.incomes_synced_from` records how far back that ledger is
+  authoritative, so older windows fall back to close-date grouping instead of
+  reporting a month as empty.
+- [FIXED] Daily revenue, ROI, scenarios and projections read the ledger where
+  it reaches. A position opened one evening and closed the next morning now
+  leaves its opening fee on the first day and its result on the second, and
+  funding on a still-open position counts the day it is charged. Close-date
+  grouping had put +11.51 against the exchange's +9.83 for the same hours.
+- [ADDED] `DayBasisLocationHint` offers the local trading-day basis once after
+  a trader appears in a new country, and never applies it — the basis matches
+  their exchange, which does not travel with them. Countries spanning several
+  offsets are never offered.
+- [ADDED] `users.last_seen_country` and `users.basis_hint_country` so a
+  declined offer stays declined.
+- [UNCHANGED] `positions.pnl` still answers "what did this trade earn", and
+  every stored timestamp remains UTC.
+- [VERIFIED] admin 358 tests / 1,647 assertions, kraite.com 85 / 430.
+
 ## 1.92.0 - 2026-07-29
 
 ### The trading day starts when the exchange says it does

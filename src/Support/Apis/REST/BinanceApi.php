@@ -303,6 +303,28 @@ final class BinanceApi
         return $this->client->signRequest($apiRequest);
     }
 
+    /**
+     * Account-wide income history — every symbol and every income type in one
+     * paginated call.
+     *
+     * Deliberately separate from `income()`: that one is per-symbol and
+     * per-type for attributing a single position's PnL, and asking it for a
+     * whole account means symbols × types requests. Doing that against a live
+     * account is what tripped Binance's 2,400/minute IP limit on 2026-07-29 —
+     * a limit the trading engine shares.
+     */
+    public function incomeHistory(ApiProperties $properties): mixed
+    {
+        $this->validate($properties, [
+            'options.startTime' => 'required|integer',
+            'options.endTime' => 'required|integer',
+        ]);
+
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/income', $properties);
+
+        return $this->client->signRequest($apiRequest);
+    }
+
     public function createListenKey(): string
     {
         $apiRequest = ApiRequest::make('POST', '/fapi/v1/listenKey');
