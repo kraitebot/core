@@ -15,6 +15,7 @@ use Kraite\Core\Models\ForbiddenHostname;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Support\FreezeMode;
 use Kraite\Core\Support\HeaderSanitizer;
+use Kraite\Core\Support\Logging\ApiRequestLogRetention;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use Kraite\Core\Support\ValueObjects\ApiRequest;
 use Psr\Http\Message\ResponseInterface;
@@ -233,6 +234,12 @@ abstract class BaseApiClient
         // code path (handleRequestException / retryRequest) that does not null
         // it out.
         $logData['payload'] = null;
+
+        // Same reasoning, applied to what remained. On a successful call the
+        // response body averages 11.5 KB — 92% of the row — and a fast 200 has
+        // never been the thing anyone debugged an incident from. Failures and
+        // slow calls keep everything; see ApiRequestLogRetention.
+        $logData = ApiRequestLogRetention::apply($logData);
 
         $this->updateRequestLogData($logData);
 

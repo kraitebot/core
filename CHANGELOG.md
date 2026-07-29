@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.94.0 - 2026-07-29
+
+### An exchange call stops storing 11 KB to say it worked
+
+- [ADDED] `ApiRequestLogRetention` decides whether a call's response body is
+  worth storing. Failures, calls with no status, and slow successes keep
+  everything; a fast success keeps its status, timing, path and hostname and
+  drops the body. Tunable via `kraite.api_request_logs.retain_body_above_ms`
+  (default 3s) and `retain_all_bodies` for debugging.
+- [CHANGED] `BaseApiClient::recordSuccessfulResponse()` applies it. The
+  failure paths are untouched, so an exchange error — including a Bitget
+  HTTP-200 error envelope, which is converted to an exception before this
+  point — still stores its full body.
+- [UNCHANGED] Callers always receive the complete response. This governs what
+  is persisted, never what is returned.
+
+Measured on production: a successful call's response body averages 11,554
+bytes, 92% of the row. At 67k calls a day that built a 3.2 GB table against a
+2 GB InnoDB buffer pool, making `api_request_logs` the most expensive object
+in the database by I/O time — 1,175 seconds against 1,065 for `steps`, on a
+sixth of the reads.
+
 ## 1.93.0 - 2026-07-29
 
 ### Daily figures are booked when the exchange booked them
