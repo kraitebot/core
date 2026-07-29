@@ -6,8 +6,10 @@ namespace Kraite\Core\Support\Throttlers;
 
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Sleep;
 use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseApiThrottler;
+use Kraite\Core\Exceptions\NonNotifiableException;
 use Psr\Http\Message\ResponseInterface;
 use Throwable;
 
@@ -41,6 +43,63 @@ use Throwable;
  */
 final class BinanceThrottler extends BaseApiThrottler
 {
+    /**
+     * Pace one real HTTP attempt against the shared per-IP weight budget.
+     *
+     * Why this exists alongside isSafeToDispatch(): that one is a *step*
+     * admission gate, evaluated once before a job body runs. A job that
+     * loops — one call per position, per symbol, per income type — is
+     * checked for its first call and unmetered for the rest. Worse, a
+     * console command, a daemon or an ad-hoc script never crosses a step
+     * boundary at all, so it spends the budget the trading engine depends
+     * on without ever being asked. This is the per-attempt brake that
+     * covers all of them.
+     *
+     * It is deliberately softer than the step-level gate. A step can be
+     * rescheduled for nothing, so refusing there is free. A live HTTP
+     * attempt has no such escape hatch — refusing it would fail callers
+     * that succeed today, including the once-a-minute listen-key refresh
+     * whose failure silently expires the user-data stream. So budget
+     * pressure degrades to a bounded pause and then proceeds: a slower
+     * burst is worth far more than a new way to fail.
+     *
+     * A known IP ban is the one exception. Binance 418 bans run from two
+     * minutes to three days, so no bounded pause is meaningful and every
+     * further request risks extending the ban. That case refuses outright.
+     */
+    public static function throttleRequest(): void
+    {
+        $maxSleepMs = max(0, (int) config('kraite.throttlers.binance.client_max_sleep_ms', 1000));
+
+        $banWaitSeconds = self::readBanWaitSeconds();
+
+        // Null means the ban ledger itself is unreadable. The step-level gate
+        // fails closed here; this one cannot, for the reason above. Pause the
+        // ceiling — still stricter than the unmetered status quo — and go.
+        if ($banWaitSeconds === null) {
+            self::pause($maxSleepMs);
+
+            return;
+        }
+
+        // Non-notifiable on purpose. The ban was already announced once, by the
+        // observer that saw the 418/429 which recorded it. Every call refused
+        // afterwards is the ban working as intended, not a new incident — and
+        // alerting per refused call is exactly how an error storm starts.
+        if ($banWaitSeconds > 0) {
+            throw new NonNotifiableException(
+                "Binance request refused: this IP is banned for a further {$banWaitSeconds}s."
+            );
+        }
+
+        // Weight proximity only. ORDER budgets are UID-scoped and the client
+        // has no account context, so omitting the account id keeps this to the
+        // per-IP weight rows rather than silently consulting an unrelated key.
+        $proximityWaitMs = self::checkRateLimitProximity();
+
+        self::pause(min($proximityWaitMs, $maxSleepMs));
+    }
+
     /**
      * Pre-flight safety check called before canDispatch().
      * Checks IP ban status and rate limit proximity.
@@ -400,6 +459,37 @@ final class BinanceThrottler extends BaseApiThrottler
     protected static function getCurrentIp(): string
     {
         return \Kraite\Core\Models\Kraite::ip();
+    }
+
+    /**
+     * Seconds remaining on a known IP ban, 0 when demonstrably clear, or null
+     * when the ban ledger could not be read at all.
+     */
+    private static function readBanWaitSeconds(): ?int
+    {
+        try {
+            $ip = self::getCurrentIp();
+            $bannedUntil = Cache::get("binance:{$ip}:banned_until");
+
+            if (! $bannedUntil) {
+                return 0;
+            }
+
+            return max(0, (int) $bannedUntil - now()->timestamp);
+        } catch (Throwable $exception) {
+            Log::channel('jobs')->warning('[BinanceThrottler] client gate could not read ban state — pausing instead of refusing', [
+                'error' => $exception->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    private static function pause(int $milliseconds): void
+    {
+        if ($milliseconds > 0) {
+            Sleep::for($milliseconds)->milliseconds();
+        }
     }
 
     private static function cacheFailureBackoffMs(Throwable $exception, string $check): int

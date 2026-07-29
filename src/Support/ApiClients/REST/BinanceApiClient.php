@@ -8,6 +8,7 @@ use Binance\Util\Url;
 use Kraite\Core\Abstracts\BaseApiClient;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\ApiSystem;
+use Kraite\Core\Support\Throttlers\BinanceThrottler;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use Kraite\Core\Support\ValueObjects\ApiRequest;
 use Psr\Http\Message\ResponseInterface;
@@ -61,7 +62,7 @@ final class BinanceApiClient extends BaseApiClient
 
         // For POST/PUT/DELETE, Binance requires params in URL query string
         // Append the full query (including signature) to the path
-        if (strtoupper($apiRequest->method) !== 'GET') {
+        if (mb_strtoupper($apiRequest->method) !== 'GET') {
             $fullQuery = Url::buildQuery($apiRequest->properties->getOr('options', []));
             $apiRequest->path = $apiRequest->path.'?'.$fullQuery;
         }
@@ -78,14 +79,24 @@ final class BinanceApiClient extends BaseApiClient
     }
 
     /**
-     * Re-sign immediately before every HTTP attempt. BaseApiClient may retry
-     * after a backoff, and reusing the first attempt's timestamp makes the
-     * retry expire before Binance receives it.
+     * Throttle, then re-sign, immediately before every HTTP attempt.
+     *
+     * Order matters. Throttling can pause for up to its configured ceiling,
+     * and a signature minted before that pause would arrive at Binance older
+     * than it left — the very expiry this re-signing exists to prevent. So
+     * the brake comes first and the signature is always minted against the
+     * instant the request actually departs.
+     *
+     * Placing the brake here rather than in the job layer is the point: this
+     * runs for every real attempt, including BaseApiClient's internal retry
+     * and every caller that never goes through a step at all.
      *
      * @param  array<string, mixed>  $options
      */
     protected function executeHttpRequest(string $method, string $path, array $options): ResponseInterface
     {
+        BinanceThrottler::throttleRequest();
+
         if (mb_strtoupper($method) === 'GET') {
             $query = $options['query'] ?? [];
 

@@ -540,6 +540,14 @@ return [
             // Minimum delay between requests in milliseconds
             'min_delay_ms' => (int) env('BINANCE_THROTTLER_MIN_DELAY_MS', 200),
 
+            // Ceiling on the pause the client-level brake may apply to a
+            // single in-flight request. The step-level gate can reschedule a
+            // job for free and so refuses outright; a live HTTP attempt has
+            // no such escape, so it pauses at most this long and then
+            // proceeds. Keep it short — this bounds how long a worker can sit
+            // on a protective call while the weight budget recovers.
+            'client_max_sleep_ms' => (int) env('BINANCE_THROTTLER_CLIENT_MAX_SLEEP_MS', 1000),
+
             // The rate-limit rows below already include 15% headroom.
             // Apply that reduced profile once rather than multiplying it by
             // another 0.85 and stopping around 72% of Binance's ceiling.
