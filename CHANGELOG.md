@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.92.0 - 2026-07-29
+
+### The trading day starts when the exchange says it does
+
+- [ADDED] `users.utc_offset_minutes` — the trader's day basis, mirroring the
+  fixed UTC offset exchanges store (Binance "Change Basis"). Default 0 keeps
+  every existing trader on the UTC day they already had.
+- [ADDED] `ReportingDay` value object: day/month boundaries, the calendar day
+  a UTC instant belongs to, the picker list, and a driver-aware SQL grouping
+  expression (MySQL `DATE_ADD`, SQLite `datetime`). Fixed offsets rather than
+  named zones, because the production MySQL host has no timezone tables and
+  `CONVERT_TZ` returns NULL there.
+- [CHANGED] `Window::today/thisMonth/lastDays` accept a basis; `AccountFinancials`
+  resolves the account owner's automatically, so no caller can report a
+  trader's day in someone else's hours. `FleetFinancials` takes one explicitly
+  and defaults to UTC, since an aggregate spans traders on different bases.
+- [FIXED] Day enumeration walked UTC dates while the SQL grouped trader dates,
+  which dropped the trader's final day whenever the two calendars disagreed.
+- [UNCHANGED] Stored timestamps stay UTC. Only the day a UTC instant is
+  reported under follows the basis.
+- [VERIFIED] Consumer regressions pass: admin 327 tests / 1,574 assertions,
+  kraite.com 85 / 430. MySQL day-shift confirmed against real data.
+
 ## 1.91.0 - 2026-07-29
 
 ### Transferred money is no longer reported as performance

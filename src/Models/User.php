@@ -33,6 +33,7 @@ use SensitiveParameter;
  * @property int|null $subscription_id
  * @property string $name
  * @property string $email
+ * @property int $utc_offset_minutes
  * @property Carbon|null $email_verified_at
  * @property string $password
  * @property string|null $remember_token
@@ -86,6 +87,8 @@ final class User extends Authenticatable
         'trial_started_at' => 'datetime',
         'subscription_renews_at' => 'datetime',
         'subscription_paused_at' => 'datetime',
+
+        'utc_offset_minutes' => 'integer',
 
         'can_trade' => 'boolean',
         'have_distinct_position_tokens_on_all_accounts' => 'boolean',

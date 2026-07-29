@@ -42,7 +42,26 @@ final class AccountFinancials
 {
     private const SCALE = 8;
 
-    public function __construct(public readonly Account $account) {}
+    /**
+     * @param  ?ReportingDay  $reportingDay  Day basis for grouping. Left null,
+     *                                       it resolves to the account owner's
+     *                                       configured basis, so no caller can
+     *                                       silently report a trader's day in
+     *                                       someone else's hours.
+     */
+    public function __construct(
+        public readonly Account $account,
+        private ?ReportingDay $reportingDay = null,
+    ) {}
+
+    /**
+     * The day basis these numbers are reported on — the owner's configured
+     * UTC offset, or UTC when the account has no owner on record.
+     */
+    public function reportingDay(): ReportingDay
+    {
+        return $this->reportingDay ??= ReportingDay::forUser($this->account->user);
+    }
 
     /**
      * Latest known `total_wallet_balance` for the account. Returns null
@@ -136,6 +155,15 @@ final class AccountFinancials
             'missing_pnl_positions' => $missingPnlPositions,
             'is_complete' => $missingPnlPositions === 0,
         ];
+    }
+
+    /**
+     * SQL grouping expression that files a UTC timestamp column under the
+     * trader's calendar day, in whichever dialect the connection speaks.
+     */
+    private function dayExpression(string $column): string
+    {
+        return $this->reportingDay()->dateExpression($column, DB::connection()->getDriverName());
     }
 
     private function latestWalletSnapshot(): ?object
@@ -244,8 +272,10 @@ final class AccountFinancials
      */
     public function dailyStartWallets(Window $window): array
     {
+        $dayColumn = $this->dayExpression('created_at');
+
         $dayBounds = DB::table('account_balance_history')
-            ->select(DB::raw('DATE(created_at) AS d'))
+            ->select(DB::raw($dayColumn.' AS d'))
             ->selectRaw('MIN(id) AS opening_id')
             ->selectRaw('MAX(id) AS closing_id')
             ->where('account_id', $this->account->id)
@@ -254,7 +284,7 @@ final class AccountFinancials
                 $window->start->toDateTimeString(),
                 $window->end->toDateTimeString(),
             ])
-            ->groupBy(DB::raw('DATE(created_at)'))
+            ->groupBy(DB::raw($dayColumn))
             ->get();
 
         if ($dayBounds->isEmpty()) {
@@ -288,10 +318,13 @@ final class AccountFinancials
             $closing[$day] = (string) $balances[$closingId];
         }
 
+        // Walk the trader's calendar days, not UTC's. On a UTC+2 basis a
+        // window ending at 23:00 UTC already belongs to the next trading day,
+        // and walking UTC dates would drop that day's anchor on the floor.
         $anchors = [];
         $carry = null;
-        $cursor = $window->start->startOfDay();
-        $stop = $window->end->startOfDay();
+        $cursor = $this->reportingDay()->startOfLocalDay($window->start);
+        $stop = $this->reportingDay()->startOfLocalDay($window->end);
 
         while ($cursor->lte($stop)) {
             $day = $cursor->toDateString();
@@ -452,8 +485,10 @@ final class AccountFinancials
      */
     private function dailyTradePnl(Window $window): array
     {
+        $dayColumn = $this->dayExpression('closed_at');
+
         $rows = DB::table('positions')
-            ->select(DB::raw('DATE(closed_at) AS d'))
+            ->select(DB::raw($dayColumn.' AS d'))
             ->selectRaw('SUM(pnl) AS pnl')
             ->where('account_id', $this->account->id)
             ->where('status', 'closed')
@@ -463,7 +498,7 @@ final class AccountFinancials
                 $window->start->toDateTimeString(),
                 $window->end->toDateTimeString(),
             ])
-            ->groupBy(DB::raw('DATE(closed_at)'))
+            ->groupBy(DB::raw($dayColumn))
             ->orderBy('d')
             ->get();
 

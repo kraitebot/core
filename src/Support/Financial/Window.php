@@ -11,6 +11,11 @@ use Carbon\CarbonImmutable;
  * Immutable, validated at construction (start ≤ end). Use named
  * constructors for the common cases — `new Window(...)` only when you
  * already have two CarbonImmutable instances.
+ *
+ * Bounds are always UTC, because that is what the database stores. The
+ * named constructors take an optional `ReportingDay` so "today" and "this
+ * month" can mean the trader's day rather than UTC's — a UTC+2 trader's
+ * today starts at 22:00 UTC the evening before.
  */
 final class Window
 {
@@ -28,34 +33,45 @@ final class Window
         return new self($start, $end);
     }
 
-    /** Calendar-month window: [first day 00:00:00, last day 23:59:59]. */
-    public static function thisMonth(?CarbonImmutable $now = null): self
+    /**
+     * Calendar-month window on the trader's day basis, expressed in UTC.
+     * Defaults to UTC so a caller with no trader behind it — public stats,
+     * a system report — keeps the plain UTC month.
+     */
+    public static function thisMonth(?CarbonImmutable $now = null, ?ReportingDay $basis = null): self
     {
         $now ??= CarbonImmutable::now();
+        $basis ??= ReportingDay::utc();
 
-        return new self($now->startOfMonth(), $now->endOfMonth());
+        return new self($basis->startOfMonthUtc($now), $basis->endOfMonthUtc($now));
     }
 
-    /** Today only: [today 00:00:00, today 23:59:59]. */
-    public static function today(?CarbonImmutable $now = null): self
+    /**
+     * The trader's current day, expressed in UTC. On a UTC+2 basis at 23:38
+     * UTC this is the day that opened at 22:00 UTC — the same span the
+     * exchange is counting under "Today".
+     */
+    public static function today(?CarbonImmutable $now = null, ?ReportingDay $basis = null): self
     {
         $now ??= CarbonImmutable::now();
+        $basis ??= ReportingDay::utc();
 
-        return new self($now->startOfDay(), $now->endOfDay());
+        return new self($basis->startOfDayUtc($now), $basis->endOfDayUtc($now));
     }
 
-    /** Trailing window: last N calendar days ending today. */
-    public static function lastDays(int $days, ?CarbonImmutable $now = null): self
+    /** Trailing window: last N of the trader's days, ending with today. */
+    public static function lastDays(int $days, ?CarbonImmutable $now = null, ?ReportingDay $basis = null): self
     {
         if ($days < 1) {
             throw new \InvalidArgumentException('lastDays() needs a positive day count.');
         }
 
         $now ??= CarbonImmutable::now();
+        $basis ??= ReportingDay::utc();
 
         return new self(
-            $now->subDays($days - 1)->startOfDay(),
-            $now->endOfDay(),
+            $basis->startOfDayUtc($now)->subDays($days - 1),
+            $basis->endOfDayUtc($now),
         );
     }
 

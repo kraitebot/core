@@ -53,14 +53,27 @@ final class FleetFinancials
 
     /**
      * @param  Collection<int, Account>|null  $accounts  Defaults to active + tradeable.
+     * @param  ?ReportingDay  $reportingDay  Day basis for the whole aggregate.
+     *                                       Defaults to UTC: a fleet spans
+     *                                       traders on different bases, so one
+     *                                       explicit basis for the aggregate
+     *                                       beats silently mixing several.
      */
-    public function __construct(?Collection $accounts = null)
-    {
+    public function __construct(
+        ?Collection $accounts = null,
+        private readonly ReportingDay $reportingDay = new ReportingDay(0),
+    ) {
         $this->accounts = $accounts ?? Account::query()
             ->active()
             ->tradeable()
             ->onActiveApiSystem()
             ->get();
+    }
+
+    /** The day basis this aggregate reports on. */
+    public function reportingDay(): ReportingDay
+    {
+        return $this->reportingDay;
     }
 
     /** @return array<int, int> */
@@ -89,7 +102,7 @@ final class FleetFinancials
         $found = false;
 
         foreach ($this->accounts as $account) {
-            $val = (new AccountFinancials($account))->currentWallet();
+            $val = (new AccountFinancials($account, $this->reportingDay))->currentWallet();
             if ($val === null) {
                 continue;
             }
@@ -112,7 +125,7 @@ final class FleetFinancials
         $found = false;
 
         foreach ($this->accounts as $account) {
-            $val = (new AccountFinancials($account))->startWallet($window);
+            $val = (new AccountFinancials($account, $this->reportingDay))->startWallet($window);
             if ($val === null) {
                 continue;
             }
@@ -174,6 +187,15 @@ final class FleetFinancials
     }
 
     /**
+     * SQL grouping expression that files a UTC timestamp column under the
+     * fleet's reporting day, in whichever dialect the connection speaks.
+     */
+    private function dayExpression(string $column): string
+    {
+        return $this->reportingDay->dateExpression($column, DB::connection()->getDriverName());
+    }
+
+    /**
      * Uncached fleet day-anchor walk — every account's per-day opening
      * wallet summed into one series, oldest day first.
      *
@@ -184,7 +206,7 @@ final class FleetFinancials
         $anchors = [];
 
         foreach ($this->accounts as $account) {
-            foreach ((new AccountFinancials($account))->dailyStartWallets($window) as $day => $wallet) {
+            foreach ((new AccountFinancials($account, $this->reportingDay))->dailyStartWallets($window) as $day => $wallet) {
                 $anchors[$day] = bcadd($anchors[$day] ?? '0', $wallet, self::SCALE);
             }
         }
@@ -324,8 +346,10 @@ final class FleetFinancials
      */
     public function daysInProfit(Window $window): array
     {
+        $dayColumn = $this->dayExpression('closed_at');
+
         $rows = DB::table('positions')
-            ->select(DB::raw('DATE(closed_at) AS d'))
+            ->select(DB::raw($dayColumn.' AS d'))
             ->selectRaw('SUM(profit_percentage) AS day_pct')
             ->where('status', 'closed')
             ->whereNotNull('closed_at')
@@ -334,7 +358,7 @@ final class FleetFinancials
                 $window->start->toDateTimeString(),
                 $window->end->toDateTimeString(),
             ])
-            ->groupBy(DB::raw('DATE(closed_at)'))
+            ->groupBy(DB::raw($dayColumn))
             ->get();
 
         $green = 0;
@@ -411,7 +435,7 @@ final class FleetFinancials
         $winners = 0;
 
         foreach ($this->accounts as $account) {
-            $delta = (new AccountFinancials($account))->realizedDelta($window);
+            $delta = (new AccountFinancials($account, $this->reportingDay))->realizedDelta($window);
             if ($delta === null) {
                 continue;
             }
@@ -443,8 +467,9 @@ final class FleetFinancials
         $revenues = $this->dailyTradePnl($window);
         $anchors = $this->dailyStartWallets($window);
 
-        $cursor = $window->start->startOfDay();
-        $stop = $window->end->startOfDay();
+        // Trader days, not UTC days — the bars must line up with the rates.
+        $cursor = $this->reportingDay->startOfLocalDay($window->start);
+        $stop = $this->reportingDay->startOfLocalDay($window->end);
         $out = [];
 
         while ($cursor->lte($stop)) {
@@ -486,8 +511,10 @@ final class FleetFinancials
         // price-true `(close − open) × quantity` (overstated by the omitted
         // round-trip cost) which itself superseded `profit_percentage / 100
         // × margin` (margin = per-slot allocation, not notional → ~4× high).
+        $dayColumn = $this->dayExpression('closed_at');
+
         $rows = DB::table('positions')
-            ->select(DB::raw('DATE(closed_at) AS d'))
+            ->select(DB::raw($dayColumn.' AS d'))
             ->selectRaw('SUM(pnl) AS pnl')
             ->whereIn('account_id', $accountIds)
             ->where('status', 'closed')
@@ -497,7 +524,7 @@ final class FleetFinancials
                 $window->start->toDateTimeString(),
                 $window->end->toDateTimeString(),
             ])
-            ->groupBy(DB::raw('DATE(closed_at)'))
+            ->groupBy(DB::raw($dayColumn))
             ->orderBy('d')
             ->get();
 
