@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.96.0 - 2026-07-30
+
+### Trader notifications now arrive in the iPhone app
+
+- [ADDED] Every notification sent to a persisted trader also uses the app
+  channel, while existing mail, Pushover, and Telegram delivery stays intact.
+  Virtual operator-only notifications remain outside the trader app.
+- [ADDED] Expo device registration storage, encrypted push tokens, disabled
+  device handling, and trader-owned app history in `notification_logs`.
+- [ADDED] BSCS, market-shock, and trading-health breaker activation and
+  recovery events are logged and delivered only through the iPhone app.
+- [PRESERVED] Existing notification activation toggles survive the definition
+  migration; release migrations use forward-only, non-cascading relationships.
+- [VERIFIED] Focused notification and breaker coverage passes, plus the full
+  ingestion regression: 3,293 tests and 10,599 assertions.
+
 ## 1.94.0 - 2026-07-29
 
 ### An exchange call stops storing 11 KB to say it worked

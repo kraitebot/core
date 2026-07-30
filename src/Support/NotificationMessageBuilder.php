@@ -971,6 +971,50 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'market_shock_recovered' => (function () use ($context) {
+                $score = (int) ($context['score'] ?? 0);
+
+                return [
+                    'severity' => NotificationSeverity::Info,
+                    'title' => 'Market shock cleared — opens resumed',
+                    'emailMessage' => "The fast market-shock cooldown expired with BSCS at {$score}/100. New position openings have resumed; existing positions were never interrupted.",
+                    'pushoverMessage' => "Market shock cleared — opens resumed (BSCS {$score}/100)",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => -1,
+                ];
+            })(),
+
+            'trading_guard_paused' => (function () use ($context) {
+                $reason = (string) ($context['reason'] ?? 'system protection');
+                $evidence = (string) ($context['evidence'] ?? '');
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'title' => 'Trading guard — opens paused',
+                    'emailMessage' => "The trading health guard paused new position openings.\n\nTrigger: {$reason}\nEvidence: {$evidence}\n\nExisting positions remain protected and continue trading.",
+                    'pushoverMessage' => "Trading guard paused opens — {$reason}. {$evidence}",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 1,
+                ];
+            })(),
+
+            'trading_guard_recovered' => (function () use ($context) {
+                $reason = (string) ($context['reason'] ?? 'system protection cleared');
+                $evidence = (string) ($context['evidence'] ?? '');
+
+                return [
+                    'severity' => NotificationSeverity::Info,
+                    'title' => 'Trading guard recovered — opens resumed',
+                    'emailMessage' => "The trading health guard stayed clean for its recovery window and resumed new position openings.\n\nCleared: {$reason}\nEvidence: {$evidence}",
+                    'pushoverMessage' => "Trading guard recovered — opens resumed. {$reason}. {$evidence}",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => -1,
+                ];
+            })(),
+
             'websocket_reconnect_triggered' => (static function () use ($context) {
                 $url = is_string($context['url'] ?? null) ? $context['url'] : 'wss://(unknown)';
                 $idleSeconds = (int) ($context['idle_seconds'] ?? 0);

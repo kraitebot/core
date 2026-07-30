@@ -6,7 +6,6 @@ namespace Kraite\Core\Jobs\Models\MarketRegime;
 
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Log;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\Candle;
@@ -16,8 +15,7 @@ use Kraite\Core\Models\MarketPriceSample;
 use Kraite\Core\Support\MarketRegime\Bscs;
 use Kraite\Core\Support\MarketRegime\BscsState;
 use Kraite\Core\Support\MarketRegime\MarketShockCircuitBreaker;
-use Kraite\Core\Support\NotificationService;
-use Throwable;
+use Kraite\Core\Support\TraderAppNotificationService;
 
 /**
  * Fast cascade-in-progress detector, two evaluation paths:
@@ -345,6 +343,7 @@ final class DetectMarketShockJob extends BaseQueueableJob
         $kraite->updateSaving([
             'bscs_cooldown_until' => CarbonImmutable::now()->addHours($hours),
             'bscs_block_active' => true,
+            'bscs_cooldown_source' => Kraite::MARKET_SHOCK_COOLDOWN_SOURCE,
         ]);
 
         $this->notifyShock($result, $hours, $source);
@@ -428,24 +427,18 @@ final class DetectMarketShockJob extends BaseQueueableJob
      */
     private function notifyShock(array $result, int $hours, string $source): void
     {
-        try {
-            NotificationService::send(
-                user: Kraite::admin(),
-                canonical: 'market_shock_circuit_breaker',
-                referenceData: [
-                    'rules' => implode(', ', $result['rules_triggered']),
-                    'source' => $source,
-                    'btc_15m_pct' => self::notificationMetric($result['btc_15m_pct'], 2),
-                    'btc_1h_pct' => self::notificationMetric($result['btc_1h_pct'], 2),
-                    'alt_basket_1h_pct' => self::notificationMetric($result['alt_basket_1h_pct'], 2),
-                    'corr_1h' => self::notificationMetric($result['corr_1h'], 3),
-                    'cooldown_hours' => $hours,
-                ],
-            );
-        } catch (Throwable $e) {
-            Log::warning('[DetectMarketShockJob] notification dispatch failed', [
-                'message' => $e->getMessage(),
-            ]);
-        }
+        TraderAppNotificationService::send(
+            canonical: 'market_shock_circuit_breaker',
+            referenceData: [
+                'rules' => implode(', ', $result['rules_triggered']),
+                'source' => $source,
+                'btc_15m_pct' => self::notificationMetric($result['btc_15m_pct'], 2),
+                'btc_1h_pct' => self::notificationMetric($result['btc_1h_pct'], 2),
+                'alt_basket_1h_pct' => self::notificationMetric($result['alt_basket_1h_pct'], 2),
+                'corr_1h' => self::notificationMetric($result['corr_1h'], 3),
+                'cooldown_hours' => $hours,
+            ],
+            relatable: $this->relatable(),
+        );
     }
 }

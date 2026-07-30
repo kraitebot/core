@@ -8,6 +8,14 @@ $websiteUrl = mb_rtrim((string) env('KRAITE_WEBSITE_URL', $derivedWebsiteUrl), '
 
 return [
 
+    'app_push' => [
+        'enabled' => (bool) env('APP_PUSH_ENABLED', true),
+        'endpoint' => env('APP_PUSH_ENDPOINT', 'https://exp.host/--/api/v2/push/send'),
+        'access_token' => env('EXPO_ACCESS_TOKEN'),
+        'connect_timeout_seconds' => (int) env('APP_PUSH_CONNECT_TIMEOUT_SECONDS', 3),
+        'timeout_seconds' => (int) env('APP_PUSH_TIMEOUT_SECONDS', 10),
+    ],
+
     'freeze' => [
         'marker_path' => env(
             'KRAITE_FREEZE_MARKER_PATH',

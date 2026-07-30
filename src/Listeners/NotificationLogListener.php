@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Listeners;
 
+use Illuminate\Foundation\Auth\User as AuthenticatableUser;
 use Illuminate\Notifications\Events\NotificationFailed;
 use Illuminate\Notifications\Events\NotificationSent;
 use Illuminate\Support\Facades\Log;
@@ -12,7 +13,7 @@ use Kraite\Core\Enums\NotificationLogStatus;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Notification;
 use Kraite\Core\Models\NotificationLog;
-use Kraite\Core\Models\User;
+use Kraite\Core\Notifications\Channels\AppPushChannel;
 use ReflectionClass;
 use ReflectionProperty;
 use Throwable;
@@ -183,9 +184,12 @@ final class NotificationLogListener
      */
     private function extractUserId(object $notifiable): ?int
     {
-        // If notifiable is User, return user ID
-        if ($notifiable instanceof User) {
-            return $notifiable->id;
+        // Any persisted Laravel user is eligible. Admin and ingestion use
+        // different concrete User models against the same users table.
+        if ($notifiable instanceof AuthenticatableUser && $notifiable->exists) {
+            $userId = $notifiable->getKey();
+
+            return is_numeric($userId) ? (int) $userId : null;
         }
 
         // If notifiable is Account, return the account's user_id
@@ -259,6 +263,10 @@ final class NotificationLogListener
      */
     private function extractRecipient(object $notifiable, string $channel): string
     {
+        if ($channel === AppPushChannel::class) {
+            return 'iPhone app';
+        }
+
         if (Str::contains($channel, 'mail') || $channel === 'mail') {
             // For mail, try to get email from notifiable
             if (method_exists($notifiable, 'routeNotificationFor')) {
@@ -331,6 +339,10 @@ final class NotificationLogListener
      */
     private function normalizeChannel(string $channel): string
     {
+        if ($channel === AppPushChannel::class) {
+            return 'app';
+        }
+
         if (Str::contains($channel, 'Pushover')) {
             return 'pushover';
         }
@@ -487,6 +499,12 @@ final class NotificationLogListener
             if (isset($gatewayResponse['receipt']) && is_string($gatewayResponse['receipt'])) {
                 return $gatewayResponse['receipt'];
             }
+        }
+
+        if ($normalizedChannel === 'app') {
+            $ticketId = data_get($gatewayResponse, 'tickets.0.id');
+
+            return is_string($ticketId) ? $ticketId : null;
         }
 
         return null;

@@ -13,7 +13,8 @@ use Kraite\Core\Models\Notification;
  * `NotificationMessageBuilder` already format these payloads, so
  * the canonicals dispatch live Pushover / mail / telegram alerts
  * the moment `AnalyseBscsJob` arms / re-arms / releases the
- * cooldown column.
+ * cooldown column. Breaker transitions are delivered only through
+ * the trader iPhone app channel.
  *
  * Spec: `~/docs/kraite/black-swan-logic.md` "Notifications".
  */

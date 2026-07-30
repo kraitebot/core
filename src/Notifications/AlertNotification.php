@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Notifications;
 
+use Illuminate\Foundation\Auth\User as AuthenticatableUser;
 use Illuminate\Mail\Mailable;
 use Illuminate\Notifications\Notification;
 use Kraite\Core\Enums\NotificationSeverity;
 use Kraite\Core\Mail\AlertMail;
+use Kraite\Core\Notifications\Channels\AppPushChannel;
 use NotificationChannels\Pushover\PushoverChannel;
 use NotificationChannels\Pushover\PushoverMessage;
 use NotificationChannels\Telegram\TelegramMessage;
@@ -31,7 +33,7 @@ final class AlertNotification extends Notification
      * @param  string  $title  The notification title
      * @param  string|null  $canonical  Notification canonical identifier (e.g., 'ip_not_whitelisted', 'server_rate_limit_exceeded')
      * @param  string|null  $deliveryGroup  Delivery group name (exceptions, default, indicators) or null for individual user
-     * @param  array  $additionalParameters  Extra parameters (sound, priority, url, etc.)
+     * @param  array<string, mixed>  $additionalParameters  Extra parameters (sound, priority, url, etc.)
      * @param  NotificationSeverity|null  $severity  Severity level for visual styling
      * @param  string|null  $pushoverMessage  Override message for Pushover (defaults to $message)
      * @param  string|null  $exchange  Exchange name for email subject (e.g., 'binance', 'bybit')
@@ -72,13 +74,12 @@ final class AlertNotification extends Notification
      * If a user has no channels configured, defaults to Pushover.
      * Only sends to active users (is_active = true).
      *
-     * @param  mixed  $notifiable
      * @return array<int, string>
      */
-    public function via($notifiable): array
+    public function via(AuthenticatableUser $notifiable): array
     {
         // Don't send notifications to inactive users
-        if (! $notifiable->is_active) {
+        if (! (bool) $notifiable->getAttribute('is_active')) {
             return [];
         }
 
@@ -86,11 +87,52 @@ final class AlertNotification extends Notification
         // canonicals (private-beta verification, welcome, password reset) that
         // must always route via mail regardless of the user's pushover /
         // telegram setup (a brand-new visitor has neither).
-        if ($this->forceChannels !== null) {
-            return $this->forceChannels;
+        $configuredChannels = $this->forceChannels
+            ?? $notifiable->getAttribute('notification_channels')
+            ?? [PushoverChannel::class];
+
+        if (is_string($configuredChannels)) {
+            $decoded = json_decode($configuredChannels, associative: true);
+            $configuredChannels = is_array($decoded) ? $decoded : [];
         }
 
-        return $notifiable->notification_channels ?? [PushoverChannel::class];
+        $channels = is_array($configuredChannels)
+            ? array_values(array_filter($configuredChannels, is_string(...)))
+            : [];
+
+        if ($notifiable->exists) {
+            $channels[] = AppPushChannel::class;
+        }
+
+        return array_values(array_unique($channels));
+    }
+
+    /**
+     * Build the Expo push message and the data needed to open Dashboard.
+     *
+     * @return array<string, mixed>
+     */
+    public function toAppPush(AuthenticatableUser $notifiable): array
+    {
+        $body = $this->pushoverMessage ?? $this->message;
+        $severity = $this->severity instanceof NotificationSeverity
+            ? $this->severity->value
+            : NotificationSeverity::Info->value;
+
+        return [
+            'title' => $this->title,
+            'body' => $body,
+            'sound' => 'default',
+            'priority' => $severity === NotificationSeverity::Critical->value ? 'high' : 'default',
+            'data' => [
+                'event_id' => $this->id,
+                'canonical' => $this->canonical ?? 'uncategorized_notification',
+                'screen' => 'Dashboard',
+                'title' => $this->title,
+                'body' => $body,
+                'severity' => $severity,
+            ],
+        ];
     }
 
     /**

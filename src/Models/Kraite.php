@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Models;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Kraite\Core\Abstracts\BaseModel;
@@ -40,9 +41,10 @@ use RuntimeException;
  * @property string|null $email
  * @property array<int, string> $notification_channels
  * @property array<int, string>|null $timeframes
+ * @property string|null $bscs_cooldown_source
  * @property string $top_up_minimum_when_covered_usdt
- * @property \Illuminate\Support\Carbon $created_at
- * @property \Illuminate\Support\Carbon $updated_at
+ * @property Carbon $created_at
+ * @property Carbon $updated_at
  */
 final class Kraite extends BaseModel
 {
@@ -52,6 +54,10 @@ final class Kraite extends BaseModel
     public const IP_CACHE_KEY = 'kraite.server.public_ip';
 
     public const IP_CACHE_TTL_SECONDS = 86400;
+
+    public const BSCS_COOLDOWN_SOURCE = 'bscs';
+
+    public const MARKET_SHOCK_COOLDOWN_SOURCE = 'market_shock';
 
     protected $table = 'kraite';
 

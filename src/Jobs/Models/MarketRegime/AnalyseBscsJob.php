@@ -12,6 +12,7 @@ use Kraite\Core\Models\Kraite;
 use Kraite\Core\Support\MarketRegime\Bscs;
 use Kraite\Core\Support\MarketRegime\BscsState;
 use Kraite\Core\Support\NotificationService;
+use Kraite\Core\Support\TraderAppNotificationService;
 use Throwable;
 
 /**
@@ -87,6 +88,7 @@ final class AnalyseBscsJob extends BaseQueueableJob
             $kraite->updateSaving([
                 'bscs_cooldown_until' => $newCooldown,
                 'bscs_block_active' => true,
+                'bscs_cooldown_source' => Kraite::BSCS_COOLDOWN_SOURCE,
             ]);
 
             $this->notifyCritical($score, $hours);
@@ -104,12 +106,14 @@ final class AnalyseBscsJob extends BaseQueueableJob
         // branch — without the null, every tick after the first recovery
         // re-fired the notification (Pos #577 sibling incident, 2026-05-06).
         if ($hadCooldown) {
+            $source = $kraite->bscs_cooldown_source;
             $kraite->updateSaving([
                 'bscs_block_active' => false,
                 'bscs_cooldown_until' => null,
+                'bscs_cooldown_source' => null,
             ]);
 
-            $this->notifyRecovered($score);
+            $this->notifyRecovered($score, $source);
 
             return $this->result('cooldown_released', $score, null);
         }
@@ -131,20 +135,14 @@ final class AnalyseBscsJob extends BaseQueueableJob
 
     private function notifyCritical(int $score, int $hours): void
     {
-        try {
-            NotificationService::send(
-                user: Kraite::admin(),
-                canonical: 'market_regime_critical',
-                referenceData: [
-                    'score' => $score,
-                    'cooldown_hours' => $hours,
-                ],
-            );
-        } catch (Throwable $e) {
-            Log::warning('[AnalyseBscsJob] critical notification dispatch failed', [
-                'message' => $e->getMessage(),
-            ]);
-        }
+        TraderAppNotificationService::send(
+            canonical: 'market_regime_critical',
+            referenceData: [
+                'score' => $score,
+                'cooldown_hours' => $hours,
+            ],
+            relatable: $this->relatable(),
+        );
     }
 
     private function notifyComputeStale(BscsState $index): void
@@ -167,20 +165,16 @@ final class AnalyseBscsJob extends BaseQueueableJob
         }
     }
 
-    private function notifyRecovered(int $score): void
+    private function notifyRecovered(int $score, ?string $source): void
     {
-        try {
-            NotificationService::send(
-                user: Kraite::admin(),
-                canonical: 'market_regime_recovered',
-                referenceData: [
-                    'score' => $score,
-                ],
-            );
-        } catch (Throwable $e) {
-            Log::warning('[AnalyseBscsJob] recovered notification dispatch failed', [
-                'message' => $e->getMessage(),
-            ]);
-        }
+        TraderAppNotificationService::send(
+            canonical: $source === Kraite::MARKET_SHOCK_COOLDOWN_SOURCE
+                ? 'market_shock_recovered'
+                : 'market_regime_recovered',
+            referenceData: [
+                'score' => $score,
+            ],
+            relatable: $this->relatable(),
+        );
     }
 }

@@ -6,6 +6,7 @@ namespace Kraite\Core\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Carbon\CarbonInterface;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -60,6 +61,7 @@ use SensitiveParameter;
  * @property bool $is_virtual
  * @property-read Subscription|null $subscription
  * @property-read Account|null $activeAccount
+ * @property-read Collection<int, AppPushDevice> $appPushDevices
  */
 final class User extends Authenticatable
 {
@@ -142,6 +144,14 @@ final class User extends Authenticatable
     public function accounts(): HasMany
     {
         return $this->hasMany(Account::class);
+    }
+
+    /**
+     * @return HasMany<AppPushDevice, $this>
+     */
+    public function appPushDevices(): HasMany
+    {
+        return $this->hasMany(AppPushDevice::class);
     }
 
     /**

@@ -6,9 +6,9 @@ namespace Kraite\Core\Support\Health\Remediation;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\File;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Kraite\Core\Models\Kraite;
+use Kraite\Core\Support\TraderAppNotificationService;
 use Throwable;
 
 final class TradingCooldown
@@ -34,7 +34,7 @@ final class TradingCooldown
         $engine->update(['allow_opening_positions' => false]);
 
         $this->writeIncident($reason, $evidence);
-        $this->sendPushover($reason, $evidence);
+        $this->sendAppNotification('trading_guard_paused', $reason, $evidence);
 
         return true;
     }
@@ -54,7 +54,7 @@ final class TradingCooldown
                 return null;
             }
 
-            $incident = base_path('monitoring/'.trim(File::get($marker)));
+            $incident = base_path('monitoring/'.mb_trim(File::get($marker)));
 
             if (! File::exists($incident)) {
                 return null;
@@ -93,7 +93,7 @@ final class TradingCooldown
         $engine->update(['allow_opening_positions' => true]);
 
         $this->archiveIncident($reason, $evidence);
-        $this->sendResumePushover($reason, $evidence);
+        $this->sendAppNotification('trading_guard_recovered', $reason, $evidence);
 
         return true;
     }
@@ -107,7 +107,7 @@ final class TradingCooldown
             $marker = base_path('monitoring/OPEN-INCIDENT');
 
             if (File::exists($marker)) {
-                $incident = base_path('monitoring/'.trim(File::get($marker)));
+                $incident = base_path('monitoring/'.mb_trim(File::get($marker)));
 
                 if (File::exists($incident)) {
                     $resolution = "\n## Resolution\n\n";
@@ -131,81 +131,26 @@ final class TradingCooldown
     /**
      * @param  array<string, mixed>  $evidence
      */
-    private function sendResumePushover(string $reason, array $evidence): void
+    private function sendAppNotification(string $canonical, string $reason, array $evidence): void
     {
-        try {
-            $summary = collect($evidence)
-                ->map(function (mixed $value, string $key): string {
-                    return is_string($value) || is_int($value) || is_float($value)
-                        ? $key.'='.$value
-                        : $key;
-                })
-                ->implode(', ');
-
-            $this->postPushover(
-                priority: 0,
-                title: 'KRAITE RESUMED — opens re-enabled',
-                message: "Cleared: {$reason}\n{$summary}\n\nThe guard condition stayed clean for the full recovery window, so new position openings have resumed automatically. Incident archived.",
-            );
-        } catch (Throwable $exception) {
-            Log::error('[monitor-guard] resume pushover failed (opens re-enabled anyway)', [
+        TraderAppNotificationService::send(
+            canonical: $canonical,
+            referenceData: [
                 'reason' => $reason,
-                'message' => $exception->getMessage(),
-            ]);
-        }
-    }
+                'evidence' => collect($evidence)
+                    ->map(function (mixed $value, string $key): string {
+                        if (is_bool($value)) {
+                            return $key.'='.($value ? 'true' : 'false');
+                        }
 
-    /**
-     * @param  array<string, mixed>  $evidence
-     */
-    private function sendPushover(string $reason, array $evidence): void
-    {
-        try {
-            $summary = collect($evidence)
-                ->map(function (mixed $value, string $key): string {
-                    if (is_bool($value)) {
-                        return $key.'='.($value ? 'true' : 'false');
-                    }
-
-                    return is_string($value) || is_int($value) || is_float($value)
-                        ? $key.'='.$value
-                        : $key;
-                })
-                ->implode(', ');
-
-            $this->postPushover(
-                priority: 1,
-                title: 'KRAITE COOLED — opens halted',
-                message: "Trigger: {$reason}\n{$summary}\n\nBot stopped opening new positions. Existing positions safe. Incident file written for review.",
-            );
-        } catch (Throwable $exception) {
-            Log::error('[monitor-guard] guard pushover failed (cooldown still applied)', [
-                'reason' => $reason,
-                'message' => $exception->getMessage(),
-            ]);
-        }
-    }
-
-    /**
-     * Shared Pushover transport for the cooled/resumed alerts. Silently
-     * a no-op when the credentials are not configured.
-     */
-    private function postPushover(int $priority, string $title, string $message): void
-    {
-        $token = config('kraite.admin_user_pushover_application_key');
-        $user = config('kraite.admin_user_pushover_user_key');
-
-        if (! is_string($token) || $token === '' || ! is_string($user) || $user === '') {
-            return;
-        }
-
-        Http::asForm()->timeout(10)->post('https://api.pushover.net/1/messages.json', [
-            'token' => $token,
-            'user' => $user,
-            'priority' => $priority,
-            'title' => $title,
-            'message' => $message,
-        ]);
+                        return is_string($value) || is_int($value) || is_float($value)
+                            ? $key.'='.$value
+                            : $key;
+                    })
+                    ->implode(', '),
+            ],
+            relatable: Kraite::query()->first(),
+        );
     }
 
     /**
