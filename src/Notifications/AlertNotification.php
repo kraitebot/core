@@ -123,6 +123,7 @@ final class AlertNotification extends Notification
             'title' => $this->title,
             'body' => $body,
             'sound' => 'default',
+            'badge' => 1,
             'priority' => $severity === NotificationSeverity::Critical->value ? 'high' : 'default',
             'data' => [
                 'event_id' => $this->id,

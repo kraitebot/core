@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.96.1 - 2026-08-01
+
+### Background notifications show an unread badge
+
+- [FIXED] Every iPhone push sets the app icon badge to `1` while the
+  notification is unseen. Opening Kraite keeps the existing local read flow,
+  which clears the badge after the notification becomes visible.
+
 ## 1.96.0 - 2026-07-30
 
 ### Trader notifications now arrive in the iPhone app
