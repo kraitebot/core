@@ -28,8 +28,7 @@ trait HandlesApiJobExceptions
     {
         // Notifications are sent by ApiRequestLogObserver after log is persisted
 
-        // Handle connection failures like timeouts or DNS issues.
-        if ($e instanceof ConnectException) {
+        if ($this->isRetryableTransportFailure($e)) {
             $this->retryDueToNetworkGlitch();
 
             return;
@@ -190,6 +189,19 @@ trait HandlesApiJobExceptions
     {
         // Just apply a standard rate limiter retry.
         $this->retryJob(now()->addSeconds($this->exceptionHandler->backoffSeconds));
+    }
+
+    protected function isRetryableTransportFailure(Throwable $exception): bool
+    {
+        if ($exception instanceof ConnectException) {
+            return true;
+        }
+
+        if (! $exception instanceof RequestException || $exception->hasResponse()) {
+            return false;
+        }
+
+        return in_array(mb_strtoupper($exception->getRequest()->getMethod()), ['GET', 'HEAD', 'OPTIONS'], true);
     }
 
     /**

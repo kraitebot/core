@@ -101,9 +101,7 @@ abstract class BaseApiClient
         } catch (RequestException $e) {
             return $this->handleRequestException($e, $apiRequest, $options, $logData, $startTime);
         } catch (Throwable $e) {
-            $this->updateRequestLogData([
-                'error_message' => $e->getMessage().' (line '.$e->getLine().')',
-            ]);
+            $this->recordFailedRequest($e, $logData, $startTime);
 
             throw $e;
         }
@@ -282,32 +280,13 @@ abstract class BaseApiClient
         return $this->httpRequest->request($method, $path, $options);
     }
 
-    /** @return array<string, mixed> */
-    private function testingRequestBody(array $options): array
-    {
-        if (isset($options['json']) && is_array($options['json'])) {
-            return $options['json'];
-        }
-
-        if (isset($options['body']) && is_string($options['body'])) {
-            $decoded = json_decode($options['body'], associative: true, flags: JSON_THROW_ON_ERROR);
-
-            return is_array($decoded) ? $decoded : [];
-        }
-
-        return isset($options['query']) && is_array($options['query']) ? $options['query'] : [];
-    }
-
     protected function handleRequestException(RequestException $e, ApiRequest $apiRequest, array $options, array &$logData, float $startTime): ResponseInterface
     {
-        $this->captureFailedResponse($e, $logData);
-
         if ($this->shouldRetryRequest($e)) {
             return $this->retryRequest($apiRequest, $options, $logData, $startTime);
         }
 
-        $logData['completed_at'] = now();
-        $this->updateRequestLogData($logData);
+        $this->recordFailedRequest($e, $logData, $startTime);
         throw $e;
     }
 
@@ -333,12 +312,7 @@ abstract class BaseApiClient
 
             return $response;
         } catch (Throwable $retryException) {
-            if ($retryException instanceof RequestException) {
-                $this->captureFailedResponse($retryException, $logData);
-            }
-
-            $logData['completed_at'] = now();
-            $this->updateRequestLogData($logData);
+            $this->recordFailedRequest($retryException, $logData, $startTime);
             throw $retryException;
         }
     }
@@ -352,15 +326,44 @@ abstract class BaseApiClient
         return 5;
     }
 
-    private function captureFailedResponse(RequestException $exception, array &$logData): void
+    /** @return array<string, mixed> */
+    private function testingRequestBody(array $options): array
     {
-        $response = $exception->getResponse();
+        if (isset($options['json']) && is_array($options['json'])) {
+            return $options['json'];
+        }
+
+        if (isset($options['body']) && is_string($options['body'])) {
+            $decoded = json_decode($options['body'], associative: true, flags: JSON_THROW_ON_ERROR);
+
+            return is_array($decoded) ? $decoded : [];
+        }
+
+        return isset($options['query']) && is_array($options['query']) ? $options['query'] : [];
+    }
+
+    private function captureFailedResponse(Throwable $exception, array &$logData): void
+    {
+        $response = $exception instanceof RequestException
+            ? $exception->getResponse()
+            : null;
 
         $logData['http_response_code'] = $response?->getStatusCode();
         $logData['response'] = $response === null
             ? null
             : json_decode((string) $response->getBody(), associative: true);
         $logData['http_headers_returned'] = $response?->getHeaders();
+    }
+
+    private function recordFailedRequest(Throwable $exception, array &$logData, float $startTime): void
+    {
+        $this->captureFailedResponse($exception, $logData);
+
+        $logData['completed_at'] = now();
+        $logData['duration'] = max(0, (int) ((microtime(true) - $startTime) * 1000));
+        $logData['error_message'] = $exception->getMessage().' (line '.$exception->getLine().')';
+
+        $this->updateRequestLogData($logData);
     }
 
     private function throwForApiErrorResponse(ResponseInterface $response, ApiRequest $apiRequest): void

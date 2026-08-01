@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.96.2 - 2026-08-01
+
+### Safe transport recovery and complete API failure evidence
+
+- [FIXED] Read-only requests that lose their connection without an HTTP
+  response now enter the bounded step retry path. Mutating requests remain
+  failed so an exchange operation with an ambiguous outcome is never replayed
+  blindly.
+- [FIXED] Every final API failure records its error, completion time, duration,
+  and final response metadata when available. Successful internal retries do
+  not retain stale failure evidence.
+- [VERIFIED] Targeted transport and failure-ledger coverage passes: 20 tests
+  and 122 assertions, plus PHPStan and Pint.
+
 ## 1.96.1 - 2026-08-01
 
 ### Background notifications show an unread badge
