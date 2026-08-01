@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Throwable;
+use UnexpectedValueException;
 
 /**
  * BaseApiThrottler
@@ -79,7 +80,20 @@ abstract class BaseApiThrottler
 
         // Minimum delay between requests — sub-second precision preserved.
         if (isset($config['min_delay_between_requests_ms'])) {
-            $msToWait = static::checkMinimumDelay($prefix, $config['min_delay_between_requests_ms']);
+            try {
+                $msToWait = static::checkMinimumDelay($prefix, $config['min_delay_between_requests_ms']);
+            } catch (Throwable $exception) {
+                $cacheFailureBackoffMs = max(1, (int) ($config['cache_failure_backoff_ms'] ?? 30000));
+
+                Log::channel('jobs')->warning('[API-THROTTLER] minimum-delay cache failure — backing off', [
+                    'throttler' => static::class,
+                    'error' => $exception->getMessage(),
+                    'backoff_ms' => $cacheFailureBackoffMs,
+                ]);
+
+                return $cacheFailureBackoffMs;
+            }
+
             if ($msToWait > 0) {
                 return $msToWait;
             }
@@ -120,8 +134,8 @@ abstract class BaseApiThrottler
             return;
         }
 
-        // Update last dispatch timestamp
-        Cache::put($prefix.':last_dispatch', Carbon::now(), $config['window_seconds']);
+        // Update last dispatch timestamp.
+        Cache::put($prefix.':last_dispatch', static::currentTimeInMilliseconds(), $config['window_seconds']);
 
         // Increment counter for current window
         $windowKey = static::getCurrentWindowKey($prefix, $config['window_seconds']);
@@ -172,21 +186,47 @@ abstract class BaseApiThrottler
      */
     protected static function checkMinimumDelay(string $prefix, int $minDelayMs): int
     {
-        $lastDispatch = Cache::get($prefix.':last_dispatch');
+        $lastDispatchMs = static::lastDispatchMilliseconds($prefix);
 
-        if (! $lastDispatch) {
+        if ($lastDispatchMs === null) {
             return 0;
         }
 
-        // diffInMilliseconds returns a signed delta; abs() gives us
-        // "time since last dispatch" regardless of the sign convention.
-        $timeSinceLastMs = abs(Carbon::now()->diffInMilliseconds($lastDispatch, false));
+        $timeSinceLastMs = max(0, static::currentTimeInMilliseconds() - $lastDispatchMs);
 
         if ($timeSinceLastMs < $minDelayMs) {
             return $minDelayMs - (int) $timeSinceLastMs;
         }
 
         return 0;
+    }
+
+    protected static function lastDispatchMilliseconds(string $prefix): ?int
+    {
+        $lastDispatchMs = Cache::get($prefix.':last_dispatch');
+
+        if ($lastDispatchMs === null) {
+            return null;
+        }
+
+        if (is_int($lastDispatchMs)) {
+            return $lastDispatchMs;
+        }
+
+        if (is_string($lastDispatchMs) && ctype_digit($lastDispatchMs)) {
+            $normalizedTimestamp = filter_var($lastDispatchMs, FILTER_VALIDATE_INT);
+
+            if ($normalizedTimestamp !== false) {
+                return $normalizedTimestamp;
+            }
+        }
+
+        throw new UnexpectedValueException('API throttle dispatch timestamp must be an integer.');
+    }
+
+    protected static function currentTimeInMilliseconds(): int
+    {
+        return (int) round(Carbon::now()->getPreciseTimestamp(3));
     }
 
     /**
@@ -269,7 +309,7 @@ abstract class BaseApiThrottler
                     return static::millisecondsUntilWindowReset($windowSeconds);
                 }
 
-                if (! Cache::put($prefix.':last_dispatch', Carbon::now(), $windowSeconds)) {
+                if (! Cache::put($prefix.':last_dispatch', static::currentTimeInMilliseconds(), $windowSeconds)) {
                     throw new RuntimeException('Unable to persist API throttle dispatch timestamp.');
                 }
 
@@ -291,7 +331,7 @@ abstract class BaseApiThrottler
     protected static function millisecondsUntilWindowReset(int $windowSeconds): int
     {
         $windowSeconds = max(1, $windowSeconds);
-        $nowMs = (int) round(Carbon::now()->getPreciseTimestamp(3));
+        $nowMs = static::currentTimeInMilliseconds();
         $windowEndMs = ((int) floor($nowMs / ($windowSeconds * 1000)) + 1) * $windowSeconds * 1000;
 
         return max(1, $windowEndMs - $nowMs);

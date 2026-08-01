@@ -10,6 +10,7 @@ use Illuminate\Support\Sleep;
 use Illuminate\Support\Str;
 use Kraite\Core\Abstracts\BaseApiThrottler;
 use Kraite\Core\Exceptions\NonNotifiableException;
+use Kraite\Core\Models\Kraite;
 use Psr\Http\Message\ResponseInterface;
 use Throwable;
 
@@ -127,27 +128,23 @@ final class BinanceThrottler extends BaseApiThrottler
 
         if ($minDelayMs > 0) {
             try {
-                // Two possible sources for the "last request happened" stamp:
-                // `last_request` is a unix-seconds integer written by
-                // recordResponseHeaders (second-precision only), while
-                // `:last_dispatch` is a Carbon with millisecond precision
-                // written by the base-class canDispatch when it reserves a slot.
+                // Two possible sources for the last request timestamp:
+                // last_request is a unix-seconds integer written by
+                // recordResponseHeaders, while last_dispatch is an
+                // epoch-millisecond integer written by the base class.
                 // Prefer whichever is most recent.
                 $lastRequestTs = Cache::get("binance:{$ip}:last_request");
-                $lastDispatch = Cache::get($prefix.':last_dispatch');
+                $lastDispatchMs = self::lastDispatchMilliseconds($prefix);
 
-                $nowMs = (int) round(now()->getPreciseTimestamp(3));
+                $nowMs = self::currentTimeInMilliseconds();
                 $elapsedMs = PHP_INT_MAX;
 
                 if ($lastRequestTs) {
                     $elapsedMs = min($elapsedMs, ($nowMs / 1000 - (int) $lastRequestTs) * 1000);
                 }
 
-                if ($lastDispatch instanceof \Illuminate\Support\Carbon) {
-                    $elapsedMs = min(
-                        $elapsedMs,
-                        abs(now()->diffInMilliseconds($lastDispatch, false))
-                    );
+                if ($lastDispatchMs !== null) {
+                    $elapsedMs = min($elapsedMs, max(0, $nowMs - $lastDispatchMs));
                 }
 
                 if ($elapsedMs < $minDelayMs) {
@@ -458,7 +455,7 @@ final class BinanceThrottler extends BaseApiThrottler
      */
     protected static function getCurrentIp(): string
     {
-        return \Kraite\Core\Models\Kraite::ip();
+        return Kraite::ip();
     }
 
     /**

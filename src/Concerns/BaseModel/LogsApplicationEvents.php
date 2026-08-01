@@ -7,13 +7,11 @@ namespace Kraite\Core\Concerns\BaseModel;
 use Illuminate\Database\Eloquent\Model;
 use Kraite\Core\Models\AppLog;
 use Kraite\Core\Models\ModelLog;
-use Kraite\Core\Observers\ModelLogObserver;
 
 /**
  * Trait for model logging functionality on BaseModel.
  *
  * This trait provides:
- * - Automatic observer registration for ModelLogObserver
  * - Default blacklist for timestamp columns
  * - skipLogging() method for conditional filtering
  * - modelLog() method for technical audit logging
@@ -21,14 +19,6 @@ use Kraite\Core\Observers\ModelLogObserver;
  */
 trait LogsApplicationEvents
 {
-    /**
-     * Boot the LogsApplicationEvents trait for a model.
-     * Registers ModelLogObserver for automatic change tracking.
-     */
-    protected static function bootLogsApplicationEvents(): void
-    {
-        static::observe(ModelLogObserver::class);
-    }
     /**
      * Default blacklist - skip timestamp columns by default for model logging.
      */

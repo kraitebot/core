@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.98.0 - 2026-08-01
+
+### Laravel 13 runtime and safer close outcomes
+
+- [ADDED] A WAP-completed position emits one close notification. The existing
+  high-profit close remains the single specialized variant when its filled-limit
+  threshold applies, preventing duplicate trader alerts.
+- [FIXED] API minimum-delay timestamps are stored as epoch milliseconds, remain
+  safe with Laravel 13's non-serializing cache path, and fail closed when cache
+  state is malformed or ahead of the current clock.
+- [FIXED] Model audit observers are inherited from the shared base model under
+  Laravel 13, preserving account and position change history.
+- [DEPENDENCIES] Supports Laravel 13, Pushover 5, and current model states.
+
 ## 1.97.0 - 2026-08-01
 
 ### Selective BSCS score alerts for the trader app

@@ -73,7 +73,7 @@ trait HasGetters
      * Total filled (not partially filled!) LIMIT orders on the same side.
      * Safe: returns integer count (>= 0).
      */
-    public function totalLimitOrdersFilled()
+    public function totalLimitOrdersFilled(): int
     {
         return $this->orders()
             ->where('orders.type', 'LIMIT')

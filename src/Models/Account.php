@@ -38,6 +38,7 @@ use Kraite\Core\Database\Factories\AccountFactory;
  * @property bool|null $use_btc_bias_restriction
  * @property int $position_leverage_long
  * @property int $position_leverage_short
+ * @property int $total_limit_orders_filled_to_notify
  * @property string $margin_mode
  * @property string $margin_percentage_long
  * @property string $margin_percentage_short

@@ -962,7 +962,7 @@ final class KraiteSeeder extends Seeder
             [
                 'canonical' => 'position_closed',
                 'title' => 'Position Closed',
-                'description' => 'Emitted when a position transitions to closed — via organic TP/SL fill, manual close, or workflow close.',
+                'description' => 'Emitted when a WAP\'ed position transitions to closed, unless the more specific high-profit close notification applies.',
                 'usage_reference' => 'Jobs/Atomic/Position/UpdateRemainingClosingDataJob',
                 'default_severity' => 'info',
                 'verified' => 1,

@@ -7,6 +7,7 @@ namespace Kraite\Core\Support\Throttlers;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Kraite\Core\Abstracts\BaseApiThrottler;
+use Kraite\Core\Models\Kraite;
 use Psr\Http\Message\ResponseInterface;
 use Throwable;
 
@@ -59,25 +60,30 @@ final class KucoinThrottler extends BaseApiThrottler
         $minDelayMs = (int) config('kraite.throttlers.kucoin.min_delay_ms', 0);
 
         if ($minDelayMs > 0) {
-            $lastRequestTs = Cache::get("kucoin:{$ip}:last_request");
-            $lastDispatch = Cache::get($prefix.':last_dispatch');
+            try {
+                $lastRequestTs = Cache::get("kucoin:{$ip}:last_request");
+                $lastDispatchMs = self::lastDispatchMilliseconds($prefix);
 
-            $nowMs = (int) round(now()->getPreciseTimestamp(3));
-            $elapsedMs = PHP_INT_MAX;
+                $nowMs = self::currentTimeInMilliseconds();
+                $elapsedMs = PHP_INT_MAX;
 
-            if ($lastRequestTs) {
-                $elapsedMs = min($elapsedMs, ($nowMs / 1000 - (int) $lastRequestTs) * 1000);
-            }
+                if ($lastRequestTs) {
+                    $elapsedMs = min($elapsedMs, ($nowMs / 1000 - (int) $lastRequestTs) * 1000);
+                }
 
-            if ($lastDispatch instanceof \Illuminate\Support\Carbon) {
-                $elapsedMs = min(
-                    $elapsedMs,
-                    abs(now()->diffInMilliseconds($lastDispatch, false))
-                );
-            }
+                if ($lastDispatchMs !== null) {
+                    $elapsedMs = min($elapsedMs, max(0, $nowMs - $lastDispatchMs));
+                }
 
-            if ($elapsedMs < $minDelayMs) {
-                return $minDelayMs - (int) $elapsedMs;
+                if ($elapsedMs < $minDelayMs) {
+                    return $minDelayMs - (int) $elapsedMs;
+                }
+            } catch (Throwable $exception) {
+                Log::channel('jobs')->warning('[KucoinThrottler] minimum-delay cache failure — failing closed', [
+                    'error' => $exception->getMessage(),
+                ]);
+
+                return 30000;
             }
         }
 
@@ -202,6 +208,6 @@ final class KucoinThrottler extends BaseApiThrottler
      */
     protected static function getCurrentIp(): string
     {
-        return \Kraite\Core\Models\Kraite::ip();
+        return Kraite::ip();
     }
 }

@@ -24,6 +24,7 @@ use Kraite\Core\Database\Factories\PositionFactory;
  * @property string $direction
  * @property string|null $max_pain
  * @property int $total_limit_orders
+ * @property bool $was_waped
  * @property Account $account
  * @property ExchangeSymbol $exchangeSymbol
  * @property-read Collection<int, Order> $orders
