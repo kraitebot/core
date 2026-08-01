@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.98.1 - 2026-08-01
+
+### Token-accurate trader notification values
+
+- [FIXED] WAP and WAP-position close notifications format prices and quantities
+  with each exchange symbol's configured precision and tick size, preventing
+  floating-point artifacts in iPhone, mail, Pushover, and Telegram messages.
+
 ## 1.98.0 - 2026-08-01
 
 ### Laravel 13 runtime and safer close outcomes

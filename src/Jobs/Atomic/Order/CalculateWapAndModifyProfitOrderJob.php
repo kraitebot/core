@@ -490,6 +490,8 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
             return;
         }
 
+        $exchangeSymbol = $this->position->exchangeSymbol;
+
         NotificationService::send(
             user: $user,
             canonical: 'position_wap_applied',
@@ -498,11 +500,13 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
                 'pair' => $this->position->parsed_trading_pair,
                 'direction' => mb_strtoupper((string) $this->position->direction),
                 'position_id' => (int) $this->position->id,
-                'old_tp_price' => $oldTpPrice,
-                'new_tp_price' => (string) $this->profitOrder->price,
-                'old_tp_quantity' => $oldTpQuantity,
-                'new_tp_quantity' => (string) $this->profitOrder->quantity,
-                'break_even_price' => $this->breakEvenPrice,
+                'old_tp_price' => api_format_price($oldTpPrice, $exchangeSymbol),
+                'new_tp_price' => api_format_price((string) $this->profitOrder->price, $exchangeSymbol),
+                'old_tp_quantity' => api_format_quantity($oldTpQuantity, $exchangeSymbol),
+                'new_tp_quantity' => api_format_quantity((string) $this->profitOrder->quantity, $exchangeSymbol),
+                'break_even_price' => $this->breakEvenPrice === null
+                    ? null
+                    : api_format_price($this->breakEvenPrice, $exchangeSymbol),
             ],
             relatable: $this->position,
             cacheKeys: ['position' => $this->position->id],

@@ -251,7 +251,9 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
                 'direction' => mb_strtoupper((string) $position->direction),
                 'position_id' => (int) $position->id,
                 'account_name' => $position->account?->name,
-                'closing_price' => $closingPrice,
+                'closing_price' => $closingPrice === null
+                    ? null
+                    : api_format_price($closingPrice, $position->exchangeSymbol),
                 'filled_limits' => $filledLimitCount,
                 'was_fast_traded' => $wasFastTraded,
             ],
@@ -285,7 +287,9 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
                 'pair' => $position->parsed_trading_pair,
                 'direction' => mb_strtoupper((string) $position->direction),
                 'position_id' => (int) $position->id,
-                'closing_price' => $closingPrice,
+                'closing_price' => $closingPrice === null
+                    ? null
+                    : api_format_price($closingPrice, $position->exchangeSymbol),
                 'filled_limits' => $filledLimitCount,
             ],
             relatable: $position,
