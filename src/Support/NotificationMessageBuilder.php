@@ -923,6 +923,47 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'market_regime_score_changed' => (function () use ($context) {
+                $previousScoreValue = $context['previous_score'] ?? 0;
+                $scoreValue = $context['score'] ?? 0;
+                $transitionValue = $context['transition'] ?? '';
+                $previousScore = is_numeric($previousScoreValue)
+                    ? max(0, min(100, (int) $previousScoreValue))
+                    : 0;
+                $score = is_numeric($scoreValue)
+                    ? max(0, min(100, (int) $scoreValue))
+                    : 0;
+                $transition = is_string($transitionValue) ? $transitionValue : '';
+
+                return match ($transition) {
+                    'activated' => [
+                        'severity' => NotificationSeverity::Info,
+                        'title' => "BSCS active — {$score}/100",
+                        'emailMessage' => "Black Swan Composite Score moved from 0 to {$score}/100. One or more warning signals are now active. This score change alone does not mean new position openings are paused; a separate breaker notification confirms any trading pause.",
+                        'pushoverMessage' => "BSCS moved 0 → {$score}/100 — warning signals active",
+                        'actionUrl' => null,
+                        'actionLabel' => null,
+                    ],
+                    'maximum' => [
+                        'severity' => NotificationSeverity::High,
+                        'title' => 'BSCS maximum — 100/100',
+                        'emailMessage' => 'Black Swan Composite Score reached 100/100. All five warning signals are active. Trading-pause state is reported separately by the BSCS breaker notification.',
+                        'pushoverMessage' => 'BSCS reached 100/100 — all warning signals active',
+                        'actionUrl' => null,
+                        'actionLabel' => null,
+                    ],
+                    'cleared' => [
+                        'severity' => NotificationSeverity::Info,
+                        'title' => 'BSCS cleared — 0/100',
+                        'emailMessage' => "Black Swan Composite Score returned from {$previousScore}/100 to 0. All BSCS warning signals are clear. An active trading cooldown is not released early; a separate recovery notification confirms when new openings resume.",
+                        'pushoverMessage' => "BSCS returned {$previousScore} → 0/100 — warning signals clear",
+                        'actionUrl' => null,
+                        'actionLabel' => null,
+                    ],
+                    default => throw new InvalidArgumentException("Unknown BSCS score transition: {$transition}"),
+                };
+            })(),
+
             'market_regime_recovered' => (function () use ($context) {
                 $score = (int) ($context['score'] ?? 0);
 

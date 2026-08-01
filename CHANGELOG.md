@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.97.0 - 2026-08-01
+
+### Selective BSCS score alerts for the trader app
+
+- [ADDED] The trader receives an app-only BSCS event when the score leaves
+  zero, reaches `100`, or returns from a non-zero value to zero. Intermediate
+  non-zero changes and repeated boundary readings stay silent.
+- [PRESERVED] Trading-breaker alerts remain independent. Crossing the
+  configured pause threshold still notifies even when neither score is zero
+  nor `100`, and a zero score never claims an active cooldown has ended.
+- [VERIFIED] Market-regime and app-push coverage passes: 56 tests and 144
+  assertions, plus Pint and PHP syntax checks.
+
 ## 1.96.2 - 2026-08-01
 
 ### Safe transport recovery and complete API failure evidence

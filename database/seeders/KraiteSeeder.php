@@ -877,6 +877,15 @@ final class KraiteSeeder extends Seeder
                 'cache_key' => ['account_id', 'api_system'],
             ],
             [
+                'canonical' => 'market_regime_score_changed',
+                'title' => 'BSCS score state changed',
+                'description' => 'BSCS left zero, reached 100, or returned to zero.',
+                'usage_reference' => 'ComputeMarketRegimeJob',
+                'default_severity' => 'info',
+                'verified' => 1,
+                'cache_duration' => 0,
+            ],
+            [
                 'canonical' => 'market_regime_critical',
                 'title' => 'BSCS Critical — opens paused',
                 'description' => 'BSCS crossed the cooldown threshold and paused new position openings.',
