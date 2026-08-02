@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.99.1 - 2026-08-02
+
+### Fresh market data and corrected CHOP payloads
+
+- [FIXED] CHOP conclusions now evaluate the latest value when TAAPI returns
+  its production array payload.
+- [FIXED] Direction conclusions reject stale and still-open market candles,
+  clear invalid direction state, and return an inconclusive retry result
+  without sending notifications.
+
 ## 1.98.1 - 2026-08-01
 
 ### Token-accurate trader notification values

@@ -164,6 +164,12 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
             ];
         }
 
+        $marketDataFreshness = $this->marketDataFreshness($indicatorData, $this->timeframe);
+
+        if (! $marketDataFreshness['is_fresh']) {
+            return $this->handleStaleIndicatorData($exchangeSymbol, $marketDataFreshness);
+        }
+
         // Check if we're concluding on the same data we already have
         if ($this->isSameIndicatorData($exchangeSymbol, $indicatorData, $this->timeframe)) {
             // Stamp the attempt time even though no fresh indicator data
@@ -575,6 +581,126 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
         }
 
         return implode(separator: ' -> ', array: $path);
+    }
+
+    /**
+     * @param  array<string, array{result: mixed}>  $indicatorData
+     * @return array{is_fresh: bool, latest_timestamp: int|null, minimum_timestamp: int|null}
+     */
+    private function marketDataFreshness(array $indicatorData, string $timeframe): array
+    {
+        $rawTimestamps = $indicatorData['candle-comparison']['result']['timestamp'] ?? null;
+        $latestTimestamp = $this->latestMarketTimestamp($rawTimestamps);
+        $intervalSeconds = $this->timeframeSeconds($timeframe);
+
+        if ($intervalSeconds === null) {
+            return [
+                'is_fresh' => true,
+                'latest_timestamp' => $latestTimestamp,
+                'minimum_timestamp' => null,
+            ];
+        }
+
+        if ($latestTimestamp === null) {
+            return [
+                'is_fresh' => false,
+                'latest_timestamp' => null,
+                'minimum_timestamp' => null,
+            ];
+        }
+
+        $currentTimestamp = now()->timestamp;
+        $currentCandleTimestamp = intdiv($currentTimestamp, $intervalSeconds) * $intervalSeconds;
+        $minimumTimestamp = $currentCandleTimestamp - $intervalSeconds;
+
+        return [
+            'is_fresh' => $latestTimestamp >= $minimumTimestamp && $latestTimestamp < $currentCandleTimestamp,
+            'latest_timestamp' => $latestTimestamp,
+            'minimum_timestamp' => $minimumTimestamp,
+        ];
+    }
+
+    private function latestMarketTimestamp(mixed $rawTimestamps): ?int
+    {
+        $values = is_array($rawTimestamps) ? $rawTimestamps : [$rawTimestamps];
+        $timestamps = [];
+
+        foreach ($values as $value) {
+            if (! is_numeric($value)) {
+                continue;
+            }
+
+            $timestamp = (int) $value;
+
+            if ($timestamp >= 1_000_000_000_000_000) {
+                $timestamp = intdiv($timestamp, 1_000_000);
+            } elseif ($timestamp >= 1_000_000_000_000) {
+                $timestamp = intdiv($timestamp, 1000);
+            }
+
+            if ($timestamp > 0) {
+                $timestamps[] = $timestamp;
+            }
+        }
+
+        return $timestamps === [] ? null : max($timestamps);
+    }
+
+    private function timeframeSeconds(string $timeframe): ?int
+    {
+        if (preg_match('/^(\d+)([smhdw])$/i', $timeframe, $matches) !== 1) {
+            return null;
+        }
+
+        $quantity = (int) $matches[1];
+
+        if ($quantity < 1) {
+            return null;
+        }
+
+        $unitSeconds = match (mb_strtolower($matches[2])) {
+            's' => 1,
+            'm' => 60,
+            'h' => 3600,
+            'd' => 86_400,
+            'w' => 604_800,
+        };
+
+        return $quantity * $unitSeconds;
+    }
+
+    /**
+     * @param  array{is_fresh: bool, latest_timestamp: int|null, minimum_timestamp: int|null}  $freshness
+     */
+    private function handleStaleIndicatorData(ExchangeSymbol $exchangeSymbol, array $freshness): array
+    {
+        $exchangeSymbol->updateSaving([
+            'direction' => null,
+            'indicators_values' => null,
+            'indicators_timeframe' => null,
+            'indicators_synced_at' => now(),
+            'has_invalid_indicator_direction' => true,
+            'pivot_r3' => null,
+            'pivot_r2' => null,
+            'pivot_r1' => null,
+            'pivot_p' => null,
+            'pivot_s1' => null,
+            'pivot_s2' => null,
+            'pivot_s3' => null,
+            'pivot_synced_at' => null,
+        ]);
+
+        $response = [
+            'result' => 'inconclusive',
+            'reason' => 'stale_indicator_data',
+            'timeframe' => $this->timeframe,
+            'latest_market_timestamp' => $freshness['latest_timestamp'],
+            'minimum_market_timestamp' => $freshness['minimum_timestamp'],
+            'retry' => 'next_refresh_cycle',
+        ];
+        $this->step->update(['response' => $response]);
+
+        return $response;
     }
 
     /**

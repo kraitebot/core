@@ -50,6 +50,10 @@ final class ChoppinessIndexIndicator extends BaseIndicator implements Validation
     {
         $value = $this->data['value'] ?? null;
 
+        if (is_array($value)) {
+            $value = $value === [] ? null : $value[array_key_last($value)];
+        }
+
         // Missing / non-numeric payload → permissive pass. We don't want
         // a TAAPI hiccup on the chop endpoint to suppress otherwise
         // healthy direction conclusions. The direction vote downstream
