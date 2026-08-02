@@ -30,6 +30,7 @@ final class AppPushDeviceFactory extends Factory
             'platform' => 'ios',
             'device_name' => 'Kraite iPhone',
             'app_version' => '0.9.0',
+            'unread_count' => 0,
             'last_registered_at' => now(),
             'disabled_at' => null,
         ];

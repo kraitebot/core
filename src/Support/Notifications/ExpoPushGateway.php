@@ -40,6 +40,7 @@ final class ExpoPushGateway
                 ->map(static fn (AppPushDevice $device): array => [
                     ...$message,
                     'to' => $device->expo_push_token,
+                    'badge' => $device->incrementUnreadCount(),
                 ])
                 ->values()
                 ->all();

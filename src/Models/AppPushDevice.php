@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Kraite\Core\Database\Factories\AppPushDeviceFactory;
 
 /**
@@ -19,6 +20,7 @@ use Kraite\Core\Database\Factories\AppPushDeviceFactory;
  * @property string $platform
  * @property string $device_name
  * @property string|null $app_version
+ * @property int $unread_count
  * @property Carbon $last_registered_at
  * @property Carbon|null $disabled_at
  * @property-read User|null $user
@@ -35,6 +37,7 @@ final class AppPushDevice extends Model
         'platform',
         'device_name',
         'app_version',
+        'unread_count',
         'last_registered_at',
         'disabled_at',
     ];
@@ -63,6 +66,16 @@ final class AppPushDevice extends Model
             ->whereNull('disabled_at');
     }
 
+    public function incrementUnreadCount(): int
+    {
+        return DB::transaction(function (): int {
+            $device = self::query()->whereKey($this->getKey())->lockForUpdate()->firstOrFail();
+            $device->increment('unread_count');
+
+            return (int) $device->unread_count;
+        });
+    }
+
     protected static function newFactory(): AppPushDeviceFactory
     {
         return AppPushDeviceFactory::new();
@@ -72,6 +85,7 @@ final class AppPushDevice extends Model
     {
         return [
             'expo_push_token' => 'encrypted',
+            'unread_count' => 'integer',
             'last_registered_at' => 'datetime',
             'disabled_at' => 'datetime',
         ];
