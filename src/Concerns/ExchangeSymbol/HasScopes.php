@@ -65,6 +65,7 @@ trait HasScopes
         return $query
             ->onActiveApiSystem()
             ->notRenamed()
+            ->notDelisted()
             ->where('exchange_symbols.api_statuses->has_taapi_data', true)
             ->whereHas('apiSystem', static function ($q) {
                 $q->canonical('binance');
