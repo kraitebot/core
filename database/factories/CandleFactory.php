@@ -9,7 +9,7 @@ use Kraite\Core\Models\Candle;
 use Kraite\Core\Models\ExchangeSymbol;
 
 /**
- * @extends \Illuminate\Database\Eloquent\Factories\Factory<\Kraite\Core\Models\Candle>
+ * @extends Factory<Candle>
  */
 final class CandleFactory extends Factory
 {
@@ -24,7 +24,7 @@ final class CandleFactory extends Factory
 
         return [
             'exchange_symbol_id' => ExchangeSymbol::factory(),
-            'timeframe' => fake()->randomElement(['1h', '4h', '6h', '12h', '1d']),
+            'timeframe' => fake()->randomElement(['1h', '4h', '1d']),
             'timestamp' => $timestamp,
             'candle_time_utc' => date('Y-m-d H:i:s', $timestamp),
             'candle_time_local' => date('Y-m-d H:i:s', $timestamp),

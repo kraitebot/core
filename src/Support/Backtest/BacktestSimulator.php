@@ -83,7 +83,7 @@ final class BacktestSimulator
      * Simulate the ladder against historical candles for one symbol.
      *
      * @param  ExchangeSymbol  $symbol  Symbol to test (candles looked up by symbol + timeframe).
-     * @param  string  $timeframe  Candle timeframe: 1h / 4h / 12h.
+     * @param  string  $timeframe  Candle timeframe: 1h / 4h / 1d.
      * @param  string  $margin  Quote margin per virtual position.
      * @param  int  $leverage  Used for market sizing only.
      * @param  int  $totalLimitOrders  Ladder depth N.

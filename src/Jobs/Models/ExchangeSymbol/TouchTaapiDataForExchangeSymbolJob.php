@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Models\ExchangeSymbol;
 
-use GuzzleHttp\Exception\RequestException;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Account;
@@ -12,6 +11,7 @@ use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\TokenMapper;
 use Kraite\Core\Support\ApiDataMappers\Taapi\TaapiApiDataMapper;
+use Kraite\Core\Support\TaapiNoDataException;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
 use Psr\Http\Message\ResponseInterface;
 use SensitiveParameter;
@@ -65,40 +65,7 @@ final class TouchTaapiDataForExchangeSymbolJob extends BaseApiableJob
      */
     public function ignoreException(Throwable $e): bool
     {
-        // Only handle HTTP 400/404 from TAAPI
-        if (! $e instanceof RequestException) {
-            return false;
-        }
-
-        $response = $e->getResponse();
-
-        if ($response === null) {
-            return false;
-        }
-
-        if (! in_array($response->getStatusCode(), [400, 404], true)) {
-            return false;
-        }
-
-        // Only ignore specific "no data" patterns - anything else should fail
-        $body = mb_strtolower((string) $response->getBody());
-        $noDataPatterns = [
-            'invalid symbol',
-            'no candles',
-            'no candle data',
-        ];
-
-        $isNoDataError = false;
-        foreach ($noDataPatterns as $pattern) {
-            if (! (str_contains(haystack: $body, needle: $pattern))) {
-                continue;
-            }
-
-            $isNoDataError = true;
-            break;
-        }
-
-        if (! $isNoDataError) {
+        if (! TaapiNoDataException::matches($e)) {
             return false;
         }
 

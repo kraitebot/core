@@ -912,7 +912,7 @@ return [
         // next :50 tick. When any rule fires, arms the SHARED
         // `bscs_cooldown_until` column for `cooldown_hours` (default
         // 1h — a short pause to ride out an in-progress cascade, then
-        // resume; the slow BSCS-score cooldown below defaults to 12h
+        // resume; the slow BSCS-score cooldown below defaults to 4h
         // and is runtime-overridable via kraite.bscs_cooldown_hours).
         // Notification: `market_shock_circuit_breaker` — fires once per
         // fresh arming, silent re-arm while a cooldown is already active

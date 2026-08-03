@@ -42,15 +42,24 @@ final class ConfirmPriceAlignmentWithDirectionJob extends BaseQueueableJob
             throw new Exception('Indicator "candle-comparison" not found');
         }
 
-        // Fetch the most recent indicator history for this symbol
-        $history = IndicatorHistory::query()
-            ->where('exchange_symbol_id', $this->exchangeSymbol->id)
-            ->where('indicator_id', $indicator->id)
-            ->where('timeframe', $this->exchangeSymbol->indicators_timeframe)
-            ->latest('timestamp')
-            ->first();
+        // The conclusion snapshot is authoritative. A later history can come
+        // from a different provider/run and must not replace the candle that
+        // actually produced the stored direction.
+        $data = $this->exchangeSymbol->indicators_values['candle-comparison']['result'] ?? null;
 
-        if (! $history) {
+        if (! is_array($data)) {
+            // Backward compatibility for directions concluded before the
+            // snapshot was persisted on exchange_symbols.
+            $history = IndicatorHistory::query()
+                ->where('exchange_symbol_id', $this->exchangeSymbol->id)
+                ->where('indicator_id', $indicator->id)
+                ->where('timeframe', $this->exchangeSymbol->indicators_timeframe)
+                ->latest('timestamp')
+                ->first(['data']);
+            $data = $history?->data;
+        }
+
+        if (! is_array($data)) {
             $this->exchangeSymbol->updateSaving([
                 'direction' => null,
                 'indicators_values' => null,
@@ -73,9 +82,6 @@ final class ConfirmPriceAlignmentWithDirectionJob extends BaseQueueableJob
 
             return ['response' => "Price alignment for {$this->exchangeSymbol->parsed_trading_pair} REMOVED due to missing indicator history"];
         }
-
-        // Extract data from stored JSON
-        $data = $history->data;
 
         // Compare current candle's open vs close to determine if price movement aligns with direction
         // This is more reliable than comparing previous close vs current close because:

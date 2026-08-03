@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace Kraite\Core\Abstracts;
 
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Psr7\Request;
+use Illuminate\Http\Client\ConnectionException as LaravelConnectionException;
+use Illuminate\Http\Client\RequestException as LaravelRequestException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Sleep;
 use Kraite\Core\Models\ApiRequestLog;
@@ -253,27 +256,38 @@ abstract class BaseApiClient
         if (app()->environment('testing')) {
             $url = mb_rtrim($this->baseURL, '/').'/'.mb_ltrim($path, '/');
             $headers = $options['headers'] ?? [];
+            $psrRequest = new Request($method, $url, $headers);
 
-            if ($method === 'GET') {
-                $request = Http::withHeaders($headers);
-                $query = $options['query'] ?? null;
+            try {
+                if ($method === 'GET') {
+                    $request = Http::withHeaders($headers);
+                    $query = $options['query'] ?? null;
 
-                return ($query === null ? $request->get($url) : $request->get($url, $query))
-                    ->throw()
-                    ->toPsrResponse();
-            }
-            if ($method === 'POST') {
-                $body = $this->testingRequestBody($options);
+                    return ($query === null ? $request->get($url) : $request->get($url, $query))
+                        ->throw()
+                        ->toPsrResponse();
+                }
+                if ($method === 'POST') {
+                    $body = $this->testingRequestBody($options);
 
-                return Http::withHeaders($headers)->post($url, $body)->throw()->toPsrResponse();
-            }
-            if ($method === 'PUT') {
-                $body = $this->testingRequestBody($options);
+                    return Http::withHeaders($headers)->post($url, $body)->throw()->toPsrResponse();
+                }
+                if ($method === 'PUT') {
+                    $body = $this->testingRequestBody($options);
 
-                return Http::withHeaders($headers)->put($url, $body)->throw()->toPsrResponse();
-            }
-            if ($method === 'DELETE') {
-                return Http::withHeaders($headers)->delete($url, $this->testingRequestBody($options))->throw()->toPsrResponse();
+                    return Http::withHeaders($headers)->put($url, $body)->throw()->toPsrResponse();
+                }
+                if ($method === 'DELETE') {
+                    return Http::withHeaders($headers)->delete($url, $this->testingRequestBody($options))->throw()->toPsrResponse();
+                }
+            } catch (LaravelRequestException $exception) {
+                throw RequestException::create(
+                    $psrRequest,
+                    $exception->response->toPsrResponse(),
+                    $exception,
+                );
+            } catch (LaravelConnectionException $exception) {
+                throw new ConnectException($exception->getMessage(), $psrRequest, $exception);
             }
         }
 

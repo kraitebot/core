@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.100.0 - 2026-08-03
+
+### Fresh Futures-first indicator conclusions
+
+- [ADDED] Indicator queries keep fresh Binance Futures results authoritative
+  and retry missing or stale values from Binance Spot using the symbol's
+  canonical spot pair and contract multiplier.
+- [FIXED] Conclusions remain inconclusive and silent when both providers are
+  stale or empty, while real provider failures continue through retry handling.
+- [CHANGED] Indicator histories retain one run identifier and source per
+  conclusion, preventing partial responses from mixing across runs.
+- [CHANGED] The active timeframe ladder is now `1h → 4h → 1d`; the forward
+  migration clears obsolete `12h` conclusions before the next evaluation.
+
 ## 1.99.1 - 2026-08-02
 
 ### Fresh market data and corrected CHOP payloads

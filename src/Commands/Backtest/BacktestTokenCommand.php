@@ -38,7 +38,7 @@ final class BacktestTokenCommand extends BaseCommand
                             {--exchange=binance : Exchange canonical when selecting by token}
                             {--quote=USDT : Quote currency when selecting by token}
                             {--account_id=1 : Account id for default TP / SL / leverage pull}
-                            {--timeframe=1h : Candle timeframe (1h / 4h / 12h)}
+                            {--timeframe=1h : Candle timeframe (1h / 4h / 1d)}
                             {--margin=100 : Quote-currency margin for the virtual position}
                             {--leverage= : Override leverage (defaults to account position_leverage_long)}
                             {--total_limit_orders= : Override N (defaults to symbol total_limit_orders or 4)}

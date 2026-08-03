@@ -550,7 +550,7 @@ final class KraiteSeeder extends Seeder
                 'admin_pushover_user_key' => config('kraite.admin_user_pushover_user_key'),
                 'admin_telegram_chat_id' => config('kraite.admin_user_telegram_chat_id'),
                 'email' => config('kraite.admin_user_email'),
-                'timeframes' => ['1h', '4h', '12h', '1d'],
+                'timeframes' => ['1h', '4h', '1d'],
             ]
         );
     }

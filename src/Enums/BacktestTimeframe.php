@@ -8,7 +8,6 @@ enum BacktestTimeframe: string
 {
     case OneHour = '1h';
     case FourHours = '4h';
-    case TwelveHours = '12h';
     case OneDay = '1d';
 
     /** @return list<string> */
@@ -25,7 +24,6 @@ enum BacktestTimeframe: string
         return match ($this) {
             self::OneHour => 3_600,
             self::FourHours => 14_400,
-            self::TwelveHours => 43_200,
             self::OneDay => 86_400,
         };
     }

@@ -18,6 +18,7 @@ use Kraite\Core\Models\Indicator;
 use Kraite\Core\Models\IndicatorHistory;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\TradeConfiguration;
+use Kraite\Core\Support\TaapiMarketDataFreshness;
 use StepDispatcher\Models\Step;
 
 /**
@@ -72,83 +73,109 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
             return $response;
         }
 
-        // Query indicator_histories for this symbol + current timeframe
-        // Get the latest timestamp for each indicator at this timeframe
-        $latestPerIndicator = IndicatorHistory::query()
-            ->join('indicators', 'indicator_histories.indicator_id', '=', 'indicators.id')
-            ->where('indicator_histories.exchange_symbol_id', $exchangeSymbol->id)
-            ->where('indicator_histories.timeframe', $this->timeframe)
-            ->where('indicators.type', 'conclude-indicators')
-            ->where('indicators.is_active', 1)
-            ->selectRaw('indicator_histories.indicator_id, MAX(indicator_histories.timestamp) as max_timestamp')
-            ->groupBy('indicator_histories.indicator_id')
-            ->get();
-
-        if ($latestPerIndicator->isEmpty()) {
-            // No indicator data found - this shouldn't happen if QuerySymbolIndicatorsJob ran properly
+        if (! in_array($this->timeframe, $allTimeframes, true)) {
             $response = [
                 'result' => 'error',
-                'message' => "No indicator data found for timeframe {$this->timeframe}",
+                'message' => "Invalid timeframe: {$this->timeframe}",
             ];
             $this->step->update(['response' => $response]);
 
             return $response;
         }
 
-        // Check if we have data for all expected indicators
         $expectedIndicatorCount = Indicator::query()
             ->active()
             ->concluding()
             ->count();
+        $queryRunResponse = $this->queryRunResponse();
 
-        if ($latestPerIndicator->count() < $expectedIndicatorCount) {
-            // Missing some indicator data - treat as inconclusive
-            return $this->handleInconclusiveTimeframe($exchangeSymbol, $allTimeframes);
+        if (($queryRunResponse['status'] ?? null) === 'unavailable') {
+            return $this->handleStaleIndicatorData(
+                $exchangeSymbol,
+                $this->unavailableQueryFreshness($queryRunResponse),
+            );
         }
 
-        // Same-run provenance gate. indicator_histories.timestamp is the
-        // wall-clock WRITE time, and one query run upserts every indicator
-        // within seconds. If a run only refreshed SOME constructs (a partial
-        // TAAPI bulk response — construct-level errors on a 200), MAX() per
-        // indicator returns this run's fresh rows alongside a previous run's
-        // stale rows (roughly a full timeframe apart). The count check above
-        // only proves every indicator has SOME row, not that they came from
-        // one run — so without this gate a direction could be concluded from
-        // mixed-hour data and stamped current, driving position opening on a
-        // signal that never existed at any single point in time. If the
-        // spread between the oldest and newest "latest" timestamp exceeds the
-        // tolerance, the set is not from one run → inconclusive, retry next
-        // cycle. Same-run spread is a few seconds; a cross-run straggler is
-        // ~one timeframe behind, so the two never blur.
-        $timestamps = $latestPerIndicator
-            ->pluck('max_timestamp')
-            ->map(static fn ($value): int => (int) $value)
-            ->filter(static fn (int $value): bool => $value > 0);
+        $rawRunIdentifier = $queryRunResponse['run_id'] ?? $queryRunResponse['run_timestamp'] ?? null;
+        $queryRunIdentifier = ($queryRunResponse['status'] ?? null) === 'fresh'
+            && (is_string($rawRunIdentifier) || is_int($rawRunIdentifier))
+            && (string) $rawRunIdentifier !== ''
+                ? (string) $rawRunIdentifier
+                : null;
 
-        $maxSpreadSeconds = (int) config('kraite.indicators.max_run_spread_seconds', 300);
-
-        if ($timestamps->isNotEmpty() && ($timestamps->max() - $timestamps->min()) > $maxSpreadSeconds) {
-            // Mixed-run indicator set — do not conclude on partial-refresh data.
-            return $this->handleInconclusiveTimeframe($exchangeSymbol, $allTimeframes);
-        }
-
-        // Now get the actual records at those timestamps
-        $histories = collect();
-        foreach ($latestPerIndicator as $item) {
-            $record = IndicatorHistory::query()
+        if ($queryRunIdentifier !== null) {
+            $histories = IndicatorHistory::query()
                 ->join('indicators', 'indicator_histories.indicator_id', '=', 'indicators.id')
                 ->where('indicator_histories.exchange_symbol_id', $exchangeSymbol->id)
                 ->where('indicator_histories.timeframe', $this->timeframe)
-                ->where('indicator_histories.indicator_id', $item->indicator_id)
-                ->where('indicator_histories.timestamp', $item->max_timestamp)
+                ->where('indicator_histories.timestamp', $queryRunIdentifier)
                 ->where('indicators.type', 'conclude-indicators')
                 ->where('indicators.is_active', 1)
                 ->with('indicator')
                 ->select('indicator_histories.*')
-                ->first();
+                ->get();
 
-            if ($record) {
-                $histories->push($record);
+            if ($histories->count() !== $expectedIndicatorCount) {
+                return $this->handleStaleIndicatorData(
+                    $exchangeSymbol,
+                    $this->unavailableQueryFreshness($queryRunResponse),
+                );
+            }
+        } else {
+            // Backward compatibility for workflows created before query runs
+            // started publishing their exact shared run timestamp.
+            $latestPerIndicator = IndicatorHistory::query()
+                ->join('indicators', 'indicator_histories.indicator_id', '=', 'indicators.id')
+                ->where('indicator_histories.exchange_symbol_id', $exchangeSymbol->id)
+                ->where('indicator_histories.timeframe', $this->timeframe)
+                ->where('indicators.type', 'conclude-indicators')
+                ->where('indicators.is_active', 1)
+                ->selectRaw('indicator_histories.indicator_id, MAX(indicator_histories.timestamp) as max_timestamp')
+                ->groupBy('indicator_histories.indicator_id')
+                ->get();
+
+            if ($latestPerIndicator->isEmpty()) {
+                $response = [
+                    'result' => 'error',
+                    'message' => "No indicator data found for timeframe {$this->timeframe}",
+                ];
+                $this->step->update(['response' => $response]);
+
+                return $response;
+            }
+
+            if ($latestPerIndicator->count() < $expectedIndicatorCount) {
+                return $this->handleInconclusiveTimeframe($exchangeSymbol, $allTimeframes);
+            }
+
+            $timestamps = $latestPerIndicator
+                ->pluck('max_timestamp')
+                ->map(fn ($value): int => $this->runIdentifierSeconds($value))
+                ->filter(static fn (int $value): bool => $value > 0);
+
+            $maxSpreadSeconds = (int) config('kraite.indicators.max_run_spread_seconds', 300);
+
+            if ($timestamps->isNotEmpty() && ($timestamps->max() - $timestamps->min()) > $maxSpreadSeconds) {
+                return $this->handleInconclusiveTimeframe($exchangeSymbol, $allTimeframes);
+            }
+
+            $histories = collect();
+            foreach ($latestPerIndicator as $item) {
+                $record = IndicatorHistory::query()
+                    ->join('indicators', 'indicator_histories.indicator_id', '=', 'indicators.id')
+                    ->where('indicator_histories.exchange_symbol_id', $exchangeSymbol->id)
+                    ->where('indicator_histories.timeframe', $this->timeframe)
+                    ->where('indicator_histories.indicator_id', $item->indicator_id)
+                    ->where('indicator_histories.timestamp', $item->max_timestamp)
+                    ->where('indicators.type', 'conclude-indicators')
+                    ->where('indicators.is_active', 1)
+                    ->with('indicator')
+                    ->select('indicator_histories.*')
+                    ->first();
+
+                if ($record) {
+                    $histories->push($record);
+                }
             }
         }
 
@@ -164,7 +191,10 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
             ];
         }
 
-        $marketDataFreshness = $this->marketDataFreshness($indicatorData, $this->timeframe);
+        $marketDataFreshness = TaapiMarketDataFreshness::fromIndicatorData(
+            $indicatorData,
+            $this->timeframe,
+        );
 
         if (! $marketDataFreshness['is_fresh']) {
             return $this->handleStaleIndicatorData($exchangeSymbol, $marketDataFreshness);
@@ -584,89 +614,43 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
     }
 
     /**
-     * @param  array<string, array{result: mixed}>  $indicatorData
-     * @return array{is_fresh: bool, latest_timestamp: int|null, minimum_timestamp: int|null}
+     * @return array<string, mixed>|null
      */
-    private function marketDataFreshness(array $indicatorData, string $timeframe): array
+    private function queryRunResponse(): ?array
     {
-        $rawTimestamps = $indicatorData['candle-comparison']['result']['timestamp'] ?? null;
-        $latestTimestamp = $this->latestMarketTimestamp($rawTimestamps);
-        $intervalSeconds = $this->timeframeSeconds($timeframe);
-
-        if ($intervalSeconds === null) {
-            return [
-                'is_fresh' => true,
-                'latest_timestamp' => $latestTimestamp,
-                'minimum_timestamp' => null,
-            ];
+        if (! isset($this->step) || ! is_numeric($this->step->index)) {
+            return null;
         }
 
-        if ($latestTimestamp === null) {
-            return [
-                'is_fresh' => false,
-                'latest_timestamp' => null,
-                'minimum_timestamp' => null,
-            ];
-        }
+        $queryStep = Step::query()
+            ->where('block_uuid', $this->step->block_uuid)
+            ->where('class', QuerySymbolIndicatorsJob::class)
+            ->where('index', '<', (int) $this->step->index)
+            ->orderByDesc('index')
+            ->first(['response']);
+        $response = $queryStep?->response;
 
-        $currentTimestamp = now()->timestamp;
-        $currentCandleTimestamp = intdiv($currentTimestamp, $intervalSeconds) * $intervalSeconds;
-        $minimumTimestamp = $currentCandleTimestamp - $intervalSeconds;
+        return is_array($response) ? $response : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $queryRunResponse
+     * @return array{is_fresh: false, latest_timestamp: int|null, minimum_timestamp: int|null}
+     */
+    private function unavailableQueryFreshness(array $queryRunResponse): array
+    {
+        $source = ($queryRunResponse['fallback_used'] ?? false) ? 'binance' : 'binancefutures';
+        $sourceFreshness = $queryRunResponse['freshness'][$source] ?? [];
 
         return [
-            'is_fresh' => $latestTimestamp >= $minimumTimestamp && $latestTimestamp < $currentCandleTimestamp,
-            'latest_timestamp' => $latestTimestamp,
-            'minimum_timestamp' => $minimumTimestamp,
+            'is_fresh' => false,
+            'latest_timestamp' => is_numeric($sourceFreshness['latest_timestamp'] ?? null)
+                ? (int) $sourceFreshness['latest_timestamp']
+                : null,
+            'minimum_timestamp' => is_numeric($sourceFreshness['minimum_timestamp'] ?? null)
+                ? (int) $sourceFreshness['minimum_timestamp']
+                : null,
         ];
-    }
-
-    private function latestMarketTimestamp(mixed $rawTimestamps): ?int
-    {
-        $values = is_array($rawTimestamps) ? $rawTimestamps : [$rawTimestamps];
-        $timestamps = [];
-
-        foreach ($values as $value) {
-            if (! is_numeric($value)) {
-                continue;
-            }
-
-            $timestamp = (int) $value;
-
-            if ($timestamp >= 1_000_000_000_000_000) {
-                $timestamp = intdiv($timestamp, 1_000_000);
-            } elseif ($timestamp >= 1_000_000_000_000) {
-                $timestamp = intdiv($timestamp, 1000);
-            }
-
-            if ($timestamp > 0) {
-                $timestamps[] = $timestamp;
-            }
-        }
-
-        return $timestamps === [] ? null : max($timestamps);
-    }
-
-    private function timeframeSeconds(string $timeframe): ?int
-    {
-        if (preg_match('/^(\d+)([smhdw])$/i', $timeframe, $matches) !== 1) {
-            return null;
-        }
-
-        $quantity = (int) $matches[1];
-
-        if ($quantity < 1) {
-            return null;
-        }
-
-        $unitSeconds = match (mb_strtolower($matches[2])) {
-            's' => 1,
-            'm' => 60,
-            'h' => 3600,
-            'd' => 86_400,
-            'w' => 604_800,
-        };
-
-        return $quantity * $unitSeconds;
     }
 
     /**
@@ -701,6 +685,21 @@ final class ConcludeSymbolDirectionAtTimeframeJob extends BaseQueueableJob
         $this->step->update(['response' => $response]);
 
         return $response;
+    }
+
+    private function runIdentifierSeconds(mixed $value): int
+    {
+        if (! is_string($value) && ! is_int($value)) {
+            return 0;
+        }
+
+        $identifier = (string) $value;
+
+        if (preg_match('/^(\d{10})/', $identifier, $matches) === 1) {
+            return (int) $matches[1];
+        }
+
+        return 0;
     }
 
     /**
