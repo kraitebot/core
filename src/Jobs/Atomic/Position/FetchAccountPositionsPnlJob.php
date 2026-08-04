@@ -7,6 +7,8 @@ namespace Kraite\Core\Jobs\Atomic\Position;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Account;
+use Kraite\Core\Models\Position;
+use Kraite\Core\Support\PositionClosedNotifier;
 use RuntimeException;
 
 /**
@@ -45,5 +47,12 @@ class FetchAccountPositionsPnlJob extends BaseApiableJob
             'FetchAccountPositionsPnlJob must be overridden by exchange-specific implementation. '
             .'Exchange: '.$this->account->apiSystem->canonical
         );
+    }
+
+    protected function persistPnl(Position $position, string $pnl): void
+    {
+        $position->updateSaving(['pnl' => $pnl]);
+
+        app(PositionClosedNotifier::class)->send($position->refresh());
     }
 }

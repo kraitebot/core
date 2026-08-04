@@ -962,8 +962,8 @@ final class KraiteSeeder extends Seeder
             [
                 'canonical' => 'position_closed',
                 'title' => 'Position Closed',
-                'description' => 'Emitted when a WAP\'ed position transitions to closed, unless the more specific high-profit close notification applies.',
-                'usage_reference' => 'Jobs/Atomic/Position/UpdateRemainingClosingDataJob',
+                'description' => 'Emitted after a WAP\'ed closed position receives its final exchange PnL, unless the more specific high-profit close notification applies.',
+                'usage_reference' => 'Support/PositionClosedNotifier',
                 'default_severity' => 'info',
                 'verified' => 1,
                 'cache_duration' => 60,
@@ -983,8 +983,8 @@ final class KraiteSeeder extends Seeder
             [
                 'canonical' => 'position_high_profit_closed',
                 'title' => 'High-Profit Position Closed',
-                'description' => 'Celebratory ping when a position closes after filling >= total_limit_orders_filled_to_notify (full ladder took).',
-                'usage_reference' => 'Jobs/Atomic/Position/UpdateRemainingClosingDataJob',
+                'description' => 'Celebratory ping after a WAP\'ed closed position receives final exchange PnL and filled >= total_limit_orders_filled_to_notify (full ladder took).',
+                'usage_reference' => 'Support/PositionClosedNotifier',
                 'default_severity' => 'info',
                 'verified' => 1,
                 'cache_duration' => 60,

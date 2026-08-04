@@ -191,7 +191,7 @@ final class ClosePositionAtomicallyJob extends BaseApiableJob
 
         $this->applyPumpCooldown($exchangeSymbol, $cooldownDetails, $tradeableAt);
 
-        // Count filled limit orders for notification (used by UpdateRemainingClosingDataJob)
+        // Count filled limit orders for the close result.
         $filledLimitCount = $position->totalLimitOrdersFilled();
 
         return [

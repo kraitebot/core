@@ -26,7 +26,7 @@ use StepDispatcher\Models\Step;
  * 4. SyncPositionOrdersJob → sync orders from exchange
  * 5. QueryAccountPositionsJob → get positions snapshot
  * 6. VerifyPositionResidualAmountJob → check residual
- * 7. UpdateRemainingClosingDataJob → closing_price, was_fast_traded, notifications
+ * 7. UpdateRemainingClosingDataJob → closing_price, was_fast_traded
  * 8. UpdatePositionStatusJob → status='closed'
  *
  * resolve-exception: UpdatePositionStatusJob → status='failed'

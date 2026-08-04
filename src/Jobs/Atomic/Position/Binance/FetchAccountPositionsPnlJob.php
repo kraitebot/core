@@ -48,7 +48,7 @@ class FetchAccountPositionsPnlJob extends BaseFetchAccountPositionsPnlJob
                 continue;
             }
 
-            $position->updateSaving(['pnl' => $pnl]);
+            $this->persistPnl($position, $pnl);
             $updated++;
         }
 

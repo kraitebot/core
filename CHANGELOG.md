@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.101.1 - 2026-08-04
+
+### Final PnL before WAP close notifications
+
+- [FIXED] WAP close notifications now wait for exchange-reported PnL to be
+  persisted, so traders receive the final result instead of a stale or empty
+  value.
+- [FIXED] Close notifications remain idempotent across repeated PnL updates,
+  while the high-profit variant still replaces the standard close alert when
+  its filled-limit threshold is met.
+
 ## 1.101.0 - 2026-08-04
 
 ### Laravel-owned operational monitoring

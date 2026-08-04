@@ -12,7 +12,7 @@ use StepDispatcher\Models\Step;
  * UpdateRemainingClosingDataJob (Lifecycle)
  *
  * Orchestrator that creates step for updating closing data.
- * Sets closing_price, was_fast_traded, and sends high-profit notifications.
+ * Sets closing_price and was_fast_traded before the position is finalized.
  */
 final class UpdateRemainingClosingDataJob extends BasePositionLifecycle
 {

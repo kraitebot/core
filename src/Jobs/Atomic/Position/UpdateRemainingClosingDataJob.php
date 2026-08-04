@@ -10,7 +10,6 @@ use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
-use Kraite\Core\Support\NotificationService;
 use Throwable;
 
 /**
@@ -19,8 +18,6 @@ use Throwable;
  * Updates closing data for a position after it has been closed:
  * - Sets closing_price from trade data (if available)
  * - Sets was_fast_traded flag based on position duration
- * - Notifies when a WAP'ed position closes, using the high-profit variant
- *   when the filled-limit threshold is met
  * - Updates all orders' reference_status to match their current status
  */
 final class UpdateRemainingClosingDataJob extends BaseApiableJob
@@ -96,19 +93,10 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
             }
         }
 
-        // 3. Notify on meaningful WAP close outcomes. The existing
-        // high-profit notification is the more specific close alert when its
-        // account threshold is crossed; otherwise every successfully WAP'ed
-        // position gets the standard position-closed notification.
+        // 3. Capture the filled-limit count for the closing result. The WAP
+        // close notification is intentionally deferred until the exchange PnL
+        // has been persisted by FetchAccountPositionsPnlJob.
         $filledLimitCount = $position->totalLimitOrdersFilled();
-        $notifyThreshold = $account->total_limit_orders_filled_to_notify;
-        $closingNotifications = $this->dispatchClosingNotifications(
-            $position,
-            $closingPrice,
-            $filledLimitCount,
-            $wasFastTraded,
-            $notifyThreshold,
-        );
 
         // 4. Sync reference_status = status for all orders on this position.
         // Single UPDATE inside a transaction — prior version did N individual
@@ -124,8 +112,8 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
             'closing_price' => $closingPrice,
             'was_fast_traded' => $wasFastTraded,
             'filled_limit_count' => $filledLimitCount,
-            'waped_closed_notification_sent' => $closingNotifications['waped_closed_notification_sent'],
-            'high_profit_notification_sent' => $closingNotifications['high_profit_notification_sent'],
+            'waped_closed_notification_sent' => false,
+            'high_profit_notification_sent' => false,
             'message' => 'Closing data updated',
         ];
     }
@@ -180,120 +168,5 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
         }
 
         return null;
-    }
-
-    /**
-     * Send exactly one close notification. High-profit is the specialized
-     * variant; otherwise only positions that completed WAP are interesting
-     * enough to notify.
-     *
-     * @return array{waped_closed_notification_sent: bool, high_profit_notification_sent: bool}
-     */
-    private function dispatchClosingNotifications(
-        Position $position,
-        ?string $closingPrice,
-        int $filledLimitCount,
-        bool $wasFastTraded,
-        int $notifyThreshold,
-    ): array {
-        if ($notifyThreshold > 0 && $filledLimitCount >= $notifyThreshold) {
-            return [
-                'waped_closed_notification_sent' => false,
-                'high_profit_notification_sent' => $this->dispatchHighProfitNotification(
-                    $position,
-                    $closingPrice,
-                    $filledLimitCount,
-                ),
-            ];
-        }
-
-        return [
-            'waped_closed_notification_sent' => $this->dispatchWapedClosedNotification(
-                $position,
-                $closingPrice,
-                $filledLimitCount,
-                $wasFastTraded,
-            ),
-            'high_profit_notification_sent' => false,
-        ];
-    }
-
-    /**
-     * Notify the trader when a successfully WAP'ed position closes.
-     *
-     * `was_waped` is stamped only after the profit order has been
-     * successfully repositioned, so a LIMIT fill whose WAP workflow failed
-     * does not produce a misleading close notification. The standard trader
-     * routing adds the iPhone app alongside the user's configured channels.
-     */
-    private function dispatchWapedClosedNotification(
-        Position $position,
-        ?string $closingPrice,
-        int $filledLimitCount,
-        bool $wasFastTraded,
-    ): bool {
-        if (! $position->was_waped) {
-            return false;
-        }
-
-        $user = $position->account->user ?? null;
-
-        if (! $user || ! $user->is_active) {
-            return false;
-        }
-
-        return NotificationService::send(
-            user: $user,
-            canonical: 'position_closed',
-            referenceData: [
-                'token' => $position->exchangeSymbol?->token,
-                'pair' => $position->parsed_trading_pair,
-                'direction' => mb_strtoupper((string) $position->direction),
-                'position_id' => (int) $position->id,
-                'account_name' => $position->account?->name,
-                'closing_price' => $closingPrice === null
-                    ? null
-                    : api_format_price($closingPrice, $position->exchangeSymbol),
-                'filled_limits' => $filledLimitCount,
-                'was_fast_traded' => $wasFastTraded,
-            ],
-            relatable: $position,
-            cacheKeys: ['position' => $position->id],
-        );
-    }
-
-    /**
-     * Fire the celebratory `position_high_profit_closed` notification when
-     * the account-level `total_limit_orders_filled_to_notify` threshold
-     * has been crossed — i.e. the ladder was ridden far enough before the
-     * reversal to deserve a special ping.
-     */
-    private function dispatchHighProfitNotification(
-        Position $position,
-        ?string $closingPrice,
-        int $filledLimitCount,
-    ): bool {
-        $user = $position->account->user ?? null;
-
-        if (! $user || ! $user->is_active) {
-            return false;
-        }
-
-        return NotificationService::send(
-            user: $user,
-            canonical: 'position_high_profit_closed',
-            referenceData: [
-                'token' => $position->exchangeSymbol?->token,
-                'pair' => $position->parsed_trading_pair,
-                'direction' => mb_strtoupper((string) $position->direction),
-                'position_id' => (int) $position->id,
-                'closing_price' => $closingPrice === null
-                    ? null
-                    : api_format_price($closingPrice, $position->exchangeSymbol),
-                'filled_limits' => $filledLimitCount,
-            ],
-            relatable: $position,
-            cacheKeys: ['position' => $position->id],
-        );
     }
 }
