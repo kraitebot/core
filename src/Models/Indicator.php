@@ -6,6 +6,7 @@ namespace Kraite\Core\Models;
 
 use Kraite\Core\Abstracts\BaseModel;
 use Kraite\Core\Concerns\Indicator\HasScopes;
+use StepDispatcher\Models\Step;
 
 final class Indicator extends BaseModel
 {

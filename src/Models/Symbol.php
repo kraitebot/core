@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Kraite\Core\Abstracts\BaseModel;
 use Kraite\Core\Concerns\Symbol\InteractsWithApis;
 use Kraite\Core\Database\Factories\SymbolFactory;
+use StepDispatcher\Models\Step;
 
 /**
  * @property int $id
@@ -32,11 +33,6 @@ final class Symbol extends BaseModel
         'is_stable_coin' => 'boolean',
     ];
 
-    protected static function newFactory(): SymbolFactory
-    {
-        return SymbolFactory::new();
-    }
-
     public function steps()
     {
         return $this->morphMany(Step::class, 'relatable');
@@ -50,5 +46,10 @@ final class Symbol extends BaseModel
     public function exchangeSymbols()
     {
         return $this->hasMany(ExchangeSymbol::class);
+    }
+
+    protected static function newFactory(): SymbolFactory
+    {
+        return SymbolFactory::new();
     }
 }

@@ -15,6 +15,7 @@ use Kraite\Core\Concerns\Order\HasScopes;
 use Kraite\Core\Concerns\Order\HasStatuses;
 use Kraite\Core\Concerns\Order\HasTradingActions;
 use Kraite\Core\Concerns\Order\InteractsWithApis;
+use StepDispatcher\Models\Step;
 
 /**
  * @property int $id

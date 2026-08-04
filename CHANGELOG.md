@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.102.1 - 2026-08-04
+
+### Step relationship model resolution
+
+- [FIXED] Account, API system, exchange symbol, indicator, order, position,
+  symbol, and user step relationships now resolve the Step Dispatcher model
+  instead of a nonexistent Core model.
+- [VERIFIED] Red-to-green coverage exercises all eight relationships; the
+  adjacent model-log gate passes 50 tests and 135 assertions, with Larastan
+  green.
+
 ## 1.102.0 - 2026-08-04
 
 ### Trading, recovery, and Laravel boundary hardening

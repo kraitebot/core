@@ -17,6 +17,7 @@ use Kraite\Core\Concerns\Position\HasStatuses;
 use Kraite\Core\Concerns\Position\HasTradingActions;
 use Kraite\Core\Concerns\Position\InteractsWithApis;
 use Kraite\Core\Database\Factories\PositionFactory;
+use StepDispatcher\Models\Step;
 
 /**
  * @property int $id

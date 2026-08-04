@@ -19,6 +19,7 @@ use Kraite\Core\Concerns\ExchangeSymbol\HasTradingComputations;
 use Kraite\Core\Concerns\ExchangeSymbol\InteractsWithApis;
 use Kraite\Core\Concerns\ExchangeSymbol\SendsNotifications;
 use Kraite\Core\Database\Factories\ExchangeSymbolFactory;
+use StepDispatcher\Models\Step;
 
 /**
  * @property int $id

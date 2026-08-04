@@ -19,6 +19,7 @@ use Kraite\Core\Concerns\Account\HasStatuses;
 use Kraite\Core\Concerns\Account\HasTokenDiscovery;
 use Kraite\Core\Concerns\Account\InteractsWithApis;
 use Kraite\Core\Database\Factories\AccountFactory;
+use StepDispatcher\Models\Step;
 
 /**
  * @property int $id

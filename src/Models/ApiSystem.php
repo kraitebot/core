@@ -14,6 +14,7 @@ use Kraite\Core\Concerns\ApiSystem\HasCooldown;
 use Kraite\Core\Concerns\ApiSystem\HasScopes;
 use Kraite\Core\Concerns\ApiSystem\InteractsWithApis;
 use Kraite\Core\Database\Factories\ApiSystemFactory;
+use StepDispatcher\Models\Step;
 
 /**
  * @property int $id

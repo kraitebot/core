@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Models;
 
-// use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Carbon\CarbonInterface;
+// use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -27,6 +27,7 @@ use NotificationChannels\Pushover\PushoverReceiver;
 use NotificationChannels\Telegram\TelegramChannel;
 use RuntimeException;
 use SensitiveParameter;
+use StepDispatcher\Models\Step;
 
 /**
  * @property int $id
