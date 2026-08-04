@@ -137,7 +137,7 @@ final class DispatchLimitOrdersJob extends BaseQueueableJob
             $this->buildChildChainOnce(function (string $blockUuid) use ($ladder, $side, $direction, $resolver): void {
                 $this->limitOrders = collect($ladder)
                     ->map(function (array $rung) use ($side, $direction): Order {
-                        return Order::create([
+                        return Order::createForPosition([
                             'position_id' => $this->position->id,
                             'type' => 'LIMIT',
                             'status' => 'NEW',

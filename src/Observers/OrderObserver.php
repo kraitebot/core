@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Observers;
 
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Kraite\Core\Enums\OrderStatus;
@@ -124,16 +123,27 @@ final readonly class OrderObserver
 
         // FILLED deliberately still occupies a slot. Only terminal non-fill
         // statuses release it.
-        $activeQuery = Order::query()
+        // This must be a locking read, not a normal snapshot read. Several
+        // production creators call Order::createForPosition() from an outer
+        // transaction that may already have established a REPEATABLE READ
+        // snapshot. After the parent-position lock serializes creators, this
+        // current read makes a competing committed order visible.
+        $activeOrderTypes = Order::query()
             ->where('position_id', $position->id)
-            ->whereNotIn('status', OrderStatus::terminalWithoutFillValues());
+            ->whereNotIn('status', OrderStatus::terminalWithoutFillValues())
+            ->lockForUpdate()
+            ->pluck('type');
 
         $allowed = match ($model->type) {
-            'STOP-MARKET' => $this->allowIfNoActiveExists($activeQuery, 'STOP-MARKET'),
-            'MARKET' => $this->allowIfNoActiveExists($activeQuery, 'MARKET'),
-            'MARKET-CANCEL' => $this->allowIfNoActiveExists($activeQuery, 'MARKET-CANCEL'),
-            'PROFIT-LIMIT', 'PROFIT-MARKET' => $this->allowIfNoActiveProfitExists($activeQuery),
-            'LIMIT' => $this->allowIfLimitNotExceeded($activeQuery, $position),
+            'STOP-MARKET' => ! $activeOrderTypes->contains('STOP-MARKET'),
+            'MARKET' => ! $activeOrderTypes->contains('MARKET'),
+            'MARKET-CANCEL' => ! $activeOrderTypes->contains('MARKET-CANCEL'),
+            'PROFIT-LIMIT', 'PROFIT-MARKET' => ! $activeOrderTypes->contains(
+                fn (string $type): bool => in_array($type, ['PROFIT-LIMIT', 'PROFIT-MARKET'], true),
+            ),
+            'LIMIT' => $activeOrderTypes->filter(
+                fn (string $type): bool => $type === 'LIMIT',
+            )->count() < $position->total_limit_orders,
             default => true,
         };
 
@@ -168,31 +178,5 @@ final readonly class OrderObserver
         throw new NonNotifiableException(
             "{$group} order creation blocked for position #{$position->id} — active limit exceeded",
         );
-    }
-
-    /**
-     * @param  Builder<Order>  $query
-     */
-    private function allowIfNoActiveExists(Builder $query, string $type): bool
-    {
-        return ! (clone $query)->where('type', $type)->exists();
-    }
-
-    /**
-     * @param  Builder<Order>  $query
-     */
-    private function allowIfNoActiveProfitExists(Builder $query): bool
-    {
-        return ! (clone $query)->whereIn('type', ['PROFIT-LIMIT', 'PROFIT-MARKET'])->exists();
-    }
-
-    /**
-     * @param  Builder<Order>  $query
-     */
-    private function allowIfLimitNotExceeded(Builder $query, Position $position): bool
-    {
-        $activeCount = (clone $query)->where('type', 'LIMIT')->count();
-
-        return $activeCount < $position->total_limit_orders;
     }
 }

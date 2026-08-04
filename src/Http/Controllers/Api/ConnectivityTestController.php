@@ -8,8 +8,8 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\ValidationException;
 use Kraite\Core\Models\Account;
-use Kraite\Core\Models\Server;
 use Kraite\Core\Support\Connectivity\AccountServerConnectivityService;
 
 /**
@@ -46,8 +46,15 @@ final class ConnectivityTestController extends Controller
         $validated = $request->validate([
             'server_id' => ['required', 'integer', 'exists:servers,id'],
         ]);
+        $server = $connectivity->apiConnectivityServer((int) $validated['server_id']);
 
-        $sent = $connectivity->notify($account, Server::findOrFail($validated['server_id']));
+        if ($server === null) {
+            throw ValidationException::withMessages([
+                'server_id' => 'The selected server is not available for connectivity checks.',
+            ]);
+        }
+
+        $sent = $connectivity->notify($account, $server);
 
         return response()->json([
             'sent' => $sent,

@@ -1349,9 +1349,9 @@ final class NotificationMessageBuilder
                         "Pair status: {$pairStatus}\n".
                         "Position-level drift fields: {$positionDriftBody}\n\n".
                         "Order-level drifts:\n{$orderDriftBody}\n\n".
-                        "The spotter has dispatched `PrepareSyncOrdersJob` for position #{$positionId}. Sync-orders handles the heal.\n\n".
+                        "The drift spotter is alert-only and did not change orders. The scheduled sync-orders workflow should reconcile transient differences; investigate repeated alerts.\n\n".
                         "Inspect:\n[CMD]SELECT id, type, side, status, price, quantity, updated_at FROM orders WHERE position_id = {$positionId} ORDER BY id;[/CMD]",
-                    'pushoverMessage' => "Drift: {$pair} {$direction} ({$accountName}) — ".count($orderDrifts).' order drift(s); sync-orders dispatched',
+                    'pushoverMessage' => "Drift: {$pair} {$direction} ({$accountName}) — ".count($orderDrifts).' order drift(s); alert-only',
                     'actionUrl' => null,
                     'actionLabel' => null,
                     'priority' => 0,

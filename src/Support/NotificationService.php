@@ -150,6 +150,7 @@ final class NotificationService
         // - 0: no throttling (send immediately)
         // - >0: use custom duration
         $throttleDuration = $duration ?? $notification?->cache_duration;
+        $throttleRelatable = $relatable ?? $user;
 
         // Build cache key string if cacheKeys data is provided.
         //
@@ -176,14 +177,18 @@ final class NotificationService
             }
         }
 
+        $deliveryClaimKey = null;
+        if ($throttleDuration !== null && $throttleDuration > 0) {
+            $deliveryClaimKey = $builtCacheKey
+                ?? self::databaseThrottleClaimKey($canonical, $throttleRelatable);
+        }
+
         // Database throttle check. Cache-based throttling is claimed immediately
         // before delivery so held, invalid, opted-out, or failed notifications
         // never occupy a successful-delivery window.
         if ($throttleDuration !== null && $throttleDuration > 0 && ! $builtCacheKey) {
             // Database-based throttling (default fallback)
             // Use $relatable if provided, otherwise use $user as the throttle relatable
-            $throttleRelatable = $relatable ?? $user;
-
             // Only actually-delivered rows count toward the throttle window.
             // This is a no-op for non-threshold notifications (every row they
             // write is passed_threshold=true), but it stops a threshold's
@@ -255,9 +260,9 @@ final class NotificationService
             return false;
         }
 
-        if ($builtCacheKey && $throttleDuration !== null && $throttleDuration > 0) {
+        if ($deliveryClaimKey !== null && $throttleDuration !== null && $throttleDuration > 0) {
             try {
-                if (! Cache::add($builtCacheKey, true, $throttleDuration)) {
+                if (! Cache::add($deliveryClaimKey, true, $throttleDuration)) {
                     return false;
                 }
             } catch (Throwable $e) {
@@ -267,7 +272,13 @@ final class NotificationService
                     'cache_exception' => $e::class,
                 ]);
 
-                return false;
+                // Explicit caller keys promise cache-backed throttling, so a
+                // failed claim cannot safely deliver. The default database
+                // path retains its durable pre-check and fails open here so a
+                // cache outage does not suppress critical observability.
+                if ($builtCacheKey !== null) {
+                    return false;
+                }
             }
         }
 
@@ -315,9 +326,9 @@ final class NotificationService
                 )
             );
         } catch (Throwable $e) {
-            if ($builtCacheKey) {
+            if ($deliveryClaimKey !== null) {
                 try {
-                    Cache::forget($builtCacheKey);
+                    Cache::forget($deliveryClaimKey);
                 } catch (Throwable $cacheException) {
                     Log::warning('[NotificationService] Failed to release throttle claim after delivery failure', [
                         'canonical' => $canonical,
@@ -338,6 +349,15 @@ final class NotificationService
         }
 
         return true;
+    }
+
+    private static function databaseThrottleClaimKey(string $canonical, object $relatable): string
+    {
+        return 'notification_delivery_claim:'.hash('sha256', implode('|', [
+            $canonical,
+            get_class($relatable),
+            (string) ($relatable->id ?? ''),
+        ]));
     }
 
     /**

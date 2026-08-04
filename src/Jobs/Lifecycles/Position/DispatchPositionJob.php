@@ -41,10 +41,13 @@ class DispatchPositionJob extends BaseQueueableJob
      */
     public function startOrStop(): bool
     {
-        return filled($this->position->direction)
-            && filled($this->position->exchange_symbol_id)
-            && $this->position->status === 'new'
-            && $this->position->account->isOnActiveApiSystem();
+        $position = $this->position->fresh();
+
+        return $position !== null
+            && filled($position->direction)
+            && filled($position->exchange_symbol_id)
+            && $position->status === 'new'
+            && $position->account->isReadyToTrade();
     }
 
     public function compute()

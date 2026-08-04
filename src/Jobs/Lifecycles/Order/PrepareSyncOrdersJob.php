@@ -90,18 +90,19 @@ final class PrepareSyncOrdersJob extends BaseQueueableJob
      * and the local quantity drifts.
      *
      * This belt-and-suspenders dispatch runs every kraite:cron-sync-orders
-     * tick whenever the position has at least one PARTIALLY_FILLED LIMIT,
+     * tick whenever the position has at least one managed PARTIALLY_FILLED
+     * entry or close order,
      * deduped against the same Pending / Dispatched / Running window the
      * observer uses.
      */
     private function dispatchPartialFillQuantitySyncSafetyNet(): void
     {
-        $hasPartialLimit = $this->position->orders()
-            ->where('type', 'LIMIT')
+        $hasPartialOrder = $this->position->orders()
+            ->whereIn('type', ['LIMIT', 'PROFIT-LIMIT', 'PROFIT-MARKET', 'STOP-MARKET'])
             ->where('status', 'PARTIALLY_FILLED')
             ->exists();
 
-        if (! $hasPartialLimit) {
+        if (! $hasPartialOrder) {
             return;
         }
 

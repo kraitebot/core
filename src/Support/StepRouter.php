@@ -279,7 +279,7 @@ final class StepRouter
      */
     private function resolvedEnvironment(): string
     {
-        return (string) (env('HORIZON_ENV') ?? env('APP_ENV', 'production'));
+        return (string) config('horizon.env', config('app.env', 'production'));
     }
 
     /**

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Support\Connectivity;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use Kraite\Core\Jobs\Lifecycles\Account\TestExchangeConnectivityStep;
@@ -167,14 +168,25 @@ final class AccountServerConnectivityService
      */
     public function apiConnectivityServers(): Collection
     {
+        return $this->apiConnectivityServersQuery()
+            ->orderBy('hostname')
+            ->get();
+    }
+
+    public function apiConnectivityServer(int $serverId): ?Server
+    {
+        return $this->apiConnectivityServersQuery()->find($serverId);
+    }
+
+    /** @return Builder<Server> */
+    private function apiConnectivityServersQuery(): Builder
+    {
         return Server::query()
             ->where('is_apiable', true)
             ->where('needs_whitelisting', true)
             ->whereNotNull('ip_address')
             ->whereNotIn('type', ['database', 'admin', 'indicators'])
-            ->whereNotIn('hostname', ['artemis'])
-            ->orderBy('hostname')
-            ->get();
+            ->whereNotIn('hostname', ['artemis']);
     }
 
     private function statusForStep(Step $step): string

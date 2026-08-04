@@ -322,14 +322,12 @@ final class TaapiCandlesFetcher
             // DB not reachable or model/table unavailable — fall through.
         }
 
-        $fromConfig = config('services.taapi.secret');
+        $fromConfig = config('kraite.apis.credentials.taapi.secret');
         if (is_string($fromConfig) && $fromConfig !== '') {
             return $fromConfig;
         }
 
-        $fromEnv = env('TAAPI_SECRET');
-
-        return is_string($fromEnv) && $fromEnv !== '' ? $fromEnv : null;
+        return null;
     }
 
     private function mapTaapiExchange(ExchangeSymbol $symbol): string

@@ -7,6 +7,7 @@ namespace Kraite\Core\Models;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseModel;
 use Kraite\Core\Concerns\Order\HandlesChanges;
 use Kraite\Core\Concerns\Order\HasGetters;
@@ -60,6 +61,35 @@ final class Order extends BaseModel
         'original_quantity' => 'string',
         'is_algo' => 'boolean',
     ];
+
+    /**
+     * Atomically claim an order slot and persist the order.
+     *
+     * The parent position lock serializes the observer's active-order count
+     * with the insert across every worker and database connection.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    public static function createForPosition(array $attributes): self
+    {
+        return DB::transaction(function () use ($attributes): self {
+            $position = Position::query()
+                ->whereKey($attributes['position_id'] ?? null)
+                ->lockForUpdate()
+                ->first();
+
+            $order = new self;
+            $order->fill($attributes);
+
+            if ($position !== null) {
+                $order->setRelation('position', $position);
+            }
+
+            $order->save();
+
+            return $order;
+        });
+    }
 
     public function steps()
     {

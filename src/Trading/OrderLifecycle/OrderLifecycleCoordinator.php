@@ -16,6 +16,11 @@ final readonly class OrderLifecycleCoordinator
 {
     private const array CLOSE_TRIGGER_TYPES = ['PROFIT-LIMIT', 'PROFIT-MARKET', 'STOP-MARKET'];
 
+    private const array QUANTITY_SYNC_PARTIAL_FILL_TYPES = [
+        'LIMIT',
+        ...self::CLOSE_TRIGGER_TYPES,
+    ];
+
     public function __construct(private OrderLifecycleDispatcher $dispatcher) {}
 
     /**
@@ -25,7 +30,7 @@ final readonly class OrderLifecycleCoordinator
      * - filled/triggered TP or SL orders close the position;
      * - terminal non-fill TP, SL, or LIMIT orders require replacement;
      * - filled LIMIT orders recalculate WAP;
-     * - partially-filled LIMIT orders refresh position quantity only.
+     * - partially-filled managed entry or close orders refresh position quantity only.
      *
      * Drift detection deliberately runs before the reference-status guard:
      * changing price or quantity does not necessarily change order status.
@@ -47,6 +52,13 @@ final readonly class OrderLifecycleCoordinator
         }
 
         if ($order->status === $order->reference_status) {
+            return;
+        }
+
+        if ($status === OrderStatus::PartiallyFilled
+            && in_array($order->type, self::QUANTITY_SYNC_PARTIAL_FILL_TYPES, true)) {
+            $this->dispatcher->dispatchSyncPositionQuantity($position);
+
             return;
         }
 
@@ -76,9 +88,6 @@ final readonly class OrderLifecycleCoordinator
             return;
         }
 
-        if ($status === OrderStatus::PartiallyFilled) {
-            $this->dispatcher->dispatchSyncPositionQuantity($position);
-        }
     }
 
     private function correctExternalModification(Order $order, Position $position): void

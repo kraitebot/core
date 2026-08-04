@@ -478,6 +478,15 @@ final class PlacePositionTpslJob extends BaseApiableJob
     private function persistProtectionOrders(string $side): void
     {
         DB::transaction(function () use ($side): void {
+            // Keep the global creation lock order: position first, then its
+            // orders. The observer performs a locking current-read of active
+            // orders, so taking replacement-order locks first would create a
+            // position/order deadlock cycle with another creator.
+            Position::query()
+                ->whereKey($this->position->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
             if ($this->replacedOrderIds !== []) {
                 Order::query()
                     ->where('position_id', $this->position->id)
@@ -505,7 +514,7 @@ final class PlacePositionTpslJob extends BaseApiableJob
             ];
 
             if ($this->profitOrder === null) {
-                $this->profitOrder = Order::create([
+                $this->profitOrder = Order::createForPosition([
                     ...$attributes,
                     'position_id' => $this->position->id,
                     'type' => 'PROFIT-LIMIT',
@@ -519,7 +528,7 @@ final class PlacePositionTpslJob extends BaseApiableJob
             }
 
             if ($this->stopLossOrder === null) {
-                $this->stopLossOrder = Order::create([
+                $this->stopLossOrder = Order::createForPosition([
                     ...$attributes,
                     'position_id' => $this->position->id,
                     'type' => 'STOP-MARKET',

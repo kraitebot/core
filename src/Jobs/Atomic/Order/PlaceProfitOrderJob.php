@@ -154,7 +154,7 @@ final class PlaceProfitOrderJob extends BaseApiableJob
         );
 
         // Create Order record
-        $this->profitOrder = Order::create([
+        $this->profitOrder = Order::createForPosition([
             'position_id' => $this->position->id,
             'type' => 'PROFIT-LIMIT',
             'status' => 'NEW',

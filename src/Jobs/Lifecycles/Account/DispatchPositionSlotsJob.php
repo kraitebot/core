@@ -51,29 +51,11 @@ final class DispatchPositionSlotsJob extends BaseQueueableJob
         // ever placing exchange orders against the disabled account.
         $freshAccount = $this->account->fresh(['apiSystem', 'user']);
 
-        if (! $freshAccount
-            || ! $freshAccount->is_active
-            || ! $freshAccount->can_trade
-            || ! $freshAccount->isOnActiveApiSystem()) {
+        if (! $freshAccount || ! $freshAccount->isReadyToTrade()) {
             return [
                 'account_id' => $this->account->id,
                 'positions_dispatched' => 0,
-                'message' => 'Account or API system became inactive/non-tradeable mid-workflow — refusing to dispatch slots',
-            ];
-        }
-
-        // User check only fires WHEN a user is attached. Legacy orphan
-        // accounts (test fixtures, recovery-imported rows) may have no
-        // user — those are already filtered upstream by
-        // CreatePositionsCommand's `whereHas('user', …->can_trade)`.
-        // Re-checking here for the case where the user existed at the
-        // start of the workflow and was disabled mid-flight.
-        if ($freshAccount->user !== null
-            && (! $freshAccount->user->can_trade || ! $freshAccount->user->is_active)) {
-            return [
-                'account_id' => $this->account->id,
-                'positions_dispatched' => 0,
-                'message' => 'Account user became inactive/non-tradeable mid-workflow — refusing to dispatch slots',
+                'message' => 'Account is no longer ready to open positions — refusing to dispatch slots',
             ];
         }
 

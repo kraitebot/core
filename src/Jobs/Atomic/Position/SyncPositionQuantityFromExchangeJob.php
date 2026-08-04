@@ -18,10 +18,9 @@ use UnexpectedValueException;
  * SyncPositionQuantityFromExchangeJob (Atomic)
  *
  * Pulls the live position size from the exchange and overwrites
- * positions.quantity with abs(size). Dispatched on every LIMIT
- * partial-fill event so the local mirror tracks the running net
- * size between the initial MARKET fill and the eventual full-fill
- * WAP refresh.
+ * positions.quantity with abs(size). Dispatched on every managed entry
+ * or close-order partial-fill event so the local mirror tracks the running
+ * net size while the exchange is filling in chunks.
  *
  * Strict scope: this job ONLY rewrites positions.quantity. It does
  * not touch opening_price, breakeven, profit_percentage, status,

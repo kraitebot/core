@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.102.0 - 2026-08-04
+
+### Trading, recovery, and Laravel boundary hardening
+
+- [FIXED] Partial fills of DCA, take-profit, and stop-market orders now
+  reconcile the owning position quantity through both push and polling paths.
+- [FIXED] Active order slots use one serialized creation boundary and a
+  locking current read; Bitget protection replacement follows the same
+  position-then-order lock sequence.
+- [FIXED] Position-opening retries resume stranded slots and recheck the full
+  account trading decision at every delayed execution boundary.
+- [HARDENED] Failed API diagnostics redact secrets, notification claims are
+  atomic, connectivity notifications stay fleet-scoped, and cached runtime
+  configuration no longer falls back to direct environment reads.
+- [ADDED] NOWPayments receipts preserve repeated-deposit idempotency and reject
+  cross-invoice parent links before wallet mutation.
+- [VERIFIED] The fresh ingestion TIA gate passes 3,450 tests, one intentional
+  skip, and 11,487 assertions with 100% type coverage, Pint, Rector, and
+  Larastan green.
+
 ## 1.101.1 - 2026-08-04
 
 ### Final PnL before WAP close notifications

@@ -165,7 +165,7 @@ final class PositionExchangeOperations
             return new ApiResponse;
         }
 
-        $order = Order::create($attributes);
+        $order = Order::createForPosition($attributes);
 
         try {
             $apiResponse = $order->apiPlace();

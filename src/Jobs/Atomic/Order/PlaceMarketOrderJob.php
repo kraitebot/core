@@ -141,7 +141,7 @@ final class PlaceMarketOrderJob extends BaseApiableJob
         $side = $direction === 'LONG' ? 'BUY' : 'SELL';
 
         if ($this->marketOrder === null) {
-            $this->marketOrder = Order::create([
+            $this->marketOrder = Order::createForPosition([
                 'position_id' => $this->position->id,
                 'type' => 'MARKET',
                 'status' => 'NEW',

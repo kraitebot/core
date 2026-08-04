@@ -214,7 +214,7 @@ final class PlaceStopLossOrderJob extends BaseApiableJob
         );
 
         // Create Order record
-        $this->stopLossOrder = Order::create([
+        $this->stopLossOrder = Order::createForPosition([
             'position_id' => $this->position->id,
             'type' => 'STOP-MARKET',
             'status' => 'NEW',

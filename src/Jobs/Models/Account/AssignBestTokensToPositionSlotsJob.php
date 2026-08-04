@@ -50,7 +50,7 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
 
     public function startOrStop(): bool
     {
-        return $this->account->fresh()?->isOnActiveApiSystem() === true;
+        return $this->account->fresh()?->isReadyToTrade() === true;
     }
 
     public function compute()
@@ -59,8 +59,12 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
         // Read exchange positions, compare with max slots, create empty Position records.
         $slotData = $this->createPositionSlots();
 
-        // If no slots were created, return early
-        if ($this->totalCreated === 0) {
+        // A retry may resume after the slot transaction committed but before
+        // token assignment completed. Those pre-existing unassigned slots
+        // already consume the account's capacity, so no new slot is created
+        // on the retry. Continue into token selection whenever such a slot
+        // exists instead of leaving it stranded indefinitely.
+        if ($this->totalCreated === 0 && ! $this->hasUnassignedPositionSlots()) {
             return array_merge($slotData, [
                 'assigned_tokens' => '',
                 'assigned_count' => 0,
@@ -96,9 +100,18 @@ final class AssignBestTokensToPositionSlotsJob extends BaseQueueableJob
      */
     public function complete(): void
     {
-        if ($this->totalCreated === 0 || $this->assignedCount === 0) {
+        if ($this->assignedCount === 0) {
             $this->stopJob();
         }
+    }
+
+    private function hasUnassignedPositionSlots(): bool
+    {
+        return $this->account->positions()
+            ->where('positions.status', 'new')
+            ->whereNotNull('positions.direction')
+            ->whereNull('positions.exchange_symbol_id')
+            ->exists();
     }
 
     /**

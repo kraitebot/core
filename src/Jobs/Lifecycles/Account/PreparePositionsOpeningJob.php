@@ -46,7 +46,7 @@ final class PreparePositionsOpeningJob extends BaseQueueableJob
 
     public function startOrStop(): bool
     {
-        return $this->account->fresh()?->isOnActiveApiSystem() === true;
+        return $this->account->fresh()?->isReadyToTrade() === true;
     }
 
     public function compute()

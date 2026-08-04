@@ -171,7 +171,7 @@ final class RecreateCancelledOrderJob extends BaseApiableJob
                     return $existingReplacement;
                 }
 
-                return Order::create([
+                return Order::createForPosition([
                     'position_id' => $this->position->id,
                     'type' => $this->cancelledOrder->type,
                     'status' => 'NEW',

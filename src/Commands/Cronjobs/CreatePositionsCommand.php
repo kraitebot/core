@@ -127,18 +127,6 @@ final class CreatePositionsCommand extends BaseCommand
                 // 3-minute cycle. With 200+ accounts on the box, that
                 // blast radius is unacceptable.
                 try {
-                    // Self-heal first — orphan 'new' positions (their previous
-                    // DispatchPositionJob step was swept during operator
-                    // cleanup, supervisor restart, or any cleanup that lost a
-                    // step row while leaving the position behind) get re-
-                    // dispatched before we contemplate opening new slots.
-                    // Runs unconditionally, BEFORE the subscription gate —
-                    // recovering a stranded orphan doesn't compete for slot
-                    // capacity (the slot is already taken) and a lapsed
-                    // subscription must not strand existing positions; only
-                    // NEW opens are gated by readiness.
-                    $this->recoverOrphanPositionsForAccount($account);
-
                     // Per-account readiness covers the account and user
                     // switches, subscription state, and the designated
                     // account restriction on capped tiers. Re-check here
@@ -148,6 +136,14 @@ final class CreatePositionsCommand extends BaseCommand
 
                         continue;
                     }
+
+                    // Self-heal orphan `new` positions only after the full
+                    // opening-readiness gate passes. A `new` row has not yet
+                    // crossed PreparePositionData into `opening`, so recovery
+                    // is still permission to begin a new exchange position.
+                    // Existing live positions use separate recovery paths and
+                    // remain manageable when trading or billing is paused.
+                    $this->recoverOrphanPositionsForAccount($account);
 
                     $this->attemptOpeningPositionsForAccount($account);
                 } catch (Throwable $e) {

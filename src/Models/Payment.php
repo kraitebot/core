@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Models;
 
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Carbon;
 use Kraite\Core\Abstracts\BaseModel;
 
@@ -73,6 +74,12 @@ final class Payment extends BaseModel
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    /** @return HasMany<PaymentReceipt, $this> */
+    public function receipts(): HasMany
+    {
+        return $this->hasMany(PaymentReceipt::class);
     }
 
     public function isCredited(): bool

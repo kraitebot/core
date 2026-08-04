@@ -16,6 +16,7 @@ use Kraite\Core\Models\ApiRequestLog;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\ForbiddenHostname;
 use Kraite\Core\Models\Kraite;
+use Kraite\Core\Support\ApiLogSanitizer;
 use Kraite\Core\Support\FreezeMode;
 use Kraite\Core\Support\HeaderSanitizer;
 use Kraite\Core\Support\Logging\ApiRequestLogRetention;
@@ -160,10 +161,12 @@ abstract class BaseApiClient
     protected function prepareLogData(ApiRequest $apiRequest, array $headers): array
     {
         $properties = $apiRequest->properties->toArray();
+        $payload = $properties;
+        unset($payload['account'], $payload['relatable'], $payload['headers'], $payload['debug']);
 
         $logData = [
-            'path' => $apiRequest->path,
-            'payload' => $properties,
+            'path' => ApiLogSanitizer::path($apiRequest->path),
+            'payload' => ApiLogSanitizer::payload($payload),
             'http_method' => $apiRequest->method,
             // Auth headers (ACCESS-KEY, ACCESS-PASSPHRASE, X-MBX-APIKEY,
             // KC-API-KEY, etc.) carry full credentials in plaintext —

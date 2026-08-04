@@ -378,7 +378,7 @@ abstract class AbstractPositionRecoverer
             return false;
         }
 
-        $order = Order::create($attributes);
+        $order = Order::createForPosition($attributes);
 
         $this->report->line(sprintf(
             '      %s order #%s: type=%s status=%s side=%s qty=%s price=%s',
