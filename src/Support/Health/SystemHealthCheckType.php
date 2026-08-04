@@ -48,6 +48,12 @@ enum SystemHealthCheckType: string
             || $this === self::AccountBalanceFreshness;
     }
 
+    public function isPostWarmupDependent(): bool
+    {
+        return $this->isDispatcherDependent()
+            || $this === self::RuntimeUnitStatus;
+    }
+
     public function run(SystemHealthProbe $probe): int
     {
         return match ($this) {

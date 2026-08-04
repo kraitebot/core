@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.102.2 - 2026-08-04
+
+### Post-warmup runtime-unit alert accuracy
+
+- [FIXED] The system-health pass suppresses transitional runtime-unit snapshots
+  during the existing post-warmup recovery window, preventing a false critical
+  scheduler alert before release choreography starts the scheduler.
+- [PRESERVED] Runtime-unit checks still run directly and resume automatically
+  after recovery; daemon, scheduler, queue, database, Redis, and market-price
+  liveness checks remain active throughout warmup.
+- [VERIFIED] Red-to-green recovery coverage and the full system-health gate pass
+  71 tests, one intentional skip, and 165 assertions; Larastan is green.
+
 ## 1.102.1 - 2026-08-04
 
 ### Step relationship model resolution

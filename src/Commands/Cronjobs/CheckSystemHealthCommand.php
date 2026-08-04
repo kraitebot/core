@@ -266,15 +266,16 @@ final class CheckSystemHealthCommand extends BaseCommand implements SystemHealth
         // the default prefix specifically; an all-scope pause also
         // returns true here because `isStepsDispatchPaused` ORs the
         // all-scope flag onto every per-prefix check. The bounded
-        // post-warmup marker covers the other false-positive window:
-        // dispatch has resumed, but the first producer cron has not yet
-        // had time to refresh these two tables.
-        $dispatcherDataRecovering = MaintenanceMode::isStepsDispatchPaused('')
-            || MaintenanceMode::isPostWarmupRecoveryActive();
+        // The post-warmup marker covers the other false-positive window:
+        // dispatch has resumed, but the first producer cron and final runtime
+        // snapshot have not necessarily observed the fully warmed system yet.
+        $dispatcherPaused = MaintenanceMode::isStepsDispatchPaused('');
+        $postWarmupRecovering = MaintenanceMode::isPostWarmupRecoveryActive();
 
         $activeChecks = collect(SystemHealthCheckType::standardCases())
-            ->reject(fn (SystemHealthCheckType $type): bool => $dispatcherDataRecovering
+            ->reject(fn (SystemHealthCheckType $type): bool => ($dispatcherPaused
                 && $type->isDispatcherDependent())
+                || ($postWarmupRecovering && $type->isPostWarmupDependent()))
             ->map(fn (SystemHealthCheckType $type): SystemHealthCheck => new SystemHealthCheck(
                 $type,
                 $this,
