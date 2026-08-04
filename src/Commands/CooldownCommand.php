@@ -192,8 +192,8 @@ final class CooldownCommand extends BaseCommand
 
     /**
      * Ready and reserved queue workload probe. Delayed work is intentionally
-     * excluded because self-rescheduling jobs may remain delayed throughout a
-     * deployment. Returns -1 on probe failure so callers can distinguish
+     * excluded because retry and deferred jobs may remain delayed throughout
+     * a deployment. Returns -1 on probe failure so callers can distinguish
      * "I cannot prove queues are empty" from "queues are empty".
      */
     private function getQueueDepth(): int

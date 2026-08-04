@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.101.0 - 2026-08-04
+
+### Laravel-owned operational monitoring
+
+- [ADDED] System health now checks configured public endpoints and fresh fleet
+  snapshots for non-running Supervisor or LaunchAgent units.
+- [ADDED] Operational snapshots record bounded recent failures, opened
+  positions, related orders, and trading-gate state for incident review.
+- [CHANGED] Fleet metrics are one-shot writes owned by the ingestion scheduler;
+  warmup queues only the initial report.
+- [REMOVED] Standalone Bash and systemd fleet-metrics artifacts.
+
 ## 1.100.0 - 2026-08-03
 
 ### Fresh Futures-first indicator conclusions

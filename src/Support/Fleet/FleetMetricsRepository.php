@@ -14,8 +14,8 @@ use Throwable;
 /**
  * Read/write side of the fleet-metrics heartbeat.
  *
- * Writer: each box's {@see ReportFleetMetricsJob}
- * (and hyperion's bash agent, via raw redis-cli) writes one key per host.
+ * Writer: the scheduled kraite:fleet-report command and warmup's immediate
+ * {@see ReportFleetMetricsJob} write one key for the current host.
  * Reader: the admin dashboard and the system-health watchdog both call
  * {@see all()} to render / alert on the fleet.
  *
@@ -27,7 +27,7 @@ use Throwable;
  * each known host's key directly, so:
  *   - a provisioned-but-never-reporting box still shows up (status `missing`),
  *     which is the entire reason the roster exists; and
- *   - we never touch `KEYS` (disabled on hyperion) — a fixed set of GETs.
+ *   - we never touch `KEYS` — production uses a fixed set of bounded GETs.
  *
  * Liveness is the `reported_at` age, never key existence: the key carries a
  * long TTL purely as a decommission garbage-collector, while `stale_after`
@@ -75,6 +75,20 @@ final class FleetMetricsRepository
         $decoded = json_decode($raw, true);
 
         return is_array($decoded) ? $decoded : null;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $snapshot
+     */
+    public function isFresh(?array $snapshot): bool
+    {
+        if ($snapshot === null) {
+            return false;
+        }
+
+        $age = $this->ageSeconds($snapshot['reported_at'] ?? null, CarbonImmutable::now());
+
+        return $age !== null && $age <= $this->staleAfterSeconds();
     }
 
     /**

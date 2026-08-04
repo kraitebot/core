@@ -39,12 +39,13 @@ use Kraite\Core\Commands\Cronjobs\PurgeCandlesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeFailedBacktestedKlinesCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeModelLogsCommand;
 use Kraite\Core\Commands\Cronjobs\PurgeOldDataCommand;
+use Kraite\Core\Commands\Cronjobs\RecordOperationalSnapshotCommand;
 use Kraite\Core\Commands\Cronjobs\RefreshBinanceListenKeysCommand;
 use Kraite\Core\Commands\Cronjobs\RefreshExchangeSymbolsCommand;
 use Kraite\Core\Commands\Cronjobs\RenewSubscriptionsCommand;
 use Kraite\Core\Commands\Cronjobs\StoreAccountsBalancesCommand;
-use Kraite\Core\Commands\Cronjobs\SyncOrdersCommand;
 use Kraite\Core\Commands\Cronjobs\SyncAccountIncomesCommand;
+use Kraite\Core\Commands\Cronjobs\SyncOrdersCommand;
 use Kraite\Core\Commands\Cronjobs\UpsertPnlsCommand;
 use Kraite\Core\Commands\Daemons\StreamBinancePricesCommand;
 use Kraite\Core\Commands\Daemons\StreamBinanceUserDataCommand;
@@ -147,6 +148,7 @@ final class CoreServiceProvider extends ServiceProvider
             OptimizeBreadcrumbTablesCommand::class,
             FlushDispatcherSaturationCommand::class,
             RefreshExchangeSymbolsCommand::class,
+            RecordOperationalSnapshotCommand::class,
             StoreAccountsBalancesCommand::class,
             StreamBinancePricesCommand::class,
             StreamBinanceUserDataCommand::class,
@@ -531,10 +533,9 @@ final class CoreServiceProvider extends ServiceProvider
      * Why empty prefix: the writer runs under the ingestion app and the
      * reader under the admin app, each with its own `REDIS_PREFIX`. On the
      * default connection the same logical key prefixes differently per app,
-     * so the reader would never see the writer's keys. hyperion (no PHP app)
-     * writes the same literal key via raw redis-cli. An empty prefix on a
-     * shared connection is the only way all four producers/consumers agree
-     * on the byte-for-byte key `kraite:fleet:<hostname>`.
+     * so the reader would never see the writer's keys. An empty prefix on a
+     * shared connection makes every PHP producer and consumer agree on the
+     * byte-for-byte key `kraite:fleet:<hostname>`.
      */
     private function registerFleetRedisConnection(): void
     {

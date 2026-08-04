@@ -26,6 +26,182 @@ use Throwable;
 final class FleetMetricsCollector
 {
     /**
+     * `/proc/uptime` is "<seconds-since-boot> <idle-seconds>". Take the first
+     * float, floor to whole seconds. Returns null on an unparseable line.
+     */
+    public static function parseUptime(string $raw): ?int
+    {
+        $first = strtok(mb_trim($raw), ' ');
+
+        if ($first === false || ! is_numeric($first)) {
+            return null;
+        }
+
+        return (int) floor((float) $first);
+    }
+
+    /**
+     * Convert 1-minute load average to a 0–100 percent of total CPU capacity.
+     * Null when either input is missing, clamped to 100.
+     */
+    public static function cpuPercent(?float $load1, ?int $cores): ?float
+    {
+        if ($load1 === null || $cores === null || $cores <= 0) {
+            return null;
+        }
+
+        return round(min(($load1 / $cores) * 100, 100), 1);
+    }
+
+    /**
+     * Parse `/proc/meminfo` into used / total MiB + used percent. Used =
+     * MemTotal − MemAvailable (the kernel's own "actually free for new work"
+     * figure, which already accounts for reclaimable cache). Returns nulls if
+     * either key is absent.
+     *
+     * @return array{used_mb: int|null, total_mb: int|null, percent: float|null}
+     */
+    public static function parseMeminfo(string $raw): array
+    {
+        $totalKb = self::meminfoValueKb($raw, 'MemTotal');
+        $availKb = self::meminfoValueKb($raw, 'MemAvailable');
+
+        if ($totalKb === null || $availKb === null || $totalKb <= 0) {
+            return ['used_mb' => null, 'total_mb' => null, 'percent' => null];
+        }
+
+        $usedKb = max($totalKb - $availKb, 0);
+
+        return [
+            'used_mb' => (int) round($usedKb / 1024),
+            'total_mb' => (int) round($totalKb / 1024),
+            'percent' => round(($usedKb / $totalKb) * 100, 1),
+        ];
+    }
+
+    /**
+     * Parse `supervisorctl status` lines into program → state. Each line is
+     * "<name>  <STATE>  <description...>"; we keep only the leading token and
+     * the uppercase state word. Single-process programs and `group:member`
+     * entries both work (the name is taken verbatim up to the first run of
+     * whitespace).
+     *
+     * @return array<string, string>
+     */
+    public static function parseSupervisorStatus(string $output): array
+    {
+        $units = [];
+
+        foreach (preg_split('/\R/', mb_trim($output)) ?: [] as $line) {
+            $line = mb_trim($line);
+
+            if ($line === '') {
+                continue;
+            }
+
+            if (preg_match('/^(\S+)\s+([A-Z]+)\b/', $line, $m) === 1) {
+                $units[$m[1]] = $m[2];
+            }
+        }
+
+        return $units;
+    }
+
+    /**
+     * Parse `launchctl list` into unit → state for one site. Each line is
+     * "<PID>\t<LastExitStatus>\t<Label>"; we keep only labels prefixed with
+     * "<site>." (e.g. `admin.kraite.test.horizon`), strip that prefix for the
+     * display name, and treat a numeric PID as RUNNING (a `-` PID means the
+     * daemon is loaded but not currently running).
+     *
+     * @return array<string, string>
+     */
+    public static function parseLaunchctlList(string $output, string $site): array
+    {
+        $units = [];
+        $prefix = $site.'.';
+
+        foreach (preg_split('/\R/', mb_trim($output)) ?: [] as $line) {
+            $cols = preg_split('/\t+/', mb_trim($line)) ?: [];
+
+            if (count($cols) < 3) {
+                continue;
+            }
+
+            [$pid, , $label] = $cols;
+
+            if (! str_starts_with($label, $prefix)) {
+                continue;
+            }
+
+            $name = mb_substr($label, mb_strlen($prefix));
+            $units[$name] = ($pid !== '-' && $pid !== '') ? 'RUNNING' : 'STOPPED';
+        }
+
+        return $units;
+    }
+
+    /**
+     * Parse `vm_stat` into used / total MiB + used percent for a known total.
+     * "Used" = (active + wired + compressed) pages × page size — the macOS
+     * analogue of Linux's MemTotal − MemAvailable. Page size is read from the
+     * header ("page size of N bytes"), defaulting to 4096.
+     *
+     * @return array{used_mb: int|null, total_mb: int|null, percent: float|null}
+     */
+    public static function parseVmStat(string $raw, int $totalBytes): array
+    {
+        if ($totalBytes <= 0) {
+            return ['used_mb' => null, 'total_mb' => null, 'percent' => null];
+        }
+
+        $page = preg_match('/page size of (\d+) bytes/', $raw, $m) === 1 ? (int) $m[1] : 4096;
+
+        $pages = static function (string $key) use ($raw): int {
+            return preg_match('/'.preg_quote($key, '/').':\s+(\d+)\./', $raw, $m) === 1 ? (int) $m[1] : 0;
+        };
+
+        $usedBytes = ($pages('Pages active') + $pages('Pages wired down') + $pages('Pages occupied by compressor')) * $page;
+
+        return [
+            'used_mb' => (int) round($usedBytes / 1048576),
+            'total_mb' => (int) round($totalBytes / 1048576),
+            'percent' => round(min(($usedBytes / $totalBytes) * 100, 100), 1),
+        ];
+    }
+
+    /**
+     * Parse `systemctl list-units 'kraite-*.service' --plain --no-legend` into
+     * unit → state. Columns are "UNIT LOAD ACTIVE SUB DESCRIPTION"; we keep the
+     * unit (minus the `.service` suffix) and map ActiveState `active` → RUNNING,
+     * everything else (inactive / failed / activating) to its uppercased state.
+     * A leading status glyph on failed units is tolerated.
+     *
+     * @return array<string, string>
+     */
+    public static function parseSystemdUnits(string $output): array
+    {
+        $units = [];
+
+        foreach (preg_split('/\R/', mb_trim($output)) ?: [] as $line) {
+            $cols = preg_split('/\s+/', mb_trim($line)) ?: [];
+
+            if ($cols !== [] && ! str_ends_with((string) $cols[0], '.service')) {
+                array_shift($cols); // drop a leading "●" / "*" status glyph
+            }
+
+            if (count($cols) < 3 || ! str_ends_with((string) $cols[0], '.service')) {
+                continue;
+            }
+
+            $name = mb_substr((string) $cols[0], 0, -mb_strlen('.service'));
+            $units[$name] = $cols[2] === 'active' ? 'RUNNING' : mb_strtoupper((string) $cols[2]);
+        }
+
+        return $units;
+    }
+
+    /**
      * Build the full snapshot payload for the given host.
      *
      * @return array<string, mixed>
@@ -46,12 +222,21 @@ final class FleetMetricsCollector
         ];
     }
 
+    private static function meminfoValueKb(string $raw, string $key): ?int
+    {
+        if (preg_match('/^'.preg_quote($key, '/').':\s+(\d+)\s*kB/m', $raw, $m) === 1) {
+            return (int) $m[1];
+        }
+
+        return null;
+    }
+
     /**
      * Deployed kraitebot/core version — the fleet's common denominator across
      * every app checkout (workers run ingestion, pheme runs the web apps, but
      * all of them carry core). The admin deploy panel groups hosts by this to
      * surface rollout drift. Null when composer metadata is unreadable
-     * (hyperion's bash agent never reports one).
+     * (older snapshots may not report one).
      */
     private function coreVersion(): ?string
     {
@@ -91,7 +276,7 @@ final class FleetMetricsCollector
             return null;
         }
 
-        $trimmed = trim($raw);
+        $trimmed = mb_trim($raw);
 
         return $trimmed === '' ? null : $trimmed;
     }
@@ -315,7 +500,7 @@ final class FleetMetricsCollector
             return null;
         }
 
-        $out = trim($out);
+        $out = mb_trim($out);
 
         return is_numeric($out) ? (int) $out : null;
     }
@@ -342,195 +527,10 @@ final class FleetMetricsCollector
             return [];
         }
 
-        if (! is_string($output) || trim($output) === '') {
+        if (! is_string($output) || mb_trim($output) === '') {
             return [];
         }
 
         return self::parseSupervisorStatus($output);
-    }
-
-    /**
-     * `/proc/uptime` is "<seconds-since-boot> <idle-seconds>". Take the first
-     * float, floor to whole seconds. Returns null on an unparseable line.
-     */
-    public static function parseUptime(string $raw): ?int
-    {
-        $first = strtok(trim($raw), ' ');
-
-        if ($first === false || ! is_numeric($first)) {
-            return null;
-        }
-
-        return (int) floor((float) $first);
-    }
-
-    /**
-     * Convert 1-minute load average to a 0–100 percent of total CPU capacity.
-     * Null when either input is missing, clamped to 100.
-     */
-    public static function cpuPercent(?float $load1, ?int $cores): ?float
-    {
-        if ($load1 === null || $cores === null || $cores <= 0) {
-            return null;
-        }
-
-        return round(min(($load1 / $cores) * 100, 100), 1);
-    }
-
-    /**
-     * Parse `/proc/meminfo` into used / total MiB + used percent. Used =
-     * MemTotal − MemAvailable (the kernel's own "actually free for new work"
-     * figure, which already accounts for reclaimable cache). Returns nulls if
-     * either key is absent.
-     *
-     * @return array{used_mb: int|null, total_mb: int|null, percent: float|null}
-     */
-    public static function parseMeminfo(string $raw): array
-    {
-        $totalKb = self::meminfoValueKb($raw, 'MemTotal');
-        $availKb = self::meminfoValueKb($raw, 'MemAvailable');
-
-        if ($totalKb === null || $availKb === null || $totalKb <= 0) {
-            return ['used_mb' => null, 'total_mb' => null, 'percent' => null];
-        }
-
-        $usedKb = max($totalKb - $availKb, 0);
-
-        return [
-            'used_mb' => (int) round($usedKb / 1024),
-            'total_mb' => (int) round($totalKb / 1024),
-            'percent' => round(($usedKb / $totalKb) * 100, 1),
-        ];
-    }
-
-    private static function meminfoValueKb(string $raw, string $key): ?int
-    {
-        if (preg_match('/^'.preg_quote($key, '/').':\s+(\d+)\s*kB/m', $raw, $m) === 1) {
-            return (int) $m[1];
-        }
-
-        return null;
-    }
-
-    /**
-     * Parse `supervisorctl status` lines into program → state. Each line is
-     * "<name>  <STATE>  <description...>"; we keep only the leading token and
-     * the uppercase state word. Single-process programs and `group:member`
-     * entries both work (the name is taken verbatim up to the first run of
-     * whitespace).
-     *
-     * @return array<string, string>
-     */
-    public static function parseSupervisorStatus(string $output): array
-    {
-        $units = [];
-
-        foreach (preg_split('/\R/', trim($output)) ?: [] as $line) {
-            $line = trim($line);
-
-            if ($line === '') {
-                continue;
-            }
-
-            if (preg_match('/^(\S+)\s+([A-Z]+)\b/', $line, $m) === 1) {
-                $units[$m[1]] = $m[2];
-            }
-        }
-
-        return $units;
-    }
-
-    /**
-     * Parse `launchctl list` into unit → state for one site. Each line is
-     * "<PID>\t<LastExitStatus>\t<Label>"; we keep only labels prefixed with
-     * "<site>." (e.g. `admin.kraite.test.horizon`), strip that prefix for the
-     * display name, and treat a numeric PID as RUNNING (a `-` PID means the
-     * daemon is loaded but not currently running).
-     *
-     * @return array<string, string>
-     */
-    public static function parseLaunchctlList(string $output, string $site): array
-    {
-        $units = [];
-        $prefix = $site.'.';
-
-        foreach (preg_split('/\R/', trim($output)) ?: [] as $line) {
-            $cols = preg_split('/\t+/', trim($line)) ?: [];
-
-            if (count($cols) < 3) {
-                continue;
-            }
-
-            [$pid, , $label] = $cols;
-
-            if (! str_starts_with($label, $prefix)) {
-                continue;
-            }
-
-            $name = substr($label, strlen($prefix));
-            $units[$name] = ($pid !== '-' && $pid !== '') ? 'RUNNING' : 'STOPPED';
-        }
-
-        return $units;
-    }
-
-    /**
-     * Parse `vm_stat` into used / total MiB + used percent for a known total.
-     * "Used" = (active + wired + compressed) pages × page size — the macOS
-     * analogue of Linux's MemTotal − MemAvailable. Page size is read from the
-     * header ("page size of N bytes"), defaulting to 4096.
-     *
-     * @return array{used_mb: int|null, total_mb: int|null, percent: float|null}
-     */
-    public static function parseVmStat(string $raw, int $totalBytes): array
-    {
-        if ($totalBytes <= 0) {
-            return ['used_mb' => null, 'total_mb' => null, 'percent' => null];
-        }
-
-        $page = preg_match('/page size of (\d+) bytes/', $raw, $m) === 1 ? (int) $m[1] : 4096;
-
-        $pages = static function (string $key) use ($raw): int {
-            return preg_match('/'.preg_quote($key, '/').':\s+(\d+)\./', $raw, $m) === 1 ? (int) $m[1] : 0;
-        };
-
-        $usedBytes = ($pages('Pages active') + $pages('Pages wired down') + $pages('Pages occupied by compressor')) * $page;
-
-        return [
-            'used_mb' => (int) round($usedBytes / 1048576),
-            'total_mb' => (int) round($totalBytes / 1048576),
-            'percent' => round(min(($usedBytes / $totalBytes) * 100, 100), 1),
-        ];
-    }
-
-    /**
-     * Parse `systemctl list-units 'kraite-*.service' --plain --no-legend` into
-     * unit → state. Columns are "UNIT LOAD ACTIVE SUB DESCRIPTION"; we keep the
-     * unit (minus the `.service` suffix) and map ActiveState `active` → RUNNING,
-     * everything else (inactive / failed / activating) to its uppercased state.
-     * A leading status glyph on failed units is tolerated.
-     *
-     * @return array<string, string>
-     */
-    public static function parseSystemdUnits(string $output): array
-    {
-        $units = [];
-
-        foreach (preg_split('/\R/', trim($output)) ?: [] as $line) {
-            $cols = preg_split('/\s+/', trim($line)) ?: [];
-
-            if ($cols !== [] && ! str_ends_with((string) $cols[0], '.service')) {
-                array_shift($cols); // drop a leading "●" / "*" status glyph
-            }
-
-            if (count($cols) < 3 || ! str_ends_with((string) $cols[0], '.service')) {
-                continue;
-            }
-
-            $name = substr((string) $cols[0], 0, -strlen('.service'));
-            $units[$name] = $cols[2] === 'active' ? 'RUNNING' : mb_strtoupper((string) $cols[2]);
-        }
-
-        return $units;
     }
 }

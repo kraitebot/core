@@ -10,23 +10,16 @@ use Kraite\Core\Support\Fleet\FleetMetricsCollector;
 use Kraite\Core\Support\Fleet\FleetMetricsRepository;
 
 /**
- * Manual entry point for the fleet-metrics heartbeat on this box.
+ * Write the current host's fleet-metrics heartbeat.
  *
- *  - `--seed` starts (or revives) the self-rescheduling loop by dispatching
- *    one {@see ReportFleetMetricsJob} onto this box's own queue. Idempotent —
- *    the job's uniqueness lock prevents a second loop. Called from warmup; also
- *    the operator's "kick the heartbeat" lever.
- *  - default (no flag) writes a single snapshot synchronously. Useful on a dev
- *    box without a running Horizon, and for verifying the key shape.
- *
- * hyperion does NOT use this command (no PHP app) — it writes the same key via
- * a standalone bash + systemd timer agent.
+ * The ingestion Laravel schedule invokes the synchronous path every five
+ * minutes. The seed option queues one immediate snapshot during warmup.
  */
 final class ReportFleetMetricsCommand extends Command
 {
-    protected $signature = 'kraite:fleet-report {--seed : Dispatch the self-rescheduling heartbeat loop instead of writing once}';
+    protected $signature = 'kraite:fleet-report {--seed : Queue one immediate heartbeat snapshot instead of writing synchronously}';
 
-    protected $description = 'Write this box\'s fleet-metrics snapshot to Redis, or --seed the heartbeat loop.';
+    protected $description = 'Write this host\'s fleet-metrics snapshot to Redis, or queue one immediate snapshot.';
 
     public function handle(FleetMetricsCollector $collector, FleetMetricsRepository $repository): int
     {
@@ -40,7 +33,7 @@ final class ReportFleetMetricsCommand extends Command
 
         if ($this->option('seed')) {
             ReportFleetMetricsJob::seed($hostname);
-            $this->info("Fleet-metrics heartbeat seeded for {$hostname}.");
+            $this->info("Fleet-metrics heartbeat queued for {$hostname}.");
 
             return self::SUCCESS;
         }

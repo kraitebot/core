@@ -239,8 +239,8 @@ return [
     | injected by CoreServiceProvider::boot) so every app agrees on the
     | literal key regardless of its own per-app `REDIS_PREFIX`. Without that
     | the ingestion writer and the admin reader would prefix the same logical
-    | key differently and never see each other. hyperion (no PHP app) writes
-    | the same literal key via raw redis-cli, so the prefix must be empty.
+    | key differently and never see each other. The prefix remains empty so
+    | every PHP producer and consumer uses the same literal key.
     |
     | Liveness is judged by the embedded `reported_at` age, NOT key existence:
     | the key carries a long `ttl_seconds` (garbage-collection horizon for a
@@ -265,14 +265,10 @@ return [
         'alert_throttle_seconds' => (int) env('FLEET_METRICS_ALERT_THROTTLE_SECONDS', 3600),
         'provisioning_grace_seconds' => (int) env('FLEET_METRICS_PROVISIONING_GRACE_SECONDS', 86400),
 
-        // Reporting identity + queue routing for the heartbeat. The defaults
-        // (all null) match a production box, where the OS hostname IS the
-        // logical roster name, the default queue connection is the Horizon
-        // connection, and a per-host supervisor consumes the `<hostname>`
-        // queue. A box where those don't hold — a dev machine whose OS hostname
-        // is not `local`, whose default queue connection is `database`, and
-        // whose Horizon consumes `default` — overrides them so the identical
-        // self-rescheduling heartbeat runs on the already-running local Horizon.
+        // Reporting identity plus routing for warmup's one-shot queued report.
+        // The scheduled five-minute writer is synchronous. A host whose OS
+        // hostname differs from its logical roster name overrides `hostname`;
+        // local warmup may override the connection and queue it consumes.
         // `hostname` is the box's logical roster identity, also honoured by
         // Kraite::ip() — without it a box whose OS hostname misses the
         // servers roster falls back to a live ipify lookup on every
@@ -452,6 +448,27 @@ return [
     |   long-stale orders.
     */
     'health_watchdog' => [
+        // Public surfaces previously polled by a machine-local Bash monitor.
+        // The production ingestion scheduler now owns these checks so they
+        // share the normal system-health notification and throttling path.
+        'public_endpoints' => [
+            'kraite_home' => env('HEALTH_WATCHDOG_KRAITE_HOME_URL', 'https://kraite.com/'),
+            'registration' => env('HEALTH_WATCHDOG_REGISTRATION_URL', 'https://kraite.com/register'),
+            'privacy' => env('HEALTH_WATCHDOG_PRIVACY_URL', 'https://kraite.com/privacy-policy'),
+            'terms' => env('HEALTH_WATCHDOG_TERMS_URL', 'https://kraite.com/terms-and-conditions'),
+            'admin' => env('HEALTH_WATCHDOG_ADMIN_URL', 'https://admin.kraite.com/'),
+            'api_aasa' => env('HEALTH_WATCHDOG_API_AASA_URL', 'https://api.kraite.com/.well-known/apple-app-site-association'),
+            'syntax' => env('HEALTH_WATCHDOG_SYNTAX_URL', 'https://syntax.kraite.com/'),
+        ],
+        'public_endpoint_connect_timeout_seconds' => (int) env(
+            'HEALTH_WATCHDOG_PUBLIC_ENDPOINT_CONNECT_TIMEOUT_SECONDS',
+            5,
+        ),
+        'public_endpoint_timeout_seconds' => (int) env(
+            'HEALTH_WATCHDOG_PUBLIC_ENDPOINT_TIMEOUT_SECONDS',
+            15,
+        ),
+
         'orphan_kraite_match_window_minutes' => (int) env(
             'HEALTH_WATCHDOG_ORPHAN_MATCH_WINDOW_MINUTES',
             60

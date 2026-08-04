@@ -36,7 +36,11 @@ interface SystemHealthProbe
 
     public function checkUserDataStreamDispatchMode(): int;
 
+    public function checkRuntimeUnitStatus(): int;
+
     public function checkFleetMetricsSilence(): int;
+
+    public function checkPublicEndpoints(): int;
 
     public function checkMaintenanceModeStuck(): int;
 }

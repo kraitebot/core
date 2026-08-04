@@ -8,9 +8,11 @@ use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use Kraite\Core\Jobs\Atomic\Order\SyncPositionOrdersJob as AtomicSyncPositionOrdersJob;
+use Kraite\Core\Jobs\Fleet\ReportFleetMetricsJob;
 use Kraite\Core\Jobs\Lifecycles\Order\PrepareSyncOrdersJob;
 use Kraite\Core\Jobs\Models\ExchangeSymbol\ConcludeSymbolDirectionAtTimeframeJob;
 use Kraite\Core\Jobs\Models\Indicator\QuerySymbolIndicatorsJob;
@@ -187,7 +189,7 @@ final class CheckSystemHealthCommand extends BaseCommand implements SystemHealth
     protected $signature = 'kraite:cron-check-system-health
                             {--output : Display command output (silent by default)}';
 
-    protected $description = 'Run ten staleness / connectivity checks across the bot\'s critical data paths and alert per failed signal.';
+    protected $description = 'Run the system-health checks across the bot\'s critical data paths and alert per failed signal.';
 
     public function __construct(
         private readonly StepRouter $stepRouter,
@@ -818,6 +820,64 @@ final class CheckSystemHealthCommand extends BaseCommand implements SystemHealth
     }
 
     /**
+     * Check the public surfaces that users and the mobile app depend on.
+     * Every endpoint is evaluated independently so one failure never hides
+     * the remaining results.
+     */
+    public function checkPublicEndpoints(): int
+    {
+        $endpoints = config('kraite.health_watchdog.public_endpoints', []);
+
+        if (! is_array($endpoints)) {
+            return 0;
+        }
+
+        $connectTimeout = max(1, (int) config(
+            'kraite.health_watchdog.public_endpoint_connect_timeout_seconds',
+            5,
+        ));
+        $timeout = max($connectTimeout, (int) config(
+            'kraite.health_watchdog.public_endpoint_timeout_seconds',
+            15,
+        ));
+        $alerts = 0;
+
+        foreach ($endpoints as $name => $url) {
+            if (! is_string($name) || $name === '' || ! is_string($url) || $url === '') {
+                continue;
+            }
+
+            $signalName = preg_replace('/[^a-z0-9_]+/', '_', mb_strtolower($name)) ?: 'unknown';
+
+            try {
+                $response = Http::connectTimeout($connectTimeout)
+                    ->timeout($timeout)
+                    ->withUserAgent('Kraite-System-Health/1.0')
+                    ->withOptions(['allow_redirects' => true])
+                    ->get($url);
+
+                if ($response->ok()) {
+                    continue;
+                }
+
+                $detail = "Public endpoint {$url} returned HTTP {$response->status()}; expected HTTP 200.";
+            } catch (Throwable $exception) {
+                $detail = "Public endpoint {$url} could not be reached: {$exception->getMessage()}";
+            }
+
+            $this->emit(
+                signal: "public_endpoint_unhealthy_{$signalName}",
+                severity: 'high',
+                title: "Public endpoint unhealthy: {$name}",
+                detail: $detail,
+            );
+            $alerts++;
+        }
+
+        return $alerts;
+    }
+
+    /**
      * #9 — Horizon queue depth, per-queue with profile-tuned
      * thresholds. A growing pending count on a safety-critical queue
      * (positions / orders / user-data-stream) means delayed exposure-
@@ -1178,8 +1238,8 @@ final class CheckSystemHealthCommand extends BaseCommand implements SystemHealth
                 : 'stale with an unreadable reported_at stamp';
 
             $detail = $status === 'missing'
-                ? "No fleet-metrics heartbeat key for {$hostname} ({$type}, {$ip}). The box is in the kraite.fleet.servers registry but has never reported — its heartbeat loop never started (warmup seed missed, Horizon down since provisioning) or it was decommissioned without cleaning the registry."
-                : "Fleet-metrics heartbeat for {$hostname} ({$type}, {$ip}) is {$staleFor} (threshold: ".config('kraite.fleet_metrics.stale_after_seconds').'s). The box stopped reporting — Horizon / heartbeat wedged, the box is offline, or it is mid-reboot beyond the grace window.';
+                ? "No fleet-metrics heartbeat key for {$hostname} ({$type}, {$ip}). The box is in the kraite.fleet.servers registry but has never reported — its scheduled reporter never ran, warmup did not publish an initial snapshot, or it was decommissioned without cleaning the registry."
+                : "Fleet-metrics heartbeat for {$hostname} ({$type}, {$ip}) is {$staleFor} (threshold: ".config('kraite.fleet_metrics.stale_after_seconds').'s). The scheduled reporter stopped running, the box is offline, or it is mid-reboot beyond the grace window.';
 
             $this->emit(
                 signal: "fleet_box_silent_{$hostname}",
@@ -1192,6 +1252,64 @@ final class CheckSystemHealthCommand extends BaseCommand implements SystemHealth
         }
 
         return $alerts;
+    }
+
+    /**
+     * Alert when the current host is still publishing fleet metrics but one
+     * or more Supervisor/LaunchAgent units report a non-running state. A
+     * missing snapshot remains the responsibility of fleet-silence so one
+     * outage cannot produce two notifications.
+     */
+    public function checkRuntimeUnitStatus(): int
+    {
+        $hostname = ReportFleetMetricsJob::resolveHostname();
+        $repository = app(FleetMetricsRepository::class);
+        $snapshot = $repository->read($hostname);
+
+        if ($snapshot === null || ! $repository->isFresh($snapshot)) {
+            return 0;
+        }
+
+        $units = $snapshot['units'] ?? null;
+
+        if (! is_array($units) || $units === []) {
+            return 0;
+        }
+
+        $unhealthy = [];
+
+        foreach ($units as $unit => $state) {
+            if (! is_string($unit) || $unit === '') {
+                continue;
+            }
+
+            $normalizedState = is_string($state) && $state !== ''
+                ? mb_strtoupper($state)
+                : 'UNKNOWN';
+
+            if ($normalizedState !== 'RUNNING') {
+                $unhealthy[$unit] = $normalizedState;
+            }
+        }
+
+        if ($unhealthy === []) {
+            return 0;
+        }
+
+        ksort($unhealthy);
+
+        $summary = collect($unhealthy)
+            ->map(static fn (string $state, string $unit): string => "{$unit}={$state}")
+            ->implode(', ');
+
+        $this->emit(
+            signal: "runtime_units_unhealthy_{$hostname}",
+            severity: 'critical',
+            title: "Runtime units unhealthy on {$hostname}",
+            detail: "Fresh fleet metrics report non-running runtime units: {$summary}. Inspect the affected process before restarting it; the functional liveness checks remain active independently.",
+        );
+
+        return 1;
     }
 
     /**

@@ -43,14 +43,12 @@ final class WarmupCommand extends BaseCommand
             $this->info("Post-warmup data recovery grace active for {$minutes} minutes.");
         }
 
-        // (Re)start this box's fleet-metrics heartbeat. The job is unique per
-        // host, so seeding on every warmup is idempotent — it revives a loop
-        // that died (failed tick, lost delayed job, fresh deploy) without ever
-        // spawning a duplicate pulse while one is still pending.
+        // Publish one immediate fleet-metrics heartbeat. The ingestion
+        // scheduler owns all later five-minute ticks.
         $hostname = ReportFleetMetricsJob::resolveHostname();
         if ($hostname !== '' && $hostname !== 'unknown') {
             ReportFleetMetricsJob::seed($hostname);
-            $this->info("Fleet-metrics heartbeat seeded for {$hostname}.");
+            $this->info("Fleet-metrics heartbeat queued for {$hostname}.");
         }
 
         $this->info('STATUS:ONLINE');

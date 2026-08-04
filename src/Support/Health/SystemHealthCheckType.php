@@ -23,7 +23,9 @@ enum SystemHealthCheckType: string
     case StaleSyncingPositions = 'checkStaleSyncingPositions';
     case UserDataDeadLetters = 'checkUserDataDeadLetters';
     case UserDataStreamDispatchMode = 'checkUserDataStreamDispatchMode';
+    case RuntimeUnitStatus = 'checkRuntimeUnitStatus';
     case FleetMetricsSilence = 'checkFleetMetricsSilence';
+    case PublicEndpoints = 'checkPublicEndpoints';
     case MaintenanceModeStuck = 'checkMaintenanceModeStuck';
 
     /** @return list<self> */
@@ -64,7 +66,9 @@ enum SystemHealthCheckType: string
             self::StaleSyncingPositions => $probe->checkStaleSyncingPositions(),
             self::UserDataDeadLetters => $probe->checkUserDataDeadLetters(),
             self::UserDataStreamDispatchMode => $probe->checkUserDataStreamDispatchMode(),
+            self::RuntimeUnitStatus => $probe->checkRuntimeUnitStatus(),
             self::FleetMetricsSilence => $probe->checkFleetMetricsSilence(),
+            self::PublicEndpoints => $probe->checkPublicEndpoints(),
             self::MaintenanceModeStuck => $probe->checkMaintenanceModeStuck(),
         };
     }
