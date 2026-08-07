@@ -88,6 +88,8 @@ final class ExchangeSymbol extends BaseModel
 
     public const SYSTEM_BLOCK_OPENING_FAILED = 'position_opening_failed';
 
+    public const SYSTEM_BLOCK_STOP_LOSS_TRIGGERED = 'stop_loss_triggered';
+
     public const SYSTEM_BLOCK_NOT_ALLOW_LISTED = 'token_not_allow_listed';
 
     public const SYSTEM_BLOCK_RENAMED = 'renamed';

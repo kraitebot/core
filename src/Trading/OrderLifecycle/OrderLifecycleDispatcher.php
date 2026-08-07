@@ -12,6 +12,7 @@ use Kraite\Core\Jobs\Lifecycles\Order\PrepareOrderCorrectionJob;
 use Kraite\Core\Jobs\Lifecycles\Position\ApplyWapJob;
 use Kraite\Core\Jobs\Lifecycles\Position\ClosePositionJob;
 use Kraite\Core\Jobs\Lifecycles\Position\PreparePositionReplacementJob;
+use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Proxies\JobProxy;
@@ -26,6 +27,10 @@ final class OrderLifecycleDispatcher
     public function dispatchClosePosition(Order $order, Position $position): void
     {
         $this->forLockedActivePosition($position, function (Position $locked) use ($order): void {
+            if ($order->type === 'STOP-MARKET') {
+                $locked->exchangeSymbol?->applySystemBlock(ExchangeSymbol::SYSTEM_BLOCK_STOP_LOSS_TRIGGERED);
+            }
+
             if (Step::hasLiveWorkflow($locked, ClosePositionJob::class)) {
                 return;
             }

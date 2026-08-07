@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace Kraite\Core\Support;
 
 use Kraite\Core\Enums\NotificationLogStatus;
+use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\NotificationLog;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Notifications\Channels\AppPushChannel;
+use NotificationChannels\Pushover\PushoverChannel;
 
 final class PositionClosedNotifier
 {
@@ -16,7 +19,7 @@ final class PositionClosedNotifier
     ];
 
     /**
-     * Send exactly one WAP-close notification after the exchange PnL exists.
+     * Send one WAP-close event through the required trader and operator routes after the exchange PnL exists.
      *
      * @return array{waped_closed_notification_sent: bool, high_profit_notification_sent: bool}
      */
@@ -66,13 +69,24 @@ final class PositionClosedNotifier
             $referenceData['was_fast_traded'] = (bool) $position->getAttribute('was_fast_traded');
         }
 
-        $sent = NotificationService::send(
+        $operatorPushoverSent = NotificationService::send(
+            user: Kraite::admin(),
+            canonical: $canonical,
+            referenceData: $referenceData,
+            relatable: $position,
+            duration: 0,
+            channels: [PushoverChannel::class],
+        );
+
+        $traderChannelsSent = NotificationService::send(
             user: $user,
             canonical: $canonical,
             referenceData: $referenceData,
             relatable: $position,
             cacheKeys: ['position' => $position->id],
+            channels: [AppPushChannel::class, 'mail'],
         );
+        $sent = $operatorPushoverSent && $traderChannelsSent;
 
         return [
             'waped_closed_notification_sent' => $sent && ! $isHighProfit,
