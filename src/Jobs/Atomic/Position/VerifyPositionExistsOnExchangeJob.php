@@ -41,6 +41,7 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
         string $triggerStatus,
         ?string $message = null,
         public bool $confirmationAttempt = false,
+        public bool $manualCloseDetected = false,
     ) {
         $this->position = Position::findOrFail($positionId);
         $this->triggerStatus = $triggerStatus;
@@ -90,6 +91,7 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
 
         $openingCancellationDispatched = ! $positionExistsOnExchange
             && PositionSafety::dispatchOpeningOrderCancellation($position, 'replacement-confirmed-flat');
+        $manualCloseDetected = $this->manualCloseDetected;
 
         // Lock + dedupe pattern matching OrderObserver dispatch sites.
         // VerifyPositionExistsOnExchangeJob is a competing lifecycle
@@ -98,11 +100,17 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
         // admitted for one position/action without this guard. Lock
         // the row, re-read, dedupe by class, then mutate state and
         // create the step in one transaction.
-        $dispatched = DB::transaction(function () use ($position, $resolver, $positionExistsOnExchange): string {
+        $dispatched = DB::transaction(function () use ($manualCloseDetected, $position, $resolver, $positionExistsOnExchange): string {
             $locked = Position::query()->whereKey($position->id)->lockForUpdate()->firstOrFail();
 
             if (! $positionExistsOnExchange) {
                 $closePositionClass = $resolver->resolve(ClosePositionJob::class);
+
+                // Only persist the manual origin after two independent reads
+                // confirm the external reduce-only fill left no exposure.
+                if ($manualCloseDetected) {
+                    $locked->updateIfNotSet('manually_closed_at', now());
+                }
 
                 if (Step::hasLiveWorkflow($locked, $closePositionClass)) {
                     return 'ClosePositionJob (already pending)';
@@ -189,6 +197,7 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
                     'triggerStatus' => $this->triggerStatus,
                     'message' => $this->message,
                     'confirmationAttempt' => true,
+                    'manualCloseDetected' => $this->manualCloseDetected,
                 ],
                 'dispatch_after' => now()->addSeconds(
                     (int) config('kraite.position_safety.flat_confirmation_delay_seconds', 20),

@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.103.0 - 2026-08-08
+
+### Explicit manual-close notifications
+
+- [NEW] An exchange-side close confirmed outside Kraite is recorded only after
+  the position is verified flat and is labeled explicitly in trader alerts.
+- [NEW] Manual closes receive the same app and email delivery as supported
+  close events, including the high-profit variant without duplicate alerts.
+- [PRESERVED] Automated Kraite closes keep their existing wording and origin.
+
 ## 1.102.2 - 2026-08-04
 
 ### Post-warmup runtime-unit alert accuracy

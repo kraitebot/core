@@ -38,6 +38,7 @@ final class PreparePositionReplacementJob extends BaseApiableJob
         string $triggerStatus,
         ?string $message = null,
         public bool $confirmationAttempt = false,
+        public bool $manualCloseDetected = false,
     ) {
         $this->position = Position::findOrFail($positionId);
         $this->triggerStatus = $triggerStatus;
@@ -97,6 +98,7 @@ final class PreparePositionReplacementJob extends BaseApiableJob
                     'triggerStatus' => $this->triggerStatus,
                     'message' => $this->message,
                     'confirmationAttempt' => $this->confirmationAttempt,
+                    'manualCloseDetected' => $this->manualCloseDetected,
                 ],
                 'block_uuid' => $blockUuid,
                 'index' => $nextIndex,

@@ -19,7 +19,7 @@ final class PositionClosedNotifier
     ];
 
     /**
-     * Send one WAP-close event through the required trader and operator routes after the exchange PnL exists.
+     * Send one WAP or manual-close event through the required trader and operator routes after the exchange PnL exists.
      *
      * @return array{waped_closed_notification_sent: bool, high_profit_notification_sent: bool}
      */
@@ -35,7 +35,9 @@ final class PositionClosedNotifier
 
         $position->loadMissing(['account.user', 'exchangeSymbol']);
 
-        if ($position->getAttribute('pnl') === null || ! $position->was_waped) {
+        $manuallyClosed = $position->manually_closed_at !== null;
+
+        if ($position->getAttribute('pnl') === null || (! $position->was_waped && ! $manuallyClosed)) {
             return $notSent;
         }
 
@@ -62,6 +64,7 @@ final class PositionClosedNotifier
                 ? null
                 : api_format_price($closingPrice, $position->exchangeSymbol),
             'filled_limits' => $filledLimitCount,
+            'manually_closed' => $manuallyClosed,
         ];
 
         if (! $isHighProfit) {

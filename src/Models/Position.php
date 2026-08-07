@@ -24,6 +24,7 @@ use StepDispatcher\Models\Step;
  * @property string $status
  * @property string $direction
  * @property string|null $max_pain
+ * @property \Illuminate\Support\Carbon|null $manually_closed_at
  * @property int $total_limit_orders
  * @property bool $was_waped
  * @property Account $account
@@ -46,6 +47,7 @@ final class Position extends BaseModel
 
         'opened_at' => 'datetime',
         'closed_at' => 'datetime',
+        'manually_closed_at' => 'datetime',
         'waped_at' => 'datetime',
 
         'indicators_values' => 'array',

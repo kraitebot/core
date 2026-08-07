@@ -642,11 +642,16 @@ final class NotificationMessageBuilder
                 $closingPrice = is_string($context['closing_price'] ?? null) ? $context['closing_price'] : null;
                 $filledLimits = is_int($context['filled_limits'] ?? null) ? (int) $context['filled_limits'] : null;
                 $wasFastTraded = ! empty($context['was_fast_traded']);
+                $manuallyClosed = ! empty($context['manually_closed']);
 
                 $posRef = $positionId !== null ? "#{$positionId}" : '';
                 $fastLabel = $wasFastTraded ? ' · fast trade' : '';
+                $closeVerb = $manuallyClosed ? 'manually closed' : 'closed';
 
-                $pushoverLines = ["🏁 {$direction} {$pair} closed · {$posRef}{$fastLabel}"];
+                $pushoverLines = ["🏁 {$direction} {$pair} {$closeVerb} · {$posRef}{$fastLabel}"];
+                if ($manuallyClosed) {
+                    $pushoverLines[] = 'Closed outside Kraite.';
+                }
                 if ($closingPrice !== null) {
                     $pushoverLines[] = "Exit: {$closingPrice}";
                 }
@@ -656,12 +661,15 @@ final class NotificationMessageBuilder
                 $pushoverLines[] = "Account: {$accountName}";
 
                 $emailLines = [
-                    "🏁 Position {$posRef} closed".($wasFastTraded ? ' (fast trade)' : ''),
+                    "🏁 Position {$posRef} {$closeVerb}".($wasFastTraded ? ' (fast trade)' : ''),
                     '',
                     "• Pair: {$pair}",
                     "• Direction: {$direction}",
                     "• Account: {$accountName}",
                 ];
+                if ($manuallyClosed) {
+                    $emailLines[] = '• Close origin: outside Kraite';
+                }
                 if ($closingPrice !== null) {
                     $emailLines[] = "• Closing price: {$closingPrice}";
                 }
@@ -672,7 +680,7 @@ final class NotificationMessageBuilder
                 return [
                     'severity' => NotificationSeverity::Info,
                     'priority' => -1,
-                    'title' => "Position Closed — {$direction} {$pair}",
+                    'title' => ($manuallyClosed ? 'Position Manually Closed' : 'Position Closed')." — {$direction} {$pair}",
                     'emailMessage' => implode(separator: "\n", array: $emailLines),
                     'pushoverMessage' => implode(separator: "\n", array: $pushoverLines),
                     'actionUrl' => null,
@@ -746,22 +754,29 @@ final class NotificationMessageBuilder
                 $positionId = is_int($context['position_id'] ?? null) ? (int) $context['position_id'] : null;
                 $filledLimits = is_int($context['filled_limits'] ?? null) ? (int) $context['filled_limits'] : 0;
                 $closingPrice = is_string($context['closing_price'] ?? null) ? $context['closing_price'] : null;
+                $manuallyClosed = ! empty($context['manually_closed']);
 
                 $posRef = $positionId !== null ? "#{$positionId}" : '';
 
                 $pushoverLines = ["🎉 Nice one! · {$direction} {$pair} · {$posRef}"];
+                if ($manuallyClosed) {
+                    $pushoverLines[] = 'Position manually closed outside Kraite.';
+                }
                 if ($closingPrice !== null) {
                     $pushoverLines[] = "Exit: {$closingPrice}";
                 }
                 $pushoverLines[] = "DCA rungs filled: {$filledLimits}";
 
                 $emailLines = [
-                    "🎉 High-profit position {$posRef} closed",
+                    "🎉 High-profit position {$posRef} ".($manuallyClosed ? 'manually closed' : 'closed'),
                     '',
                     "• Pair: {$pair}",
                     "• Direction: {$direction}",
                     "• DCA rungs filled: {$filledLimits}",
                 ];
+                if ($manuallyClosed) {
+                    $emailLines[] = '• Close origin: outside Kraite';
+                }
                 if ($closingPrice !== null) {
                     $emailLines[] = "• Closing price: {$closingPrice}";
                 }
@@ -771,7 +786,7 @@ final class NotificationMessageBuilder
                 return [
                     'severity' => NotificationSeverity::Info,
                     'priority' => -1,
-                    'title' => "🎉 High-Profit Close — {$direction} {$pair}",
+                    'title' => ($manuallyClosed ? '🎉 High-Profit Position Manually Closed' : '🎉 High-Profit Close')." — {$direction} {$pair}",
                     'emailMessage' => implode(separator: "\n", array: $emailLines),
                     'pushoverMessage' => implode(separator: "\n", array: $pushoverLines),
                     'actionUrl' => null,

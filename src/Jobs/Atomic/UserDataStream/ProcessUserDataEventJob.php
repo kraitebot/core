@@ -518,6 +518,7 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
                     'positionId' => $locked->id,
                     'triggerStatus' => 'EXTERNAL_FILL',
                     'message' => 'Reduce-only fill on unowned order — verifying position state',
+                    'manualCloseDetected' => true,
                 ],
             ]);
 
