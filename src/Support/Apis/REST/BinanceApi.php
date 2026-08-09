@@ -126,6 +126,20 @@ final class BinanceApi
         return $this->client->signRequest($apiRequest);
     }
 
+    public function getAllAlgoOrders(ApiProperties $properties): mixed
+    {
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/allAlgoOrders', $properties);
+
+        return $this->client->signRequest($apiRequest);
+    }
+
+    public function getForceOrders(ApiProperties $properties): mixed
+    {
+        $apiRequest = ApiRequest::make('GET', '/fapi/v1/forceOrders', $properties);
+
+        return $this->client->signRequest($apiRequest);
+    }
+
     public function getOrder(ApiProperties $properties): mixed
     {
         $apiRequest = ApiRequest::make('GET', '/fapi/v1/order', $properties);

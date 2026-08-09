@@ -309,6 +309,11 @@ final class CoreServiceProvider extends ServiceProvider
             SshProductionDatabaseCloneGateway::class,
         );
 
+        $this->app->bind(
+            Contracts\PositionCloseAttributor::class,
+            Support\PositionManualCloseAttributor::class,
+        );
+
         $this->app->singleton(Support\MarketRegime\BscsManager::class);
         $this->app->singleton(Trading\Exchange\ExchangeManager::class);
         $this->app->singleton(Trading\TokenSelection\TokenSelectionManager::class);

@@ -99,6 +99,8 @@ trait MapsUserDataStream
             executionType: $isAlgoEvent
                 ? $this->synthesizeAlgoExecutionType($nativeStatus)
                 : $this->stringOrNull($order['x'] ?? null),
+            side: $this->stringOrNull($order['S'] ?? null),
+            positionSide: $this->stringOrNull($order['ps'] ?? null),
             eventTimeMs: $this->intOrNull($envelope['E'] ?? $envelope['T'] ?? null),
             reduceOnly: $isAlgoEvent
                 ? null

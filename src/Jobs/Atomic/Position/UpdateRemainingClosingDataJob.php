@@ -45,7 +45,8 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
     {
         $position = $this->position;
         $account = $position->account;
-        $closingPrice = null;
+        $storedClosingPrice = $position->getAttribute('closing_price');
+        $closingPrice = Math::isPositive($storedClosingPrice) ? (string) $storedClosingPrice : null;
         $wasFastTraded = false;
         // 1. Primary: pull the closing price from the exchange's trade
         // history. Works for all close flavours — our own workflow AND a
@@ -55,16 +56,18 @@ final class UpdateRemainingClosingDataJob extends BaseApiableJob
         // `profitOrder()`, which excludes CANCELLED/EXPIRED rows and so
         // returned null whenever the user manual-closed (which leaves the
         // TP as EXPIRED on Binance), losing the closing_price entirely.
-        try {
-            $tradesResponse = $position->apiQueryTokenTrades();
+        if ($closingPrice === null) {
+            try {
+                $tradesResponse = $position->apiQueryTokenTrades();
 
-            if ($tradesResponse->result) {
-                $trades = is_array($tradesResponse->result) ? $tradesResponse->result : [];
-                $closingPrice = $this->extractClosingPriceFromTrades($trades, (string) $position->direction);
+                if ($tradesResponse->result) {
+                    $trades = is_array($tradesResponse->result) ? $tradesResponse->result : [];
+                    $closingPrice = $this->extractClosingPriceFromTrades($trades, (string) $position->direction);
+                }
+            } catch (Throwable $e) {
+                // Log but don't fail - closing price is nice to have
+                info("Failed to get closing price for position {$position->id}: ".$e->getMessage());
             }
-        } catch (Throwable $e) {
-            // Log but don't fail - closing price is nice to have
-            info("Failed to get closing price for position {$position->id}: ".$e->getMessage());
         }
 
         // Fallback: TP filled naturally. Use its own price.

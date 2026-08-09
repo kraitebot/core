@@ -15,6 +15,7 @@ use Kraite\Core\Models\ApiDataStream;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
+use Kraite\Core\Support\PositionClosingOrderSemantics;
 use Kraite\Core\Support\PositionSafety;
 use Kraite\Core\Support\Proxies\JobProxy;
 use Kraite\Core\Support\ValueObjects\UserDataStreamEvent;
@@ -416,16 +417,18 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
      * Detect a manual / external position close from a user-data frame
      * we did not originate.
      *
-     * Binance's "Close All" / market-flat action places a reduce-only
-     * MARKET on its own side — never persisted in our orders table — and
-     * fills it. Our existing TP/SL go to EXPIRED (not CANCELLED) on
+     * Binance's "Close All" / market-flat action places a closing MARKET
+     * on its own side — never persisted in our orders table — and fills it.
+     * One-way accounts mark it reduce-only; Hedge Mode proves the close from
+     * side + positionSide because Binance rejects reduceOnly there. Our
+     * existing TP/SL go to EXPIRED (not CANCELLED) on
      * close, so the OrderObserver-driven replacement chain only fires
      * once polling sync writes those EXPIREDs to our DB. That polling
      * latency is what previously made manual close take ~60s to
      * register; during that window the DCA legs sit live on the
      * exchange and could fill on an adverse move.
      *
-     * This branch closes that window. Whenever a reduce-only FILL
+     * This branch closes that window. Whenever a semantically closing FILL
      * arrives for an order we cannot resolve locally, we look for an
      * active position on this account+symbol and let the standard
      * replacement orchestration (PreparePositionReplacementJob →
@@ -438,18 +441,13 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
      *
      * Strict gate set:
      *   - eventType must be order_update (skip account_update / margin_call)
-     *   - reduceOnly must be true OR closePosition must be true (a non-
-     *     reduce, non-close fill is benign DCA flow). Pre-fix, only the
-     *     reduceOnly half was checked; Binance ALGO_UPDATE close-position
-     *     algo fills carry `o.cp=true` but no `o.R` flag (the mapper
-     *     deliberately leaves reduceOnly=null for ALGO frames), so a
-     *     manual-close algo trigger could not flow through this branch.
-     *     With closePosition added to the DTO (see MapsUserDataStream +
-     *     UserDataStreamEvent), this gate now accepts either signal.
+     *   - side + positionSide + account mode must identify the exact reducing
+     *     leg; one-way mode additionally requires reduceOnly/closePosition
+     *   - liquidation/ADL execution evidence must be absent
      *   - normalizedStatus must be FILLED (PARTIAL fills do not flat the position)
      *   - applyToOrderModel must have skipped (no local match — confirms
      *     the order is not one we already track)
-     *   - Account must own an active position on this symbol
+     *   - Account must own exactly one active-status position on this symbol
      */
     private function maybeDetectManualPositionClose(UserDataStreamEvent $event, bool $orderDispatched): bool
     {
@@ -458,10 +456,6 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
         }
 
         if ($event->eventType !== 'order_update') {
-            return false;
-        }
-
-        if ($event->reduceOnly !== true && $event->closePosition !== true) {
             return false;
         }
 
@@ -477,9 +471,24 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
             return false;
         }
 
-        $position = $this->resolveActivePositionForSymbol($event->symbol);
+        if ($this->isExchangeForcedClose($event)) {
+            return false;
+        }
+
+        $position = $this->resolveActivePositionForEvent($event);
 
         if ($position === null) {
+            return false;
+        }
+
+        if (! app(PositionClosingOrderSemantics::class)->matches(
+            hedgeMode: $position->account->isHedgeMode(),
+            direction: (string) $position->direction,
+            side: $event->side,
+            positionSide: $event->positionSide,
+            reduceOnly: $event->reduceOnly,
+            closePosition: $event->closePosition,
+        )) {
             return false;
         }
 
@@ -501,7 +510,7 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
                 return false;
             }
 
-            Log::channel('user-data')->info('[USER-DATA] manual close detected via reduce-only fill', [
+            Log::channel('user-data')->info('[USER-DATA] manual close detected via external closing fill', [
                 'account_id' => $this->accountId,
                 'position_id' => $position->id,
                 'symbol' => $event->symbol,
@@ -517,8 +526,9 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
                 'arguments' => [
                     'positionId' => $locked->id,
                     'triggerStatus' => 'EXTERNAL_FILL',
-                    'message' => 'Reduce-only fill on unowned order — verifying position state',
+                    'message' => 'External closing fill on unowned order — verifying position state',
                     'manualCloseDetected' => true,
+                    'manualClosingPrice' => $this->closingPriceFromEvent($event),
                 ],
             ]);
 
@@ -532,14 +542,47 @@ final class ProcessUserDataEventJob extends BaseQueueableJob
      * position exists for this pair (typical, manual-close branch will
      * exit cleanly).
      */
-    private function resolveActivePositionForSymbol(string $symbol): ?Position
+    private function resolveActivePositionForEvent(UserDataStreamEvent $event): ?Position
     {
-        $upper = mb_strtoupper(mb_trim($symbol));
-
-        return Position::query()
+        $symbol = mb_strtoupper(mb_trim((string) $event->symbol));
+        $positionSide = mb_strtoupper(mb_trim((string) $event->positionSide));
+        $query = Position::query()
             ->where('account_id', $this->accountId)
-            ->where('status', 'active')
-            ->where('parsed_trading_pair', $upper)
-            ->first();
+            ->active()
+            ->where('parsed_trading_pair', $symbol);
+
+        if (in_array($positionSide, ['LONG', 'SHORT'], strict: true)) {
+            $query->where('direction', $positionSide);
+        }
+
+        $positions = $query->get();
+
+        if ($positions->count() !== 1) {
+            return null;
+        }
+
+        return $positions->first();
+    }
+
+    private function isExchangeForcedClose(UserDataStreamEvent $event): bool
+    {
+        if (mb_strtoupper((string) $event->executionType) === 'CALCULATED') {
+            return true;
+        }
+
+        $clientOrderId = mb_strtolower((string) $event->clientOrderId);
+
+        return str_starts_with($clientOrderId, 'autoclose-')
+            || str_starts_with($clientOrderId, 'adl_autoclose')
+            || str_starts_with($clientOrderId, 'settlement_autoclose-');
+    }
+
+    private function closingPriceFromEvent(UserDataStreamEvent $event): ?string
+    {
+        if (Math::isPositive($event->averagePrice)) {
+            return $event->averagePrice;
+        }
+
+        return Math::isPositive($event->lastFilledPrice) ? $event->lastFilledPrice : null;
     }
 }

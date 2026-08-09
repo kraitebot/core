@@ -6,12 +6,16 @@ namespace Kraite\Core\Jobs\Atomic\Position;
 
 use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseQueueableJob;
+use Kraite\Core\Contracts\PositionCloseAttributor;
+use Kraite\Core\Enums\PositionCloseAttribution;
 use Kraite\Core\Enums\PositionPresence;
 use Kraite\Core\Jobs\Lifecycles\Position\ClosePositionJob;
 use Kraite\Core\Jobs\Lifecycles\Position\PreparePositionReplacementJob;
 use Kraite\Core\Jobs\Lifecycles\Position\SmartReplaceOrdersJob;
 use Kraite\Core\Models\ApiSnapshot;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Support\Math;
+use Kraite\Core\Support\PositionCloseEvidence;
 use Kraite\Core\Support\PositionSafety;
 use Kraite\Core\Support\PositionSnapshot;
 use Kraite\Core\Support\Proxies\JobProxy;
@@ -42,6 +46,8 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
         ?string $message = null,
         public bool $confirmationAttempt = false,
         public bool $manualCloseDetected = false,
+        public ?int $flatObservedAtMs = null,
+        public ?string $manualClosingPrice = null,
     ) {
         $this->position = Position::findOrFail($positionId);
         $this->triggerStatus = $triggerStatus;
@@ -91,7 +97,7 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
 
         $openingCancellationDispatched = ! $positionExistsOnExchange
             && PositionSafety::dispatchOpeningOrderCancellation($position, 'replacement-confirmed-flat');
-        $manualCloseDetected = $this->manualCloseDetected;
+        $manualCloseEvidence = $this->manualCloseEvidence($position, $positionExistsOnExchange);
 
         // Lock + dedupe pattern matching OrderObserver dispatch sites.
         // VerifyPositionExistsOnExchangeJob is a competing lifecycle
@@ -100,7 +106,7 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
         // admitted for one position/action without this guard. Lock
         // the row, re-read, dedupe by class, then mutate state and
         // create the step in one transaction.
-        $dispatched = DB::transaction(function () use ($manualCloseDetected, $position, $resolver, $positionExistsOnExchange): string {
+        $dispatched = DB::transaction(function () use ($manualCloseEvidence, $position, $resolver, $positionExistsOnExchange): string {
             $locked = Position::query()->whereKey($position->id)->lockForUpdate()->firstOrFail();
 
             if (! $positionExistsOnExchange) {
@@ -108,8 +114,12 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
 
                 // Only persist the manual origin after two independent reads
                 // confirm the external reduce-only fill left no exposure.
-                if ($manualCloseDetected) {
+                if ($manualCloseEvidence->attribution === PositionCloseAttribution::External) {
                     $locked->updateIfNotSet('manually_closed_at', now());
+
+                    if (Math::isPositive($manualCloseEvidence->closingPrice)) {
+                        $locked->updateIfNotSet('closing_price', $manualCloseEvidence->closingPrice);
+                    }
                 }
 
                 if (Step::hasLiveWorkflow($locked, $closePositionClass)) {
@@ -198,6 +208,8 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
                     'message' => $this->message,
                     'confirmationAttempt' => true,
                     'manualCloseDetected' => $this->manualCloseDetected,
+                    'flatObservedAtMs' => $this->flatObservedAtMs ?? now()->getTimestampMs(),
+                    'manualClosingPrice' => $this->manualClosingPrice,
                 ],
                 'dispatch_after' => now()->addSeconds(
                     (int) config('kraite.position_safety.flat_confirmation_delay_seconds', 20),
@@ -206,5 +218,24 @@ final class VerifyPositionExistsOnExchangeJob extends BaseQueueableJob
 
             return 'PreparePositionReplacementJob confirmation';
         });
+    }
+
+    private function manualCloseEvidence(Position $position, bool $positionExistsOnExchange): PositionCloseEvidence
+    {
+        if ($positionExistsOnExchange) {
+            return new PositionCloseEvidence(PositionCloseAttribution::Unknown);
+        }
+
+        if ($this->manualCloseDetected) {
+            return new PositionCloseEvidence(
+                PositionCloseAttribution::External,
+                $this->manualClosingPrice,
+            );
+        }
+
+        return app(PositionCloseAttributor::class)->resolveEvidence(
+            $position,
+            $this->flatObservedAtMs ?? now()->getTimestampMs(),
+        );
     }
 }

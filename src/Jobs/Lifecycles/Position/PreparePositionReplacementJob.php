@@ -39,6 +39,8 @@ final class PreparePositionReplacementJob extends BaseApiableJob
         ?string $message = null,
         public bool $confirmationAttempt = false,
         public bool $manualCloseDetected = false,
+        public ?int $flatObservedAtMs = null,
+        public ?string $manualClosingPrice = null,
     ) {
         $this->position = Position::findOrFail($positionId);
         $this->triggerStatus = $triggerStatus;
@@ -99,6 +101,8 @@ final class PreparePositionReplacementJob extends BaseApiableJob
                     'message' => $this->message,
                     'confirmationAttempt' => $this->confirmationAttempt,
                     'manualCloseDetected' => $this->manualCloseDetected,
+                    'flatObservedAtMs' => $this->flatObservedAtMs,
+                    'manualClosingPrice' => $this->manualClosingPrice,
                 ],
                 'block_uuid' => $blockUuid,
                 'index' => $nextIndex,

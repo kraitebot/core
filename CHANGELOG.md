@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.103.1 - 2026-08-09
+
+### Reliable manual-close attribution
+
+- [FIXED] One-way and hedge-mode closing fills now require the exact
+  reducing-side evidence before they enter the manual-close workflow.
+- [FIXED] Dropped stream frames recover from archived events and bounded
+  Binance trade, order, conditional-order, and force-order evidence without
+  labeling Kraite-owned or forced closes as manual.
+- [FIXED] The final reducing trade price is preserved through closing-data
+  updates.
+- [VERIFIED] Focused Pest 5/TIA coverage passes 58 tests and 124 assertions.
+
 ## 1.103.0 - 2026-08-08
 
 ### Explicit manual-close notifications
