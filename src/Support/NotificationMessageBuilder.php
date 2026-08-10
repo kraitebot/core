@@ -1333,6 +1333,87 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'position_exchange_only_detected' => (static function () use ($context) {
+                $pair = is_string($context['pair'] ?? null) ? $context['pair'] : 'unknown';
+                $direction = is_string($context['direction'] ?? null) ? $context['direction'] : '?';
+                $accountName = is_string($context['account_name'] ?? null) ? $context['account_name'] : 'account';
+                $exchange = is_string($context['exchange'] ?? null) ? $context['exchange'] : 'exchange';
+                $exchangeData = is_array($context['exchange_data'] ?? null) ? $context['exchange_data'] : [];
+                $quantity = (string) ($exchangeData['quantity'] ?? $exchangeData['positionAmt'] ?? $exchangeData['size'] ?? '?');
+
+                return [
+                    'severity' => NotificationSeverity::Critical,
+                    'title' => 'Untracked Exchange Position Detected',
+                    'emailMessage' => "The exchange reports an open position that Kraite does not currently track.\n\n".
+                        "Account: {$accountName} ({$exchange})\n".
+                        "Position: {$pair} {$direction}\n".
+                        "Quantity: {$quantity}\n\n".
+                        'No automatic order or position change was made. Verify the exchange position and recover or close it deliberately.',
+                    'pushoverMessage' => "CRITICAL: untracked {$pair} {$direction} position on {$accountName}",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 1,
+                ];
+            })(),
+
+            'orders_exchange_only_detected' => (static function () use ($context) {
+                $accountName = is_string($context['account_name'] ?? null) ? $context['account_name'] : 'account';
+                $exchange = is_string($context['exchange'] ?? null) ? $context['exchange'] : 'exchange';
+                $orphans = is_array($context['orphans'] ?? null) ? $context['orphans'] : [];
+                $count = isset($context['orphan_count']) ? (int) $context['orphan_count'] : count($orphans);
+                $lines = [];
+
+                foreach ($orphans as $orphan) {
+                    if (! is_array($orphan)) {
+                        continue;
+                    }
+
+                    $symbol = is_string($orphan['symbol'] ?? null) ? $orphan['symbol'] : 'unknown';
+                    $type = is_string($orphan['type'] ?? null) ? $orphan['type'] : '?';
+                    $exchangeOrderId = (string) ($orphan['exchange_order_id'] ?? '?');
+                    $lines[] = "  • {$symbol} {$type} — exchange order {$exchangeOrderId}";
+                }
+
+                $orderBody = $lines === [] ? '(details unavailable)' : implode("\n", $lines);
+
+                return [
+                    'severity' => NotificationSeverity::Critical,
+                    'title' => 'Untracked Exchange Orders Detected',
+                    'emailMessage' => "{$count} open exchange order(s) have no matching Kraite order row.\n\n".
+                        "Account: {$accountName} ({$exchange})\n\n".
+                        "Orders:\n{$orderBody}\n\n".
+                        'No automatic cancellation was made. Verify ownership before changing them.',
+                    'pushoverMessage' => "CRITICAL: {$count} untracked exchange order(s) on {$accountName}",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 1,
+                ];
+            })(),
+
+            'account_drift_snapshot_failed' => (static function () use ($context) {
+                $accountName = is_string($context['account_name'] ?? null) ? $context['account_name'] : 'account';
+                $exchange = is_string($context['exchange'] ?? null) ? $context['exchange'] : 'exchange';
+                $rawError = is_string($context['api_error'] ?? null) ? $context['api_error'] : 'unknown API failure';
+                $apiError = preg_replace(
+                    '/([?&](?:signature|sign|api_key|apikey|api_secret|passphrase|password|access_token)=)[^&\\s`]+/i',
+                    '$1'.ApiLogSanitizer::REDACTION_PLACEHOLDER,
+                    $rawError,
+                ) ?? 'redacted API failure';
+
+                return [
+                    'severity' => NotificationSeverity::High,
+                    'title' => 'Drift Snapshot Incomplete',
+                    'emailMessage' => "Kraite could not assemble a complete exchange snapshot, so no drift conclusion was made.\n\n".
+                        "Account: {$accountName} ({$exchange})\n".
+                        "Failure: {$apiError}\n\n".
+                        'Existing positions and orders were not changed. Investigate repeated snapshot failures.',
+                    'pushoverMessage' => "Drift snapshot unavailable for {$accountName}; no drift conclusion made",
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => 0,
+                ];
+            })(),
+
             'position_drift_detected' => (static function () use ($context) {
                 $pair = is_string($context['pair'] ?? null) ? $context['pair'] : 'unknown';
                 $direction = is_string($context['direction'] ?? null) ? $context['direction'] : '?';

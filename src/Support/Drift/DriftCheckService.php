@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Support\Drift;
 
+use Kraite\Core\Enums\PositionPresence;
 use Kraite\Core\Models\Account;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Support\Math;
@@ -36,6 +37,19 @@ final class DriftCheckService implements DriftChecker
      * Order-level fields compared between DB and exchange.
      */
     public const ORDER_DRIFT_FIELDS = ['status', 'side', 'type', 'price', 'quantity'];
+
+    /**
+     * The conditional-order endpoint that completes each exchange's
+     * open-order snapshot. A failure on one of these calls makes the whole
+     * drift snapshot inconclusive; treating the partial response as complete
+     * would manufacture db_only protection-order alerts.
+     */
+    private const CONDITIONAL_ORDER_QUERY_BY_EXCHANGE = [
+        'binance' => 'apiQueryAlgoOrders',
+        'bitget' => 'apiQueryPlanOrders',
+        'bybit' => 'apiQueryStopOrders',
+        'kucoin' => 'apiQueryStopOrders',
+    ];
 
     /**
      * Numeric fields use bccomp at 18-decimal precision to absorb the
@@ -159,24 +173,61 @@ final class DriftCheckService implements DriftChecker
             }
         }
 
-        // Algo / plan / stop orders live on separate endpoints per
-        // exchange. Not all exchanges support all of them — fail silently
-        // and merge whatever we get into the exchange-orders list.
-        foreach (['apiQueryAlgoOrders', 'apiQueryPlanOrders', 'apiQueryStopOrders'] as $method) {
-            if (! method_exists($account, $method)) {
-                continue;
-            }
+        $conditionalOrderMethod = self::CONDITIONAL_ORDER_QUERY_BY_EXCHANGE[
+            mb_strtolower((string) $account->apiSystem->canonical)
+        ] ?? null;
+
+        if ($conditionalOrderMethod !== null) {
             try {
-                $extra = $account->{$method}()->result ?? [];
-                if (is_array($extra) && ! empty($extra)) {
-                    $exchangeOrders = array_merge($exchangeOrders, $extra);
+                $conditionalOrders = $account->{$conditionalOrderMethod}()->result ?? [];
+                if (is_array($conditionalOrders) && $conditionalOrders !== []) {
+                    $exchangeOrders = array_merge($exchangeOrders, $conditionalOrders);
                 }
             } catch (Throwable $e) {
-                // Endpoint not supported by this exchange/mapper — skip.
+                return new AccountDriftReport(
+                    account: $account,
+                    positions: [],
+                    orphanOrders: [],
+                    apiError: $e->getMessage(),
+                );
             }
         }
 
         return $this->analyse($account, $dbPositions, $exchangePositions, $exchangeOrders, $symbolConfigs, $apiError);
+    }
+
+    public function isExchangePositionOpen(Account $account, Position $position): bool
+    {
+        try {
+            $response = $account->apiQueryPositions();
+        } catch (Throwable $exception) {
+            throw new UnexpectedValueException(sprintf(
+                'Unable to confirm %s position %d: %s',
+                $account->apiSystem->canonical,
+                $position->id,
+                $exception->getMessage(),
+            ), previous: $exception);
+        }
+
+        $snapshot = PositionSnapshot::fromApiResponse($account, $response);
+
+        if (! $snapshot->isValid()) {
+            throw new UnexpectedValueException(sprintf(
+                'Invalid %s positions response while confirming drift for position %d.',
+                $account->apiSystem->canonical,
+                $position->id,
+            ));
+        }
+
+        return match ($snapshot->presenceOf($position)) {
+            PositionPresence::Open => true,
+            PositionPresence::Flat => false,
+            PositionPresence::Unknown => throw new UnexpectedValueException(sprintf(
+                'Unknown %s position presence while confirming drift for position %d.',
+                $account->apiSystem->canonical,
+                $position->id,
+            )),
+        };
     }
 
     /**

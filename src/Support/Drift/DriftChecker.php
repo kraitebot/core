@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kraite\Core\Support\Drift;
 
 use Kraite\Core\Models\Account;
+use Kraite\Core\Models\Position;
 
 /**
  * Contract for the drift-comparison surface the spotter cron depends on.
@@ -16,4 +17,6 @@ use Kraite\Core\Models\Account;
 interface DriftChecker
 {
     public function analyseAccount(Account $account): AccountDriftReport;
+
+    public function isExchangePositionOpen(Account $account, Position $position): bool;
 }

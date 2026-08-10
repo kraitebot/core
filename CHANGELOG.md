@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.103.2 - 2026-08-10
+
+### Trustworthy drift snapshots
+
+- [FIXED] Quiet missing-protection candidates recheck local state and current
+  exchange exposure immediately before alerting, suppressing close races while
+  preserving genuine open-position drift.
+- [FIXED] Required conditional-order and final exposure failures now produce an
+  inconclusive snapshot instead of drift conclusions from partial data.
+- [FIXED] Exchange-only position and order candidates revalidate local
+  ownership before alerting, with dedicated notification definitions.
+- [VERIFIED] Targeted Pest 5/TIA coverage passes 45 tests and 169 assertions;
+  syntax, Pint, Rector, and PHPStan gates pass for the application.
+
 ## 1.103.1 - 2026-08-09
 
 ### Reliable manual-close attribution

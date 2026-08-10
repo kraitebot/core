@@ -279,6 +279,47 @@ final class CheckDriftsCommand extends BaseCommand
     }
 
     /**
+     * Count exchange-facing API failures persisted within the guard window.
+     * HTTP failures carry a 4xx/5xx response code. Vendor failures returned
+     * inside HTTP 200 responses are recorded through error_message.
+     * Already-flat close rejections are excluded — see
+     * BENIGN_ALREADY_FLAT_SIGNATURES.
+     */
+    public function countRecentExchangeApiErrors(Carbon $since): int
+    {
+        try {
+            return ApiRequestLog::query()
+                ->where('created_at', '>', $since)
+                ->whereHas('apiSystem', fn ($query) => $query->where('is_exchange', true))
+                ->where(function ($query): void {
+                    $query
+                        ->where('http_response_code', '>=', 400)
+                        ->orWhereNotNull('error_message');
+                })
+                ->where(function ($query): void {
+                    foreach (self::BENIGN_ALREADY_FLAT_SIGNATURES as $signature) {
+                        $query
+                            ->where(function ($row) use ($signature): void {
+                                $row->whereNull('response')
+                                    ->orWhere('response', 'not like', "%{$signature}%");
+                            })
+                            ->where(function ($row) use ($signature): void {
+                                $row->whereNull('error_message')
+                                    ->orWhere('error_message', 'not like', "%{$signature}%");
+                            });
+                    }
+                })
+                ->count();
+        } catch (Throwable $e) {
+            Log::warning('[monitor-guard] exchange API error count failed; treating as 0', [
+                'message' => $e->getMessage(),
+            ]);
+
+            return 0;
+        }
+    }
+
+    /**
      * Scope 1 — drift on active positions.
      */
     private function auditActivePositionDrift(Carbon $cutoff, ?int $accountFilter): void
@@ -326,6 +367,7 @@ final class CheckDriftsCommand extends BaseCommand
             }
 
             $quietIds = $positions->pluck('id')->all();
+            $confirmationApiFailed = false;
 
             foreach ($report->positions as $pair) {
                 // EXCHANGE_ONLY pairs (live exchange position with no
@@ -335,6 +377,10 @@ final class CheckDriftsCommand extends BaseCommand
                 // and bypass the quiet-window filter (the position
                 // genuinely doesn't exist locally to be quiet about).
                 if ($pair->status === PositionDriftReport::STATUS_EXCHANGE_ONLY) {
+                    if ($this->localOpenPositionExists($account, $pair)) {
+                        continue;
+                    }
+
                     $this->notifyExchangeOnly($account, $pair);
 
                     continue;
@@ -350,16 +396,51 @@ final class CheckDriftsCommand extends BaseCommand
                     continue;
                 }
 
+                $quietPosition = $this->freshQuietActivePosition($pair->positionId, $cutoff);
+
+                if (! $quietPosition instanceof Position) {
+                    continue;
+                }
+
+                // Regular and conditional orders come from separate exchange
+                // endpoints. A TP fill can land between them, making the stop
+                // look missing while the position is already closing. Confirm
+                // that exposure still exists before sending a missing-order
+                // drift alert.
+                if ($pair->status === PositionDriftReport::STATUS_DRIFT
+                    && $this->hasDbOnlyOrder($pair)
+                ) {
+                    if ($confirmationApiFailed) {
+                        continue;
+                    }
+
+                    try {
+                        if (! $this->driftService->isExchangePositionOpen($account, $quietPosition)) {
+                            continue;
+                        }
+                    } catch (Throwable $exception) {
+                        $this->notifySnapshotFailed($account, $exception->getMessage());
+                        $confirmationApiFailed = true;
+
+                        continue;
+                    }
+
+                    // The user-data stream may update the local order while
+                    // confirmation is in flight. Re-check immediately before
+                    // notifying.
+                    $quietPosition = $this->freshQuietActivePosition($pair->positionId, $cutoff);
+
+                    if (! $quietPosition instanceof Position) {
+                        continue;
+                    }
+                }
+
                 // ALERT-ONLY mode (2026-05-03): the drift spotter no
                 // longer auto-dispatches the heal — it just surfaces
                 // the drift to the operator. The reactive sync-orders
                 // cron + WS push path still handle the live healing.
                 if ($pair->status === PositionDriftReport::STATUS_DB_ONLY) {
-                    $quietPosition = $positions->firstWhere('id', $pair->positionId);
-
-                    if ($quietPosition instanceof Position) {
-                        PositionSafety::scheduleFlatConfirmation($quietPosition, 'drift');
-                    }
+                    PositionSafety::scheduleFlatConfirmation($quietPosition, 'drift');
                 }
 
                 $this->notifyDrift($account, $pair);
@@ -370,10 +451,106 @@ final class CheckDriftsCommand extends BaseCommand
             // local orders whose parent position is closed; this catches
             // the opposite case (an exchange-side order with no DB at
             // all — manual placement, mapper bug, partial-write crash).
-            if ($report->orphanOrders !== []) {
-                $this->notifyExchangeOnlyOrders($account, $report->orphanOrders);
+            $exchangeOnlyOrders = $this->filterStillExchangeOnlyOrders($account, $report->orphanOrders);
+
+            if ($exchangeOnlyOrders !== []) {
+                $this->notifyExchangeOnlyOrders($account, $exchangeOnlyOrders);
             }
         }
+    }
+
+    private function freshQuietActivePosition(int $positionId, Carbon $cutoff): ?Position
+    {
+        return Position::query()
+            ->whereKey($positionId)
+            ->where('status', 'active')
+            ->whereDoesntHave('orders', fn ($query) => $query->where('updated_at', '>=', $cutoff))
+            ->first();
+    }
+
+    private function localOpenPositionExists(Account $account, PositionDriftReport $pair): bool
+    {
+        return $account->positions()
+            ->opened()
+            ->where('parsed_trading_pair', $pair->symbol)
+            ->where('direction', $pair->direction)
+            ->exists();
+    }
+
+    private function hasDbOnlyOrder(PositionDriftReport $pair): bool
+    {
+        foreach ($pair->orders as $order) {
+            if ($order->status === OrderDriftReport::STATUS_DB_ONLY) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $orphans
+     * @return array<int, array<string, mixed>>
+     */
+    private function filterStillExchangeOnlyOrders(Account $account, array $orphans): array
+    {
+        if ($orphans === []) {
+            return [];
+        }
+
+        $exchangeOrderIds = collect($orphans)
+            ->pluck('exchange_order_id')
+            ->filter(fn ($id) => $id !== null && $id !== '')
+            ->map(fn ($id) => (string) $id)
+            ->values()
+            ->all();
+        $clientOrderIds = collect($orphans)
+            ->pluck('client_order_id')
+            ->filter(fn ($id) => $id !== null && $id !== '')
+            ->map(fn ($id) => (string) $id)
+            ->values()
+            ->all();
+
+        if ($exchangeOrderIds === [] && $clientOrderIds === []) {
+            return $orphans;
+        }
+
+        $localOrders = Order::query()
+            ->whereHas('position', fn ($query) => $query->where('account_id', $account->id))
+            ->where(function ($query) use ($exchangeOrderIds, $clientOrderIds): void {
+                if ($exchangeOrderIds === []) {
+                    $query->whereIn('client_order_id', $clientOrderIds);
+
+                    return;
+                }
+
+                $query->whereIn('exchange_order_id', $exchangeOrderIds);
+
+                if ($clientOrderIds !== []) {
+                    $query->orWhereIn('client_order_id', $clientOrderIds);
+                }
+            })
+            ->get(['exchange_order_id', 'client_order_id']);
+
+        $knownExchangeIds = $localOrders->pluck('exchange_order_id')
+            ->filter()
+            ->map(fn ($id) => (string) $id)
+            ->flip();
+        $knownClientIds = $localOrders->pluck('client_order_id')
+            ->filter()
+            ->map(fn ($id) => (string) $id)
+            ->flip();
+
+        return array_values(array_filter(
+            $orphans,
+            static function (array $orphan) use ($knownExchangeIds, $knownClientIds): bool {
+                $exchangeOrderId = (string) ($orphan['exchange_order_id'] ?? '');
+                $clientOrderId = (string) ($orphan['client_order_id'] ?? '');
+
+                return ($exchangeOrderId === '' || ! $knownExchangeIds->has($exchangeOrderId))
+                    && ($clientOrderId === '' || ! $knownClientIds->has($clientOrderId));
+            },
+        ));
     }
 
     /**
@@ -886,47 +1063,6 @@ final class CheckDriftsCommand extends BaseCommand
                 'threshold' => $exchangeErrorThreshold,
                 'window_minutes' => $windowMinutes,
             ]);
-        }
-    }
-
-    /**
-     * Count exchange-facing API failures persisted within the guard window.
-     * HTTP failures carry a 4xx/5xx response code. Vendor failures returned
-     * inside HTTP 200 responses are recorded through error_message.
-     * Already-flat close rejections are excluded — see
-     * BENIGN_ALREADY_FLAT_SIGNATURES.
-     */
-    public function countRecentExchangeApiErrors(Carbon $since): int
-    {
-        try {
-            return ApiRequestLog::query()
-                ->where('created_at', '>', $since)
-                ->whereHas('apiSystem', fn ($query) => $query->where('is_exchange', true))
-                ->where(function ($query): void {
-                    $query
-                        ->where('http_response_code', '>=', 400)
-                        ->orWhereNotNull('error_message');
-                })
-                ->where(function ($query): void {
-                    foreach (self::BENIGN_ALREADY_FLAT_SIGNATURES as $signature) {
-                        $query
-                            ->where(function ($row) use ($signature): void {
-                                $row->whereNull('response')
-                                    ->orWhere('response', 'not like', "%{$signature}%");
-                            })
-                            ->where(function ($row) use ($signature): void {
-                                $row->whereNull('error_message')
-                                    ->orWhere('error_message', 'not like', "%{$signature}%");
-                            });
-                    }
-                })
-                ->count();
-        } catch (Throwable $e) {
-            Log::warning('[monitor-guard] exchange API error count failed; treating as 0', [
-                'message' => $e->getMessage(),
-            ]);
-
-            return 0;
         }
     }
 
