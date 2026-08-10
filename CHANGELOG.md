@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.103.3 - 2026-08-10
+
+### Bounded production monitor alerts
+
+- [FIXED] Public endpoint health checks suppress only planned sibling HTTP 503
+  responses backed by that application's fresh Laravel maintenance marker;
+  stale markers and other failures remain alertable.
+- [ADDED] The production monitor has a governed Pushover-only canonical with
+  stable-signal throttling, independent recovery buckets, and an explicit
+  critical bypass for verified trading-safety findings.
+- [VERIFIED] Focused Pest 5/TIA coverage passes the health, monitor, schedule,
+  and deployment handoff regression paths.
+
 ## 1.103.2 - 2026-08-10
 
 ### Trustworthy drift snapshots

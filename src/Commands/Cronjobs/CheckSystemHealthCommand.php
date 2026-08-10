@@ -828,6 +828,7 @@ final class CheckSystemHealthCommand extends BaseCommand implements SystemHealth
     public function checkPublicEndpoints(): int
     {
         $endpoints = config('kraite.health_watchdog.public_endpoints', []);
+        $maintenanceMarkers = config('kraite.health_watchdog.public_endpoint_maintenance_markers', []);
 
         if (! is_array($endpoints)) {
             return 0;
@@ -858,6 +859,13 @@ final class CheckSystemHealthCommand extends BaseCommand implements SystemHealth
                     ->get($url);
 
                 if ($response->ok()) {
+                    continue;
+                }
+
+                if ($response->status() === 503 && $this->hasFreshSiblingMaintenanceMarker(
+                    signalName: $signalName,
+                    maintenanceMarkers: $maintenanceMarkers,
+                )) {
                     continue;
                 }
 
@@ -1358,6 +1366,39 @@ final class CheckSystemHealthCommand extends BaseCommand implements SystemHealth
         );
 
         return 1;
+    }
+
+    /**
+     * A fresh sibling Laravel `down` marker makes only HTTP 503 expected.
+     * The same bounded window used by the local stuck-maintenance check keeps
+     * an interrupted sibling deployment visible instead of hiding it forever.
+     */
+    private function hasFreshSiblingMaintenanceMarker(string $signalName, mixed $maintenanceMarkers): bool
+    {
+        if (! is_array($maintenanceMarkers)) {
+            return false;
+        }
+
+        $markerPath = $maintenanceMarkers[$signalName] ?? null;
+
+        if (! is_string($markerPath) || $markerPath === '' || ! is_file($markerPath)) {
+            return false;
+        }
+
+        clearstatcache(true, $markerPath);
+        $modifiedAt = @filemtime($markerPath);
+
+        if ($modifiedAt === false) {
+            return false;
+        }
+
+        $ageSeconds = now()->timestamp - $modifiedAt;
+        $maximumAgeSeconds = max(1, (int) config(
+            'kraite.health_watchdog.maintenance_stuck_minutes',
+            45,
+        )) * 60;
+
+        return $ageSeconds >= 0 && $ageSeconds < $maximumAgeSeconds;
     }
 
     /**

@@ -1636,6 +1636,27 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
+            'kraite_production_monitor' => (function () use ($context) {
+                $signal = mb_trim((string) ($context['signal'] ?? 'unknown_signal'));
+                $issue = mb_trim((string) ($context['issue'] ?? 'production issue detected'));
+                $cause = mb_trim((string) ($context['cause'] ?? 'unconfirmed'));
+                $action = mb_trim((string) ($context['action'] ?? 'operator review'));
+                $executed = ($context['executed'] ?? false) === true;
+                $resolved = ($context['resolved'] ?? false) === true;
+                $title = $resolved ? 'KRAITE MONITOR RECOVERY' : 'KRAITE MONITOR';
+                $message = "[KRAITE MONITOR] {$issue} | cause: {$cause} | action: {$action} | executed: ".($executed ? 'yes' : 'no')." | signal: {$signal}";
+
+                return [
+                    'severity' => $resolved ? NotificationSeverity::Info : NotificationSeverity::High,
+                    'title' => $title,
+                    'emailMessage' => $message,
+                    'pushoverMessage' => $message,
+                    'actionUrl' => null,
+                    'actionLabel' => null,
+                    'priority' => $resolved ? -1 : 1,
+                ];
+            })(),
+
             'system_health_alert' => (function () use ($context) {
                 $signal = (string) ($context['signal'] ?? 'unknown_signal');
                 $severityValue = (string) ($context['severity'] ?? 'high');

@@ -460,6 +460,19 @@ return [
             'api_aasa' => env('HEALTH_WATCHDOG_API_AASA_URL', 'https://api.kraite.com/.well-known/apple-app-site-association'),
             'syntax' => env('HEALTH_WATCHDOG_SYNTAX_URL', 'https://syntax.kraite.com/'),
         ],
+        // The three Laravel applications share one production host. During a
+        // planned sibling deployment, Laravel's fresh `down` marker proves an
+        // HTTP 503 is expected. The watchdog suppresses only that exact status
+        // and only until maintenance_stuck_minutes elapses; every other
+        // failure remains alertable. Static syntax has no Laravel marker.
+        'public_endpoint_maintenance_markers' => [
+            'kraite_home' => env('HEALTH_WATCHDOG_KRAITE_MAINTENANCE_MARKER', '/home/kraite/kraite.com/storage/framework/down'),
+            'registration' => env('HEALTH_WATCHDOG_KRAITE_MAINTENANCE_MARKER', '/home/kraite/kraite.com/storage/framework/down'),
+            'privacy' => env('HEALTH_WATCHDOG_KRAITE_MAINTENANCE_MARKER', '/home/kraite/kraite.com/storage/framework/down'),
+            'terms' => env('HEALTH_WATCHDOG_KRAITE_MAINTENANCE_MARKER', '/home/kraite/kraite.com/storage/framework/down'),
+            'admin' => env('HEALTH_WATCHDOG_ADMIN_MAINTENANCE_MARKER', '/home/kraite/admin.kraite.com/storage/framework/down'),
+            'api_aasa' => env('HEALTH_WATCHDOG_ADMIN_MAINTENANCE_MARKER', '/home/kraite/admin.kraite.com/storage/framework/down'),
+        ],
         'public_endpoint_connect_timeout_seconds' => (int) env(
             'HEALTH_WATCHDOG_PUBLIC_ENDPOINT_CONNECT_TIMEOUT_SECONDS',
             5,
