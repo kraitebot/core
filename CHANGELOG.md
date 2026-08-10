@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.103.4 - 2026-08-10
+
+### Fresh workers at warmup
+
+- [FIXED] Canonical ingestion warmup now restarts Horizon, both Binance
+  streams, the dispatch daemon, and the scheduler before lifting maintenance,
+  so long-lived processes cannot keep pre-release code in memory.
+- [HARDENED] A failed supervisor restart leaves the application in maintenance
+  mode and fails warmup instead of exposing a partially refreshed runtime.
+- [VERIFIED] Pest 5/TIA warmup regression coverage passes the successful
+  restart and failed-restart paths.
+
 ## 1.103.3 - 2026-08-10
 
 ### Bounded production monitor alerts
