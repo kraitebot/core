@@ -406,10 +406,12 @@ final class AccountFinancials
     }
 
     /**
-     * Worst / best / midpoint daily percentages observed in the
-     * window. Midpoint is the simple average of worst and best, not
-     * the median of the daily series — chosen for compatibility
-     * with the admin projections calculator.
+     * Worst / best / midpoint profitable daily percentages observed
+     * in the window. Losing and break-even days remain part of realized
+     * performance, but do not become forward-growth assumptions.
+     * Midpoint is the simple average of worst and best, not the median
+     * of the daily series — chosen for compatibility with the admin
+     * projections calculator.
      *
      * @return array{
      *     pessimistic_pct: ?string,
@@ -420,7 +422,10 @@ final class AccountFinancials
      */
     public function scenarios(Window $window): array
     {
-        $pcts = $this->dailyPercentages($window);
+        $pcts = array_filter(
+            $this->dailyPercentages($window),
+            static fn (string $pct): bool => bccomp($pct, '0', self::SCALE) > 0,
+        );
 
         if ($pcts === []) {
             return [

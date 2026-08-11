@@ -319,8 +319,10 @@ final class FleetFinancials
     }
 
     /**
-     * Fleet-level worst / best / midpoint daily percentages, derived
-     * from the aggregated daily series. Same shape as
+     * Fleet-level worst / best / midpoint profitable daily percentages,
+     * derived from the aggregated daily series. Losing and break-even
+     * fleet days remain part of realized performance, but do not become
+     * forward-growth assumptions. Same shape as
      * `AccountFinancials::scenarios()`.
      *
      * @return array{
@@ -332,7 +334,10 @@ final class FleetFinancials
      */
     public function scenarios(Window $window): array
     {
-        $pcts = $this->dailyPercentages($window);
+        $pcts = array_filter(
+            $this->dailyPercentages($window),
+            static fn (string $pct): bool => bccomp($pct, '0', self::SCALE) > 0,
+        );
 
         if ($pcts === []) {
             return [
