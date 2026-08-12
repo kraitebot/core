@@ -879,11 +879,12 @@ final class KraiteSeeder extends Seeder
             [
                 'canonical' => 'market_regime_score_changed',
                 'title' => 'BSCS score state changed',
-                'description' => 'BSCS left zero, reached 100, or returned to zero.',
+                'description' => 'Legacy BSCS score transition definition retained inactive; only pause and recovery events notify traders.',
                 'usage_reference' => 'ComputeMarketRegimeJob',
                 'default_severity' => 'info',
                 'verified' => 1,
                 'cache_duration' => 0,
+                'is_active' => false,
             ],
             [
                 'canonical' => 'market_regime_critical',
@@ -939,13 +940,8 @@ final class KraiteSeeder extends Seeder
                 'verified' => 1,
                 'cache_duration' => 0,
             ],
-            // Trading-lifecycle notifications — emitted from the position
-            // workflow at key state transitions. Most ship at Pushover
-            // priority -1 (low / silent) so day-to-day flow doesn't
-            // interrupt the device. WAP specifically ships at priority 1
-            // (high) because it's the signal that DCA rungs are filling
-            // and the strategy's exit is being repositioned based on the
-            // exchange's breakEvenPrice.
+            // Trading-lifecycle notifications emitted from position workflow
+            // state transitions. Deep-ladder notifications are app-only.
             [
                 'canonical' => 'position_opened',
                 'title' => 'Position Opened',
@@ -962,18 +958,31 @@ final class KraiteSeeder extends Seeder
             [
                 'canonical' => 'position_closed',
                 'title' => 'Position Closed',
-                'description' => 'Emitted after a WAP\'ed closed position receives its final exchange PnL, unless the more specific high-profit close notification applies.',
+                'description' => 'Legacy generic close definition retained inactive; qualifying deep-ladder closes use the app-only high-profit close alert.',
                 'usage_reference' => 'Support/PositionClosedNotifier',
                 'default_severity' => 'info',
                 'verified' => 1,
                 'cache_duration' => 60,
                 'cache_key' => ['position'],
+                'is_active' => false,
             ],
             [
                 'canonical' => 'position_wap_applied',
                 'title' => 'Position WAP Applied',
-                'description' => 'Emitted when the weighted-average-price workflow successfully modifies the profit order after one or more DCA fills.',
-                'detailed_description' => 'Delivered at Pushover priority 0 (normal). A WAP remains a meaningful strategy signal that DCA rungs are filling and the exit is being repositioned from the exchange\'s breakEvenPrice, but it no longer bypasses the device\'s quiet hours.',
+                'description' => 'Legacy WAP notification retained inactive; routine WAP recalculations no longer notify traders.',
+                'detailed_description' => 'Replaced by the app-only penultimate-limit notification.',
+                'usage_reference' => 'Jobs/Atomic/Order/CalculateWapAndModifyProfitOrderJob',
+                'default_severity' => 'high',
+                'verified' => 1,
+                'cache_duration' => 30,
+                'cache_key' => ['position'],
+                'is_active' => false,
+            ],
+            [
+                'canonical' => 'position_penultimate_limit_filled',
+                'title' => 'Penultimate Limit Filled',
+                'description' => 'App-only alert when a position fills at least max limit orders minus one.',
+                'detailed_description' => 'Sent once to the trader app when the position reaches its penultimate DCA limit. Routine earlier WAP recalculations remain silent.',
                 'usage_reference' => 'Jobs/Atomic/Order/CalculateWapAndModifyProfitOrderJob',
                 'default_severity' => 'high',
                 'verified' => 1,
@@ -983,7 +992,7 @@ final class KraiteSeeder extends Seeder
             [
                 'canonical' => 'position_high_profit_closed',
                 'title' => 'High-Profit Position Closed',
-                'description' => 'Celebratory ping after a WAP\'ed closed position receives final exchange PnL and filled >= total_limit_orders_filled_to_notify (full ladder took).',
+                'description' => 'App-only close alert after a position that reached its penultimate DCA limit receives final exchange PnL.',
                 'usage_reference' => 'Support/PositionClosedNotifier',
                 'default_severity' => 'info',
                 'verified' => 1,

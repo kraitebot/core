@@ -7,12 +7,15 @@ namespace Kraite\Core\Jobs\Atomic\Order;
 use Illuminate\Support\Facades\DB;
 use Kraite\Core\Abstracts\BaseApiableJob;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
+use Kraite\Core\Enums\NotificationLogStatus;
 use Kraite\Core\Enums\PositionPresence;
 use Kraite\Core\Exceptions\NonNotifiableException;
 use Kraite\Core\Jobs\Lifecycles\Position\ApplyWapJob;
 use Kraite\Core\Models\ApiSnapshot;
+use Kraite\Core\Models\NotificationLog;
 use Kraite\Core\Models\Order;
 use Kraite\Core\Models\Position;
+use Kraite\Core\Notifications\Channels\AppPushChannel;
 use Kraite\Core\Support\Math;
 use Kraite\Core\Support\NotificationService;
 use Kraite\Core\Support\PositionSafety;
@@ -58,7 +61,7 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
 
     public ?string $intendedQty = null;
 
-    /** Send-once latch for the WAP-applied notification (see dispatchWapAppliedNotification). */
+    /** Send-once latch for the penultimate-limit notification (see dispatchWapAppliedNotification). */
     protected bool $wapNotificationDispatched = false;
 
     public function __construct(int $positionId)
@@ -457,23 +460,10 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
     }
 
     /**
-     * Fire the `position_wap_applied` Pushover notification at normal
-     * priority so the owner sees that DCA fills have aggregated and the TP
-     * has been repositioned without bypassing quiet hours. Cache-throttled at
-     * 30s per position so rapid successive fills in the same tick don't
-     * double-ping, but the follow-up-WAP mechanism will still surface a
-     * second notification if it fires outside the 30s window.
+     * Notify the trader once, in the app, after the penultimate DCA limit fills.
      */
     protected function dispatchWapAppliedNotification(string $oldTpPrice, string $oldTpQuantity): void
     {
-        // Send-once per job run. The Bitget variant notifies inline from
-        // computeApiable (added after the 2026-05-02 production silence —
-        // root cause of the completion-hook miss never established), and
-        // the inherited complete() notifies again ms later. Deduplication
-        // used to depend entirely on the notification-side 30s cache
-        // throttle; a cache hiccup meant a double ping. One-notification-
-        // per-WAP is now a property of the job itself, and the first call
-        // wins — it carries the accurate pre-update "old" values.
         if ($this->wapNotificationDispatched) {
             return;
         }
@@ -482,24 +472,31 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
             return;
         }
 
-        $this->wapNotificationDispatched = true;
-
         $user = $this->position->account->user ?? null;
 
-        if (! $user) {
+        $filledLimitCount = $this->position->totalLimitOrdersFilled();
+
+        if (! $user
+            || ! $this->position->hasFilledPenultimateLimitOrder($filledLimitCount)
+            || $this->wasPenultimateLimitNotificationAlreadySent($user->id)
+        ) {
             return;
         }
+
+        $this->wapNotificationDispatched = true;
 
         $exchangeSymbol = $this->position->exchangeSymbol;
 
         NotificationService::send(
             user: $user,
-            canonical: 'position_wap_applied',
+            canonical: 'position_penultimate_limit_filled',
             referenceData: [
                 'token' => $this->position->exchangeSymbol?->token,
                 'pair' => $this->position->parsed_trading_pair,
                 'direction' => mb_strtoupper((string) $this->position->direction),
                 'position_id' => (int) $this->position->id,
+                'filled_limits' => $filledLimitCount,
+                'total_limits' => (int) $this->position->total_limit_orders,
                 'old_tp_price' => api_format_price($oldTpPrice, $exchangeSymbol),
                 'new_tp_price' => api_format_price((string) $this->profitOrder->price, $exchangeSymbol),
                 'old_tp_quantity' => api_format_quantity($oldTpQuantity, $exchangeSymbol),
@@ -510,6 +507,7 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
             ],
             relatable: $this->position,
             cacheKeys: ['position' => $this->position->id],
+            channels: [AppPushChannel::class],
         );
     }
 
@@ -584,5 +582,18 @@ class CalculateWapAndModifyProfitOrderJob extends BaseApiableJob
 
         $this->positionQty = $ownedQuantity;
         $this->breakEvenPrice = Math::div($ownedNotional, $ownedQuantity, $scale);
+    }
+
+    private function wasPenultimateLimitNotificationAlreadySent(int $userId): bool
+    {
+        return NotificationLog::query()
+            ->where('canonical', 'position_penultimate_limit_filled')
+            ->where('user_id', $userId)
+            ->where('relatable_type', $this->position->getMorphClass())
+            ->where('relatable_id', $this->position->getKey())
+            ->where('channel', 'app')
+            ->where('passed_threshold', true)
+            ->where('status', '!=', NotificationLogStatus::Failed->value)
+            ->exists();
     }
 }

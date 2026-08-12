@@ -688,11 +688,13 @@ final class NotificationMessageBuilder
                 ];
             })(),
 
-            'position_wap_applied' => (static function () use ($context) {
+            'position_penultimate_limit_filled' => (static function () use ($context) {
                 $token = is_string($context['token'] ?? null) ? $context['token'] : 'symbol';
                 $pair = is_string($context['pair'] ?? null) ? $context['pair'] : $token;
                 $direction = is_string($context['direction'] ?? null) ? $context['direction'] : '';
                 $positionId = is_int($context['position_id'] ?? null) ? (int) $context['position_id'] : null;
+                $filledLimits = is_int($context['filled_limits'] ?? null) ? (int) $context['filled_limits'] : 0;
+                $totalLimits = is_int($context['total_limits'] ?? null) ? (int) $context['total_limits'] : 0;
                 $oldTp = is_string($context['old_tp_price'] ?? null) ? $context['old_tp_price'] : null;
                 $newTp = is_string($context['new_tp_price'] ?? null) ? $context['new_tp_price'] : null;
                 $oldQty = is_string($context['old_tp_quantity'] ?? null) ? $context['old_tp_quantity'] : null;
@@ -701,9 +703,8 @@ final class NotificationMessageBuilder
 
                 $posRef = $positionId !== null ? "#{$positionId}" : '';
 
-                // Show the before/after on both price AND qty — this is the
-                // signal the operator wants to see at a glance on Pushover.
-                $pushoverLines = ["🧮 WAP · {$direction} {$pair} · {$posRef}"];
+                $pushoverLines = ["🧮 Penultimate DCA filled · {$direction} {$pair} · {$posRef}"];
+                $pushoverLines[] = "DCA rungs filled: {$filledLimits}/{$totalLimits}";
                 if ($oldTp !== null && $newTp !== null) {
                     $pushoverLines[] = "TP price: {$oldTp} → {$newTp}";
                 } elseif ($newTp !== null) {
@@ -719,10 +720,11 @@ final class NotificationMessageBuilder
                 }
 
                 $emailLines = [
-                    "🧮 WAP applied on position {$posRef}",
+                    "🧮 Penultimate DCA limit filled on position {$posRef}",
                     '',
                     "• Pair: {$pair}",
                     "• Direction: {$direction}",
+                    "• DCA rungs filled: {$filledLimits}/{$totalLimits}",
                 ];
                 if ($breakEven !== null) {
                     $emailLines[] = "• Break-even (exchange): {$breakEven}";
@@ -734,12 +736,12 @@ final class NotificationMessageBuilder
                     $emailLines[] = "• TP quantity: {$oldQty} → {$newQty}";
                 }
                 $emailLines[] = '';
-                $emailLines[] = "DCA rungs filled; TP repositioned against the exchange's breakEvenPrice.";
+                $emailLines[] = "The penultimate DCA rung filled; TP was repositioned against the exchange's breakEvenPrice.";
 
                 return [
                     'severity' => NotificationSeverity::High,
                     'priority' => 0,
-                    'title' => "WAP Applied — {$direction} {$pair}",
+                    'title' => "Penultimate Limit Filled — {$direction} {$pair}",
                     'emailMessage' => implode(separator: "\n", array: $emailLines),
                     'pushoverMessage' => implode(separator: "\n", array: $pushoverLines),
                     'actionUrl' => null,

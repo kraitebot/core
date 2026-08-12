@@ -7,7 +7,6 @@ namespace Kraite\Core\Jobs\Models\MarketRegime;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Log;
 use Kraite\Core\Abstracts\BaseQueueableJob;
-use Kraite\Core\Enums\BscsScoreTransition;
 use Kraite\Core\Enums\RegimeBand;
 use Kraite\Core\Models\ApiSystem;
 use Kraite\Core\Models\Candle;
@@ -15,7 +14,6 @@ use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\MarketRegimeSnapshot;
 use Kraite\Core\Support\MarketRegime\RegimeCalculator;
-use Kraite\Core\Support\TraderAppNotificationService;
 use Throwable;
 
 /**
@@ -236,8 +234,6 @@ final class ComputeMarketRegimeJob extends BaseQueueableJob
             return;
         }
 
-        $previousScore = $kraite->bscs_score === null ? null : (int) $kraite->bscs_score;
-
         // Phase 1 invariant: bscs_block_active stays FALSE.
         //
         // The 4-week observation window per spec requires the gate to be
@@ -253,20 +249,5 @@ final class ComputeMarketRegimeJob extends BaseQueueableJob
             'bscs_synced_at' => $computedAt,
             'bscs_block_active' => false,
         ]);
-
-        $transition = BscsScoreTransition::detect($previousScore, $score);
-        if ($transition === null) {
-            return;
-        }
-
-        TraderAppNotificationService::send(
-            canonical: 'market_regime_score_changed',
-            referenceData: [
-                'previous_score' => $previousScore,
-                'score' => $score,
-                'transition' => $transition->value,
-            ],
-            relatable: $kraite,
-        );
     }
 }

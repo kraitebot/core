@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.105.0 - 2026-08-12
+
+### Quiet deep-ladder notifications
+
+- [CHANGED] Routine WAP recalculations are silent; the penultimate DCA rung
+  sends one app-only trader alert with ladder depth and TP movement.
+- [CHANGED] A close sends one app-only high-profit alert only after final
+  exchange PnL exists and the position reached its penultimate DCA rung.
+- [DISABLED] Generic close, email, Pushover, operator close copies, and BSCS
+  score-transition notifications are no longer sent.
+- [HARDENED] Fresh seeding marks the retired notification definitions
+  inactive, matching the forward migrations.
+- [VERIFIED] Focused ingestion Pest 5/TIA coverage passes the notification,
+  WAP, close-PnL, and BSCS regression paths.
+
 ## 1.103.4 - 2026-08-10
 
 ### Fresh workers at warmup

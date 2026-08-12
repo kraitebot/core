@@ -5,21 +5,14 @@ declare(strict_types=1);
 namespace Kraite\Core\Support;
 
 use Kraite\Core\Enums\NotificationLogStatus;
-use Kraite\Core\Models\Kraite;
 use Kraite\Core\Models\NotificationLog;
 use Kraite\Core\Models\Position;
 use Kraite\Core\Notifications\Channels\AppPushChannel;
-use NotificationChannels\Pushover\PushoverChannel;
 
 final class PositionClosedNotifier
 {
-    private const array CANONICALS = [
-        'position_closed',
-        'position_high_profit_closed',
-    ];
-
     /**
-     * Send one WAP or manual-close event through the required trader and operator routes after the exchange PnL exists.
+     * Notify the trader in-app when a penultimate-limit position closes with exchange PnL.
      *
      * @return array{waped_closed_notification_sent: bool, high_profit_notification_sent: bool}
      */
@@ -35,9 +28,13 @@ final class PositionClosedNotifier
 
         $position->loadMissing(['account.user', 'exchangeSymbol']);
 
-        $manuallyClosed = $position->manually_closed_at !== null;
+        if ($position->getAttribute('pnl') === null) {
+            return $notSent;
+        }
 
-        if ($position->getAttribute('pnl') === null || (! $position->was_waped && ! $manuallyClosed)) {
+        $filledLimitCount ??= $position->totalLimitOrdersFilled();
+
+        if (! $position->hasFilledPenultimateLimitOrder($filledLimitCount)) {
             return $notSent;
         }
 
@@ -47,12 +44,9 @@ final class PositionClosedNotifier
             return $notSent;
         }
 
-        $filledLimitCount ??= $position->totalLimitOrdersFilled();
+        $manuallyClosed = $position->manually_closed_at !== null;
         $storedClosingPrice = $position->getAttribute('closing_price');
         $closingPrice ??= is_string($storedClosingPrice) ? $storedClosingPrice : null;
-        $notifyThreshold = (int) $position->account->total_limit_orders_filled_to_notify;
-        $isHighProfit = $notifyThreshold > 0 && $filledLimitCount >= $notifyThreshold;
-        $canonical = $isHighProfit ? 'position_high_profit_closed' : 'position_closed';
         $pair = $position->getAttribute('parsed_trading_pair');
 
         $referenceData = [
@@ -67,40 +61,25 @@ final class PositionClosedNotifier
             'manually_closed' => $manuallyClosed,
         ];
 
-        if (! $isHighProfit) {
-            $referenceData['account_name'] = $position->account->name;
-            $referenceData['was_fast_traded'] = (bool) $position->getAttribute('was_fast_traded');
-        }
-
-        $operatorPushoverSent = NotificationService::send(
-            user: Kraite::admin(),
-            canonical: $canonical,
-            referenceData: $referenceData,
-            relatable: $position,
-            duration: 0,
-            channels: [PushoverChannel::class],
-        );
-
-        $traderChannelsSent = NotificationService::send(
+        $sent = NotificationService::send(
             user: $user,
-            canonical: $canonical,
+            canonical: 'position_high_profit_closed',
             referenceData: $referenceData,
             relatable: $position,
             cacheKeys: ['position' => $position->id],
-            channels: [AppPushChannel::class, 'mail'],
+            channels: [AppPushChannel::class],
         );
-        $sent = $operatorPushoverSent && $traderChannelsSent;
 
         return [
-            'waped_closed_notification_sent' => $sent && ! $isHighProfit,
-            'high_profit_notification_sent' => $sent && $isHighProfit,
+            'waped_closed_notification_sent' => false,
+            'high_profit_notification_sent' => $sent,
         ];
     }
 
     private function wasAlreadySent(Position $position, int $userId): bool
     {
         return NotificationLog::query()
-            ->whereIn('canonical', self::CANONICALS)
+            ->where('canonical', 'position_high_profit_closed')
             ->where('user_id', $userId)
             ->where('relatable_type', $position->getMorphClass())
             ->where('relatable_id', $position->getKey())

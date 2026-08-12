@@ -82,6 +82,22 @@ trait HasGetters
     }
 
     /**
+     * Whether this position has filled the penultimate rung of its planned DCA ladder.
+     */
+    public function hasFilledPenultimateLimitOrder(?int $filledLimitCount = null): bool
+    {
+        $totalLimitOrders = (int) $this->total_limit_orders;
+
+        if ($totalLimitOrders < 2) {
+            return false;
+        }
+
+        $filledLimitCount ??= $this->totalLimitOrdersFilled();
+
+        return $filledLimitCount >= $totalLimitOrders - 1;
+    }
+
+    /**
      * Last LIMIT order (by quantity desc) on the same side that still has a known exchange id and is active/filled.
      * Safe: may return null (callers MUST null-check or use null-safe operator).
      */
