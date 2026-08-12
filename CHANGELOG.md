@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.106.0 - 2026-08-12
+
+### Four-hour position sparklines
+
+- [ADDED] The Kline command can queue 15-minute candles for the actual
+  symbols behind open-position sparklines without dispatching analysis work.
+- [VERIFIED] Ingestion coverage proves the open-position filter, schedule,
+  timeframe, limit, and per-symbol step shape.
+
 ## 1.105.0 - 2026-08-12
 
 ### Quiet deep-ladder notifications

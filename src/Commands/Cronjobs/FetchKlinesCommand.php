@@ -26,6 +26,7 @@ final class FetchKlinesCommand extends BaseCommand
         {--exchange_symbol_id= : Fetch klines for a specific exchange symbol}
         {--canonical= : Filter by API system canonical (e.g., binance, bybit)}
         {--only-active-positions : Fetch klines only for symbols with active positions}
+        {--position-sparklines : Fetch candles only for the actual symbols behind open-position sparklines}
         {--reference-set : Fetch klines only for the BSCS reference basket (config kraite.market_regime.symbols). Requires --canonical.}
         {--timeframe= : Candle timeframe (if not provided, uses timeframes from ApiSystem)}
         {--limit=5 : Number of candles to fetch}
@@ -65,6 +66,7 @@ final class FetchKlinesCommand extends BaseCommand
         $exchangeSymbolId = $this->option('exchange_symbol_id');
         $canonical = $this->option('canonical');
         $onlyActivePositions = $this->option('only-active-positions');
+        $positionSparklines = (bool) $this->option('position-sparklines');
         $referenceSet = (bool) $this->option('reference-set');
         $limit = (int) $this->option('limit');
 
@@ -73,6 +75,10 @@ final class FetchKlinesCommand extends BaseCommand
 
         if ($exchangeSymbolId) {
             return $this->handleSingleSymbol((int) $exchangeSymbolId, $explicitTimeframe, $limit);
+        }
+
+        if ($positionSparklines) {
+            return $this->handlePositionSparklines($explicitTimeframe, $limit);
         }
 
         if ($onlyActivePositions) {
@@ -94,6 +100,45 @@ final class FetchKlinesCommand extends BaseCommand
         $canonicalString = is_string($canonical) ? $canonical : null;
 
         return $this->handleBulkSymbols($canonicalString, $explicitTimeframe, $limit);
+    }
+
+    /** @param  array<int, string>|null  $explicitTimeframe */
+    private function handlePositionSparklines(?array $explicitTimeframe, int $limit): int
+    {
+        if ($explicitTimeframe === null) {
+            $this->verboseError('--position-sparklines requires --timeframe.');
+
+            return self::FAILURE;
+        }
+
+        $exchangeSymbolIds = Position::opened()
+            ->whereNotNull('exchange_symbol_id')
+            ->distinct()
+            ->pluck('exchange_symbol_id')
+            ->map(static fn ($id): int => (int) $id)
+            ->all();
+
+        if ($exchangeSymbolIds === []) {
+            $this->verboseInfo('No open positions found.');
+
+            return self::SUCCESS;
+        }
+
+        $blockUuid = Str::uuid()->toString();
+        foreach ($exchangeSymbolIds as $exchangeSymbolId) {
+            $this->createKlineStepsForTimeframes(
+                $blockUuid,
+                $exchangeSymbolId,
+                $explicitTimeframe,
+                $limit,
+                1,
+            );
+        }
+
+        $stepsCreated = count($exchangeSymbolIds) * count($explicitTimeframe);
+        $this->verboseInfo("Queued {$stepsCreated} sparkline candle steps for ".count($exchangeSymbolIds).' open-position symbols.');
+
+        return self::SUCCESS;
     }
 
     /** @return array<int, string>|null */
