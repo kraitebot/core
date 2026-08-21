@@ -4,11 +4,11 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Support\Apis\REST;
 
-use Kraite\Core\Concerns\HasPropertiesValidation;
-use Kraite\Core\Support\ApiClients\REST\TaapiApiClient;
+use InvalidArgumentException;
+use Kraite\Core\Contracts\TaapiApiDriver;
 use Kraite\Core\Support\ValueObjects\ApiCredentials;
 use Kraite\Core\Support\ValueObjects\ApiProperties;
-use Kraite\Core\Support\ValueObjects\ApiRequest;
+use Psr\Http\Message\ResponseInterface;
 
 /**
  * TaapiApi handles the communication with the Taapi.io API,
@@ -16,84 +16,61 @@ use Kraite\Core\Support\ValueObjects\ApiRequest;
  */
 final class TaapiApi
 {
-    use HasPropertiesValidation;
-
-    // API client instance.
-    private $client;
-
-    // Decrypted API secret key.
-    private $secret;
+    private TaapiApiDriver $driver;
 
     // Constructor to initialize the API client with credentials.
     public function __construct(ApiCredentials $credentials)
     {
-        $this->secret = $credentials->get('taapi_secret');
-        $url = config('kraite.api.url.taapi.rest');
-
-        $this->client = new TaapiApiClient([
-            'url' => $url,
-            'secret' => $this->secret,
-        ]);
+        $this->driver = match (self::configuredDriver()) {
+            'legacy' => new TaapiLegacyApi($credentials),
+            'v2' => new TaapiV2Api($credentials),
+            default => throw new InvalidArgumentException(sprintf(
+                'Unsupported TAAPI driver "%s". Expected legacy or v2.',
+                self::configuredDriver(),
+            )),
+        };
     }
 
-    public function getGroupedIndicatorsValues(ApiProperties $properties)
+    public static function configuredDriver(): string
     {
-        $payload = [
-            'secret' => $this->secret,
-            'construct' => [
-                'exchange' => $properties->get('options.exchange'),
-                'symbol' => $properties->get('options.symbol'),
-                'interval' => $properties->get('options.interval'),
-                'indicators' => $properties->get('options.indicators'),
-            ],
-            'debug' => $properties->getOr('debug', []),
-        ];
+        return mb_strtolower(self::configuredString('kraite.api.taapi.driver', 'v2'));
+    }
 
-        $mergedProperties = $properties->mergeIntoNew($payload);
+    public static function configuredBaseUrl(): string
+    {
+        return self::configuredDriver() === 'v2'
+            ? self::configuredString('kraite.api.url.taapi.v2', 'https://v2.taapi.io')
+            : self::configuredString('kraite.api.url.taapi.rest', 'https://api.taapi.io');
+    }
 
-        $apiRequest = ApiRequest::make(
-            'POST',
-            '/bulk',
-            $mergedProperties
-        );
-
-        return $this->client->publicRequest($apiRequest);
+    public function getGroupedIndicatorsValues(ApiProperties $properties): ResponseInterface
+    {
+        return $this->driver->getGroupedIndicatorsValues($properties);
     }
 
     /**
      * Fetches indicator values for multiple constructs (symbols) in a single bulk request.
      * Each construct can have multiple indicators.
      */
-    public function getBulkIndicatorsValues(ApiProperties $properties)
+    public function getBulkIndicatorsValues(ApiProperties $properties): ResponseInterface
     {
-        $payload = [
-            'secret' => $this->secret,
-            'construct' => $properties->get('constructs'),
-            'debug' => $properties->getOr('debug', []),
-        ];
-
-        $mergedProperties = $properties->mergeIntoNew($payload);
-
-        $apiRequest = ApiRequest::make(
-            'POST',
-            '/bulk',
-            $mergedProperties
-        );
-
-        return $this->client->publicRequest($apiRequest);
+        return $this->driver->getBulkIndicatorsValues($properties);
     }
 
-    // Fetches indicator values for the given API properties.
-    public function getIndicatorValues(ApiProperties $properties)
+    public function getIndicatorValues(ApiProperties $properties): ResponseInterface
     {
-        $properties->set('options.secret', $this->secret);
+        return $this->driver->getIndicatorValues($properties);
+    }
 
-        $apiRequest = ApiRequest::make(
-            'GET',
-            '/'.$properties->get('options.endpoint'),
-            new ApiProperties($properties->toArray())
-        );
+    public function baseUrl(): string
+    {
+        return $this->driver->baseUrl();
+    }
 
-        return $this->client->publicRequest($apiRequest);
+    private static function configuredString(string $key, string $default): string
+    {
+        $value = config($key, $default);
+
+        return is_string($value) && $value !== '' ? $value : $default;
     }
 }

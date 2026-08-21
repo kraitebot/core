@@ -745,9 +745,14 @@ return [
     | indicators, metadata, notifications, etc.). These are NOT your trading sub-accounts.
     */
     'api' => [
+        'taapi' => [
+            'driver' => env('TAAPI_API_DRIVER', 'v2'),
+        ],
+
         'url' => [
             'binance' => [
                 'rest' => 'https://fapi.binance.com',
+                'market_data_rest' => 'https://data-api.binance.vision',
                 'stream' => 'wss://fstream.binance.com',
             ],
 
@@ -781,6 +786,7 @@ return [
 
             'taapi' => [
                 'rest' => 'https://api.taapi.io',
+                'v2' => 'https://v2.taapi.io',
             ],
         ],
 
@@ -860,6 +866,7 @@ return [
             // TAAPI indicator provider.
             'taapi' => [
                 'secret' => env('TAAPI_SECRET'),
+                'v2_token' => env('TAAPI_V2_TOKEN'),
             ],
 
             // CoinMarketCap metadata provider.

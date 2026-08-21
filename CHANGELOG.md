@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.107.0 - 2026-08-21
+
+### TAAPI v2 indicator delivery
+
+- [CHANGED] Indicator and backtest candle reads use the authenticated TAAPI v2
+  service while preserving the existing result contract for conclusions.
+- [HARDENED] Each real TAAPI request reserves the shared provider budget at the
+  network boundary, preventing one indicator step from consuming multiple
+  unaccounted provider calls.
+- [PRESERVED] Binance Futures remains authoritative; Binance Spot remains the
+  controlled fallback when Futures market data is unavailable or stale.
+
 ## 1.106.1 - 2026-08-21
 
 ### Truthful high-profit close alerts

@@ -8,6 +8,7 @@ use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Carbon;
 use Kraite\Core\Abstracts\BaseExceptionHandler;
 use Kraite\Core\Concerns\ApiExceptionHelpers;
+use Psr\Http\Message\ResponseInterface;
 use Throwable;
 
 /**
@@ -22,6 +23,7 @@ use Throwable;
 final class TaapiExceptionHandler extends BaseExceptionHandler
 {
     use ApiExceptionHelpers {
+        extractHttpErrorCodes as protected baseExtractHttpErrorCodes;
         rateLimitUntil as baseRateLimitUntil;
         ignoreException as baseIgnoreException;
     }
@@ -29,6 +31,8 @@ final class TaapiExceptionHandler extends BaseExceptionHandler
     /**
      * Ignorable — no-ops / idempotent.
      * 400: Bad request (malformed parameters, invalid data)
+     *
+     * @var list<int>
      */
     public array $ignorableHttpCodes = [
         400,
@@ -37,6 +41,8 @@ final class TaapiExceptionHandler extends BaseExceptionHandler
     /**
      * Retryable — transient conditions.
      * HTTP-level errors that can be retried.
+     *
+     * @var list<int>
      */
     public array $retryableHttpCodes = [
         500,     // Internal server error
@@ -54,6 +60,8 @@ final class TaapiExceptionHandler extends BaseExceptionHandler
      *
      * NOTE: For Taapi, all forbidden errors are account-specific (API key issues).
      * Use isAccountBlocked() for specific classification.
+     *
+     * @var list<int>
      */
     public array $serverForbiddenHttpCodes = [
         401,
@@ -76,6 +84,8 @@ final class TaapiExceptionHandler extends BaseExceptionHandler
     /**
      * Rate-limited — exceeded request quota.
      * 429: Too Many Requests (exceeded plan's request limit)
+     *
+     * @var list<int>
      */
     public array $serverRateLimitedHttpCodes = [
         429,
@@ -83,6 +93,8 @@ final class TaapiExceptionHandler extends BaseExceptionHandler
 
     /**
      * recvWindow mismatches: not applicable for Taapi.io.
+     *
+     * @var list<int>
      */
     public array $recvWindowMismatchedHttpCodes = [];
 
@@ -116,6 +128,47 @@ final class TaapiExceptionHandler extends BaseExceptionHandler
     public function getApiSystem(): string
     {
         return 'taapi';
+    }
+
+    /**
+     * Support both legacy TAAPI errors and v2's
+     * {statusCode, error, message} envelope.
+     *
+     * @return array{http_code: int|null, status_code: int|string|null, message: string|null}
+     */
+    public function extractHttpErrorCodes(Throwable|ResponseInterface $input): array
+    {
+        $data = $this->baseExtractHttpErrorCodes($input);
+        $httpCode = is_int($data['http_code'] ?? null) ? $data['http_code'] : null;
+        $statusCode = is_int($data['status_code'] ?? null) || is_string($data['status_code'] ?? null)
+            ? $data['status_code']
+            : null;
+        $message = is_string($data['message'] ?? null) ? $data['message'] : null;
+        $response = $input instanceof ResponseInterface
+            ? $input
+            : ($input instanceof RequestException && $input->hasResponse() ? $input->getResponse() : null);
+
+        if ($response !== null) {
+            $json = json_decode((string) $response->getBody(), true);
+            if (is_array($json)) {
+                $v2StatusCode = $json['statusCode'] ?? null;
+                if (is_int($v2StatusCode) || is_string($v2StatusCode)) {
+                    $statusCode = $v2StatusCode;
+                }
+
+                if (is_string($json['message'] ?? null)) {
+                    $message = $json['message'];
+                } elseif (is_string($json['error'] ?? null)) {
+                    $message = $json['error'];
+                }
+            }
+        }
+
+        return [
+            'http_code' => $httpCode,
+            'status_code' => $statusCode,
+            'message' => $message,
+        ];
     }
 
     /**
@@ -155,13 +208,20 @@ final class TaapiExceptionHandler extends BaseExceptionHandler
         // If it's ignorable by HTTP code, check the response body for non-ignorable patterns
         // TAAPI returns {"errors": [...]} format, not {"code": ..., "msg": ...}
         if ($exception instanceof RequestException && $exception->hasResponse()) {
-            $body = mb_strtolower((string) $exception->getResponse()->getBody());
+            $response = $exception->getResponse();
+            if ($response === null) {
+                return true;
+            }
+
+            $body = mb_strtolower((string) $response->getBody());
 
             // Check for patterns that should NOT be ignored
             foreach ($this->nonIgnorableErrorPatterns as $pattern) {
-                if (!(str_contains(haystack: $body, needle: mb_strtolower($pattern)))) { continue; }
+                if (! (str_contains(haystack: $body, needle: mb_strtolower($pattern)))) {
+                    continue;
+                }
 
-return false;
+                return false;
             }
         }
 
@@ -205,7 +265,8 @@ return false;
     public function backoffSeconds(Throwable $e): int
     {
         if ($e instanceof RequestException && $e->hasResponse()) {
-            if ($this->isRateLimited($e) || $e->getResponse()->getStatusCode() === 429) {
+            $response = $e->getResponse();
+            if ($response !== null && ($this->isRateLimited($e) || $response->getStatusCode() === 429)) {
                 $until = $this->rateLimitUntil($e);
                 $delta = max(0, now()->diffInSeconds($until, false));
 

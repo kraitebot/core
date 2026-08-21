@@ -4,12 +4,9 @@ declare(strict_types=1);
 
 namespace Kraite\Core\Jobs\Backtest;
 
-use Illuminate\Support\Sleep;
 use Kraite\Core\Abstracts\BaseQueueableJob;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Support\Backtest\TaapiCandlesFetcher;
-use Kraite\Core\Support\Throttlers\TaapiThrottler;
-use StepDispatcher\Models\Step;
 use Throwable;
 
 /**
@@ -34,12 +31,13 @@ final class FetchTaapiCandlesStep extends BaseQueueableJob
         $this->retries = 3;
     }
 
-    public function relatable()
+    public function relatable(): ExchangeSymbol
     {
         return $this->exchangeSymbol;
     }
 
-    public function compute(): ?array
+    /** @return array<string, mixed> */
+    public function compute(): array
     {
         try {
             return (new TaapiCandlesFetcher)->fetch(
@@ -47,50 +45,9 @@ final class FetchTaapiCandlesStep extends BaseQueueableJob
                 $this->timeframe,
                 200,
                 0,
-                fn (): bool => $this->reserveTaapiRequest(),
             );
         } catch (Throwable $e) {
             return ['error' => mb_substr($e->getMessage(), 0, 300), 'source' => 'taapi'];
-        }
-    }
-
-    private function reserveTaapiRequest(): bool
-    {
-        $stepId = isset($this->step) && $this->step->exists
-            ? $this->step->id
-            : null;
-        $retryCount = $stepId !== null ? (int) $this->step->retries : 0;
-
-        while (true) {
-            $millisecondsToWait = TaapiThrottler::canDispatch($retryCount, null, $stepId);
-
-            if ($millisecondsToWait === 0) {
-                TaapiThrottler::recordDispatch(null, $stepId);
-
-                return true;
-            }
-
-            if ($stepId !== null) {
-                $jitterMaximum = max(50, (int) ($millisecondsToWait * 0.3));
-                $this->jobBackoffMs = max(
-                    1000,
-                    $millisecondsToWait + random_int(0, $jitterMaximum),
-                );
-                $this->jobBackoffSeconds = 0;
-
-                Step::log($stepId, 'throttled', sprintf(
-                    'Throttled by %s::canDispatch | wait=%dms | retry_count=%d',
-                    class_basename(TaapiThrottler::class),
-                    $this->jobBackoffMs,
-                    $retryCount,
-                ));
-
-                $this->rescheduleWithoutRetry();
-
-                return false;
-            }
-
-            Sleep::for($millisecondsToWait)->milliseconds();
         }
     }
 }

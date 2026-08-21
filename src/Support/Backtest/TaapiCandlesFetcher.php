@@ -5,13 +5,16 @@ declare(strict_types=1);
 namespace Kraite\Core\Support\Backtest;
 
 use Carbon\Carbon;
-use Closure;
+use Carbon\CarbonInterface;
+use DateTimeZone;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
 use Kraite\Core\Enums\BacktestTimeframe;
 use Kraite\Core\Models\ExchangeSymbol;
 use Kraite\Core\Models\Kraite;
+use Kraite\Core\Support\Apis\REST\TaapiApi;
+use Kraite\Core\Support\ValueObjects\ApiCredentials;
+use Kraite\Core\Support\ValueObjects\ApiProperties;
 use RuntimeException;
 use Throwable;
 
@@ -27,24 +30,12 @@ use Throwable;
  * multi-month seeding use `BinanceVisionCandleFetcher`, which is free
  * and rate-unlimited.
  *
- * TAAPI endpoint shape:
- *   GET https://api.taapi.io/candles
- *     ?secret=<KEY>&exchange=binancefutures&symbol=BTC/USDT
- *     &interval=1h&results=300&backtrack=0
- *
- * Params:
- *   results   — how many candles to return in a single response (<=300)
- *   backtrack — how many candles to shift the window back (0 = latest)
- *
  * Strategy: issue ONE bounded call (results=caller-chosen, backtrack=0)
  * and upsert. Caller drives repeat invocations for deeper windows.
- * Keeps this class leaf-simple; queue callers may provide a request gate
- * that coordinates the real HTTP attempt with shared production throttling.
+ * Authentication, API versioning, and request throttling live behind TaapiApi.
  */
 final class TaapiCandlesFetcher
 {
-    private const BASE_URL = 'https://api.taapi.io/candles';
-
     private const MAX_RESULTS_PER_CALL = 300;
 
     /**
@@ -58,16 +49,14 @@ final class TaapiCandlesFetcher
      * @param  string  $timeframe  One of BacktestTimeframe::values().
      * @param  int  $results  Upper bound on candles per call (<=300). Actual call uses min($results, gap+buffer).
      * @param  int  $backtrack  Shift window backwards by N candles (0 = latest). Forces an HTTP call when >0.
-     * @param  Closure(): bool|null  $beforeRequest  Return false when a queued caller rescheduled instead of reserving a request.
-     * @return array{inserted: int, earliest: string|null, latest: string|null, source_url: string, skipped?: bool, reason?: string, requested?: int}|null
+     * @return array{inserted: int, earliest: string|null, latest: string|null, source_url: string, skipped?: bool, reason?: string, requested?: int}
      */
     public function fetch(
         ExchangeSymbol $symbol,
         string $timeframe,
         int $results = 200,
         int $backtrack = 0,
-        ?Closure $beforeRequest = null,
-    ): ?array {
+    ): array {
         $this->assertSupportedTimeframe($timeframe);
         if ($results < 1 || $results > self::MAX_RESULTS_PER_CALL) {
             throw new InvalidArgumentException(sprintf(
@@ -92,7 +81,7 @@ final class TaapiCandlesFetcher
                     'latest' => $latestTs !== null
                         ? Carbon::createFromTimestamp($latestTs, 'UTC')->format('Y-m-d H:i:s')
                         : null,
-                    'source_url' => self::BASE_URL,
+                    'source_url' => TaapiApi::configuredBaseUrl().'/candles',
                     'skipped' => true,
                     'reason' => 'DB already holds the latest closed candle.',
                 ];
@@ -104,42 +93,26 @@ final class TaapiCandlesFetcher
             $results = min($results, $gap + 2);
         }
 
-        $secret = $this->resolveSecret();
-        if ($secret === null) {
-            throw new RuntimeException('TAAPI secret not configured (kraite.taapi_secret empty and no env fallback).');
-        }
-
         $exchangeCanonical = $this->mapTaapiExchange($symbol);
         $taapiSymbol = mb_strtoupper($symbol->token).'/'.mb_strtoupper($symbol->quote);
-
-        $params = [
-            'secret' => $secret,
-            'exchange' => $exchangeCanonical,
-            'symbol' => $taapiSymbol,
-            'interval' => $timeframe,
-            'results' => $results,
-            'backtrack' => $backtrack,
-            'addResultTimestamp' => 'true',
-        ];
-
-        if ($beforeRequest !== null && ! $beforeRequest()) {
-            return null;
-        }
-
-        $response = Http::timeout(60)->get(self::BASE_URL, $params);
-
-        if (! $response->successful()) {
-            throw new RuntimeException(sprintf(
-                'TAAPI candles call failed — HTTP %d — body: %s',
-                $response->status(),
-                mb_substr($response->body(), 0, 200)
-            ));
-        }
-
-        $data = $response->json();
+        $api = new TaapiApi($this->credentials());
+        $response = $api->getIndicatorValues(new ApiProperties([
+            'relatable' => $symbol,
+            'options' => [
+                'endpoint' => 'candles',
+                'exchange' => $exchangeCanonical,
+                'symbol' => $taapiSymbol,
+                'interval' => $timeframe,
+                'results' => $results,
+                'backtrack' => $backtrack,
+                'addResultTimestamp' => true,
+            ],
+        ]));
+        $data = json_decode((string) $response->getBody(), true);
         if (! is_array($data)) {
             throw new RuntimeException('TAAPI response was not JSON-parseable into an array.');
         }
+        $sourceUrl = $api->baseUrl().'/candles';
 
         $rows = $this->normalizeRows($data, $symbol, $timeframe);
         if (empty($rows)) {
@@ -147,7 +120,7 @@ final class TaapiCandlesFetcher
                 'inserted' => 0,
                 'earliest' => null,
                 'latest' => null,
-                'source_url' => self::BASE_URL,
+                'source_url' => $sourceUrl,
             ];
         }
 
@@ -169,7 +142,7 @@ final class TaapiCandlesFetcher
             'inserted' => count($rows),
             'earliest' => Carbon::createFromTimestamp($earliest, 'UTC')->format('Y-m-d H:i:s'),
             'latest' => Carbon::createFromTimestamp($latest, 'UTC')->format('Y-m-d H:i:s'),
-            'source_url' => self::BASE_URL,
+            'source_url' => $sourceUrl,
             'requested' => $results,
         ];
     }
@@ -196,6 +169,10 @@ final class TaapiCandlesFetcher
             return ['gap' => PHP_INT_MAX, 'latest_ts' => null];
         }
 
+        if (! is_numeric($latestTs)) {
+            throw new RuntimeException('Stored candle timestamp is not numeric.');
+        }
+
         $latestTsInt = (int) $latestTs;
         $intervalSeconds = BacktestTimeframe::from($timeframe)->seconds();
         $currentCandleTimestamp = intdiv(time(), $intervalSeconds) * $intervalSeconds;
@@ -211,7 +188,7 @@ final class TaapiCandlesFetcher
      * candle rows ready for upsert.
      *
      * @param  array<mixed>  $data
-     * @return array<int, array<string, mixed>>
+     * @return list<array{exchange_symbol_id: int, timeframe: string, open: string, high: string, low: string, close: string, volume: string, timestamp: int, candle_time_utc: string, candle_time_local: string, created_at: CarbonInterface, updated_at: CarbonInterface}>
      */
     private function normalizeRows(array $data, ExchangeSymbol $symbol, string $timeframe): array
     {
@@ -223,6 +200,10 @@ final class TaapiCandlesFetcher
         // Shape 1: array of objects [{timestamp, open, high, low, close, volume}, ...]
         if (isset($data[0]) && is_array($data[0])) {
             foreach ($data as $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+
                 $tsSec = $this->coerceTimestampSeconds($row['timestamp'] ?? $row['timestampHuman'] ?? null);
                 if ($tsSec === null || $tsSec >= $currentCandleTimestamp) {
                     continue;
@@ -235,18 +216,24 @@ final class TaapiCandlesFetcher
 
         // Shape 2: columnar — {timestamp: [...], open: [...], high: [...], ...}
         if (isset($data['timestamp']) && is_array($data['timestamp'])) {
-            $count = count($data['timestamp']);
+            $timestamps = $data['timestamp'];
+            $open = isset($data['open']) && is_array($data['open']) ? $data['open'] : [];
+            $high = isset($data['high']) && is_array($data['high']) ? $data['high'] : [];
+            $low = isset($data['low']) && is_array($data['low']) ? $data['low'] : [];
+            $close = isset($data['close']) && is_array($data['close']) ? $data['close'] : [];
+            $volume = isset($data['volume']) && is_array($data['volume']) ? $data['volume'] : [];
+            $count = count($timestamps);
             for ($i = 0; $i < $count; $i++) {
-                $tsSec = $this->coerceTimestampSeconds($data['timestamp'][$i] ?? null);
+                $tsSec = $this->coerceTimestampSeconds($timestamps[$i] ?? null);
                 if ($tsSec === null || $tsSec >= $currentCandleTimestamp) {
                     continue;
                 }
                 $rows[] = $this->buildRow($symbol, $timeframe, $tsSec, [
-                    'open' => $data['open'][$i] ?? null,
-                    'high' => $data['high'][$i] ?? null,
-                    'low' => $data['low'][$i] ?? null,
-                    'close' => $data['close'][$i] ?? null,
-                    'volume' => $data['volume'][$i] ?? 0,
+                    'open' => $open[$i] ?? null,
+                    'high' => $high[$i] ?? null,
+                    'low' => $low[$i] ?? null,
+                    'close' => $close[$i] ?? null,
+                    'volume' => $volume[$i] ?? 0,
                 ], $now);
             }
         }
@@ -279,57 +266,63 @@ final class TaapiCandlesFetcher
     }
 
     /**
-     * @param  array<string, mixed>  $row
-     * @return array<string, mixed>
+     * @param  array<mixed, mixed>  $row
+     * @return array{exchange_symbol_id: int, timeframe: string, open: string, high: string, low: string, close: string, volume: string, timestamp: int, candle_time_utc: string, candle_time_local: string, created_at: CarbonInterface, updated_at: CarbonInterface}
      */
-    private function buildRow(ExchangeSymbol $symbol, string $timeframe, int $tsSec, array $row, mixed $now): array
+    private function buildRow(ExchangeSymbol $symbol, string $timeframe, int $tsSec, array $row, CarbonInterface $now): array
     {
         $candleTime = Carbon::createFromTimestamp($tsSec, 'UTC');
+        $timeZone = config('app.timezone', 'UTC');
+        if (! is_string($timeZone) && ! is_int($timeZone) && ! $timeZone instanceof DateTimeZone) {
+            $timeZone = 'UTC';
+        }
 
         return [
             'exchange_symbol_id' => $symbol->id,
             'timeframe' => $timeframe,
-            'open' => (string) ($row['open'] ?? '0'),
-            'high' => (string) ($row['high'] ?? '0'),
-            'low' => (string) ($row['low'] ?? '0'),
-            'close' => (string) ($row['close'] ?? '0'),
-            'volume' => (string) ($row['volume'] ?? '0'),
+            'open' => $this->scalarString($row['open'] ?? null, '0'),
+            'high' => $this->scalarString($row['high'] ?? null, '0'),
+            'low' => $this->scalarString($row['low'] ?? null, '0'),
+            'close' => $this->scalarString($row['close'] ?? null, '0'),
+            'volume' => $this->scalarString($row['volume'] ?? null, '0'),
             'timestamp' => $tsSec,
             'candle_time_utc' => $candleTime->format('Y-m-d H:i:s'),
-            'candle_time_local' => $candleTime->copy()->setTimezone(config('app.timezone', 'UTC'))->format('Y-m-d H:i:s'),
+            'candle_time_local' => $candleTime->copy()->setTimezone($timeZone)->format('Y-m-d H:i:s'),
             'created_at' => $now,
             'updated_at' => $now,
         ];
+    }
+
+    private function scalarString(mixed $value, string $default): string
+    {
+        return is_string($value) || is_int($value) || is_float($value)
+            ? (string) $value
+            : $default;
+    }
+
+    private function credentials(): ApiCredentials
+    {
+        $legacySecret = null;
+
+        try {
+            $legacySecret = Kraite::find(1)?->taapi_secret;
+        } catch (Throwable) {
+        }
+
+        if (! is_string($legacySecret) || $legacySecret === '') {
+            $legacySecret = config('kraite.api.credentials.taapi.secret');
+        }
+
+        return ApiCredentials::make([
+            'taapi_secret' => $legacySecret,
+            'taapi_v2_token' => config('kraite.api.credentials.taapi.v2_token'),
+        ]);
     }
 
     /**
      * Map Kraite api_system canonical to TAAPI's exchange identifier.
      * TAAPI uses `binancefutures` for USDM perps, not `binance`.
      */
-    /**
-     * Resolve the TAAPI secret. Prefers the global kraite singleton
-     * (same source every other TAAPI call uses via Account::admin('taapi'))
-     * with env/config as a safety net for test and bootstrap contexts.
-     */
-    private function resolveSecret(): ?string
-    {
-        try {
-            $fromDb = Kraite::find(1)?->taapi_secret;
-            if (is_string($fromDb) && $fromDb !== '') {
-                return $fromDb;
-            }
-        } catch (Throwable) {
-            // DB not reachable or model/table unavailable — fall through.
-        }
-
-        $fromConfig = config('kraite.apis.credentials.taapi.secret');
-        if (is_string($fromConfig) && $fromConfig !== '') {
-            return $fromConfig;
-        }
-
-        return null;
-    }
-
     private function mapTaapiExchange(ExchangeSymbol $symbol): string
     {
         $canonical = $symbol->apiSystem->canonical ?? 'binance';
