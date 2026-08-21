@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.106.1 - 2026-08-21
+
+### Truthful high-profit close alerts
+
+- [FIXED] The app-only high-profit close alert now requires positive final
+  exchange PnL after the penultimate DCA rung.
+- [PRESERVED] Loss and break-even stop-loss closes remain silent, while the
+  exchange-symbol stop-loss protection path remains unchanged.
+
 ## 1.106.0 - 2026-08-12
 
 ### Four-hour position sparklines

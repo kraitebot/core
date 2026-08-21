@@ -12,7 +12,7 @@ use Kraite\Core\Notifications\Channels\AppPushChannel;
 final class PositionClosedNotifier
 {
     /**
-     * Notify the trader in-app when a penultimate-limit position closes with exchange PnL.
+     * Notify the trader in-app when a penultimate-limit position closes with positive exchange PnL.
      *
      * @return array{waped_closed_notification_sent: bool, high_profit_notification_sent: bool}
      */
@@ -28,7 +28,7 @@ final class PositionClosedNotifier
 
         $position->loadMissing(['account.user', 'exchangeSymbol']);
 
-        if ($position->getAttribute('pnl') === null) {
+        if (! Math::isPositive($position->getAttribute('pnl'))) {
             return $notSent;
         }
 
